@@ -14,7 +14,7 @@ Recorded locally on 2026-11-06. This is a manually curated summary, not a diagno
 | Check | Result | Evidence boundary |
 |---|---|---|
 | Native arm64 build, ad-hoc signature verification | PASS | Local build/run, no Python runtime dependency |
-| Local policy, DNS parser, SOCKS relay and simulated failures | PASS: 79 assertions | Includes denied suffix/IP/IPv6/UDP/ports, no DNS on denied requests, route denial, simulated VPN/network change and recovery |
+| Local policy, DNS parser, SOCKS relay and simulated failures | PASS: 83 assertions | Includes denied suffix/IP/IPv6/UDP/ports, no DNS on denied requests, route denial, simulated VPN/network change/recovery and vendor-command I/O isolation |
 | Darwin interface binding | PASS | `IP_BOUND_IF` applied and read back on a real socket |
 | Untrusted TLS test server | PASS | System trust failure aborts TLS; no HTTP application data received by the fixture |
 | Certificate consent/source/fingerprint rejection paths | PASS | No Keychain mutation; no consent, wrong hash, insecure/credential/token URL, private key and bundle rejected |
@@ -28,17 +28,18 @@ Recorded locally on 2026-11-06. This is a manually curated summary, not a diagno
 | Real Beta process suspension | PASS | Stale heartbeat reported RECOVERING; request timed out; recovered after SIGCONT. This is not a real sleep test |
 | Stop and busy loopback port | PASS | Stop removes product LaunchAgent; stopped proxy refuses connection; occupied port reports PROXY_FAILED |
 | Installation/configuration/backup/rollback/uninstall | PASS | File lifecycle exercised in a separate temporary install tree; unrelated app namespace preserved |
-| Existing working router | PASS | Verified HTTPS still available after crash and lifecycle tests; its source/configuration preserved |
+| Actual Check Point disconnect | PASS for blocking | Existing relay closed, all 12 new test requests refused while disconnected. Normal interactive IdP login was required. A hung passkey attempt was cancelled; a fresh vendor GUI request completed. No keys or trust were reset |
+| External VPN packet observation during loss | PASS within observed scope | Zero matching packets for the finite corporate DNS/test-HTTPS filter on the current external VPN interface during a five-minute observation. Packet payloads were not saved. Physical egress was not captured |
+| Physical network change and return | PASS | Multiple physical IPv4/network states observed. Wi-Fi itself required reauthentication. Beta recovered without a manual restart; both proxies passed HTTPS afterward. Overall interruption is not a Router recovery-time SLA |
+| Real macOS sleep/wake | PASS for Beta | OS Sleep/User Wake counters incremented, service generations changed, verified HTTPS returned without restarting Beta. Short sleep only |
+| Existing working router | RESTORED | Source/configuration preserved. After sleep it still answered SOCKS greeting and updated state, but its HTTPS requests timed out; restarting only its original LaunchAgent restored HTTPS. This legacy behavior is separate from the native Beta |
 
 ## Required physical transition checks
 
 | Scenario | Status |
 |---|---|
-| Actual Check Point disconnect and reconnection with the native Beta | PENDING coordinated transition window |
-| Real macOS sleep/wake | PENDING user participation |
-| Physical network change and return | PENDING user participation |
 | Reboot, user login, launchd autostart and VPN return | PENDING user participation |
-| Packet capture proving absence of corporate DNS/TCP on the external interface during real loss | PENDING; unit tests and socket binding do not replace this observation |
+| Physical-interface packet capture / all-client non-leakage | NOT ESTABLISHED; scoped external-VPN observation does not provide a host-wide guarantee |
 
 ## Explicit limitations
 
@@ -47,6 +48,8 @@ Recorded locally on 2026-11-06. This is a manually curated summary, not a diagno
 - macOS 13 is a compilation target only. macOS versions other than 27.0.1, Intel, different Check Point modes and other external VPN products are not verified.
 - Windows has an architecture/validation plan only. No supported Windows build exists.
 - No authenticated browser application login was tested for the new product. PAC/extension failure, browser bypass, DoH and clients that fall back to DIRECT are outside the demonstrated SOCKS guarantee.
+- During the controlled disconnect, Beta was temporarily stopped to isolate a hanging interactive passkey login. The original path recovered after a fresh normal login, then Beta was restarted. Automatic Beta recovery was subsequently demonstrated during physical network and sleep transitions; automatic MFA/passkey approval is not provided.
+- The network-change test included separate Wi-Fi reauthentication; the user observed a few minutes of unavailable mail during the transition. This must not be reported as a measured Router-only recovery time.
 - VPN interface ownership uses route/peer evidence, not a vendor attestation. Different VPN topologies require independent tests.
 - No independent authorized corporate certificate source was available. CA authenticity remains unconfirmed. No new real CA was installed or removed; consented import/undo still needs an authorized pilot with IT.
 - TLS diagnostics evaluate local trust/hostname/validity offline. Online revocation, all possible SSO/client-certificate flows and every Check Point OS approval are not certified.

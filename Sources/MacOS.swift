@@ -13,14 +13,17 @@ func command(_ path: String, _ arguments: [String], timeout: Double = 4) -> Comm
         let output = dir.appendingPathComponent("output")
         FileManager.default.createFile(atPath: output.path, contents: nil, attributes: [.posixPermissions: 0o600])
         let handle = try FileHandle(forWritingTo: output); defer { try? handle.close() }
+        let nullFD = Darwin.open("/dev/null", O_RDWR | O_CLOEXEC)
+        guard nullFD >= 0 else { return CommandResult(code: -1, output: "") }
+        defer { Darwin.close(nullFD) }
         // waitpid is independent of Foundation's main run loop. The daemon's
         // main thread accepts sockets and must not delay child reaping.
         var actions: posix_spawn_file_actions_t?
         guard posix_spawn_file_actions_init(&actions) == 0 else { return CommandResult(code: -1, output: "") }
         defer { posix_spawn_file_actions_destroy(&actions) }
-        posix_spawn_file_actions_adddup2(&actions, handle.fileDescriptor, STDOUT_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, FileHandle.nullDevice.fileDescriptor, STDERR_FILENO)
-        posix_spawn_file_actions_adddup2(&actions, FileHandle.nullDevice.fileDescriptor, STDIN_FILENO)
+        guard posix_spawn_file_actions_adddup2(&actions, handle.fileDescriptor, STDOUT_FILENO) == 0,
+              posix_spawn_file_actions_adddup2(&actions, nullFD, STDERR_FILENO) == 0,
+              posix_spawn_file_actions_adddup2(&actions, nullFD, STDIN_FILENO) == 0 else { return CommandResult(code: -1, output: "") }
         var argv = ([path] + arguments).map { strdup($0) } + [nil]
         defer { argv.forEach { if let p = $0 { free(p) } } }
         var environment = ProcessInfo.processInfo.environment.map { strdup("\($0.key)=\($0.value)") } + [nil]

@@ -1,6 +1,12 @@
 import Foundation
 import Darwin
 
+if CommandLine.arguments.contains("--command-io-fixture") {
+    let result = command("/bin/sh", ["-c", "printf fixture-stdout; printf fixture-stderr >&2; if read value; then exit 9; fi"])
+    print("\(result.code):\(result.output)")
+    exit(0)
+}
+
 setbuf(stdout, nil)
 var passed = 0
 func expect(_ condition: @autoclosure () throws -> Bool, _ name: String) {
@@ -171,6 +177,18 @@ DispatchQueue.global().async {
     childDone.signal()
 }
 expect(childDone.wait(timeout: .now() + 6) == .success, "background process deadline")
+
+let child = Process(), childInput = Pipe(), childOutput = Pipe(), childErrors = Pipe()
+child.executableURL = URL(fileURLWithPath: CommandLine.arguments[0]); child.arguments = ["--command-io-fixture"]
+child.standardInput = childInput; child.standardOutput = childOutput; child.standardError = childErrors
+try child.run()
+childInput.fileHandleForWriting.write(Data("must-not-reach-vendor-command\n".utf8)); try childInput.fileHandleForWriting.close()
+child.waitUntilExit()
+expect(child.terminationStatus == 0, "command I/O fixture exits normally")
+expect(String(data: childOutput.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) == "0:fixture-stdout\n", "vendor command stdin isolated and stdout captured")
+expect(childErrors.fileHandleForReading.readDataToEndOfFile().isEmpty, "vendor stderr does not escape to caller")
+let deadlineStart = Date(), timedCommand = command("/bin/sleep", ["2"], timeout: 0.15)
+expect(timedCommand.code != 0 && Date().timeIntervalSince(deadlineStart) < 1, "vendor command timeout kills and reaps child")
 
 final class TLSFixtureAdapter: VPNPlatform {
     func discover(dnsServers: [String]) -> Snapshot { Snapshot(link: Link(interface: "test", index: 1, source: "192.0.2.2", peer: "192.0.2.1", networkSignature: "test"), reason: "TUNNEL_READY") }

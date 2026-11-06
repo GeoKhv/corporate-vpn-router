@@ -16,6 +16,8 @@ codesign --verify --deep --strict "$STAGE/Corporate VPN Router.app"
 cp packaging/Install.command packaging/Uninstall.command "$STAGE/"
 cp README.md LICENSE "$STAGE/"
 ditto docs "$STAGE/docs"
+mkdir -p "$STAGE/Platforms/Windows"
+cp Platforms/Windows/README.md "$STAGE/Platforms/Windows/"
 chmod +x "$STAGE/Install.command" "$STAGE/Uninstall.command"
 ditto -c -k --norsrc --keepParent "$STAGE" "dist/$NAME.zip"
 cd dist
