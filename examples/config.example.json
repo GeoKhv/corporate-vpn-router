@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "listenPort": 1089,
+  "domains": ["corp.example.com"],
+  "dnsServers": ["192.0.2.53", "192.0.2.54"],
+  "ports": [443]
+}

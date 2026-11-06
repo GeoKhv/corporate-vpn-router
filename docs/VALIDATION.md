@@ -1,0 +1,56 @@
+# Mac Beta validation
+
+Recorded locally on 2026-11-06. This is a manually curated summary, not a diagnostic snapshot. No corporate hostnames, IPs, certificates, configuration, logs or identities are published here.
+
+## Test environment and scope
+
+- macOS 27.0.1, Apple Silicon arm64.
+- Installed Check Point Endpoint Security VPN, bundle build `986203103`, active IdP authentication. Authentication was not migrated or shared.
+- External VPN in the test environment: Sota Connect 1.7.7. The product neither depends on it nor manages it. Other external VPNs and other Check Point builds remain unverified.
+- New product on a separate loopback port alongside the unchanged working prototype. System proxy, DNS, routes and certificate trust were not changed by installation or inspection.
+
+## Completed
+
+| Check | Result | Evidence boundary |
+|---|---|---|
+| Native arm64 build, ad-hoc signature verification | PASS | Local build/run, no Python runtime dependency |
+| Local policy, DNS parser, SOCKS relay and simulated failures | PASS: 79 assertions | Includes denied suffix/IP/IPv6/UDP/ports, no DNS on denied requests, route denial, simulated VPN/network change and recovery |
+| Darwin interface binding | PASS | `IP_BOUND_IF` applied and read back on a real socket |
+| Untrusted TLS test server | PASS | System trust failure aborts TLS; no HTTP application data received by the fixture |
+| Certificate consent/source/fingerprint rejection paths | PASS | No Keychain mutation; no consent, wrong hash, insecure/credential/token URL, private key and bundle rejected |
+| Corporate HTTPS via SOCKS5h | PASS | Verified TLS and HTTP response; no account cookies or successful application login implied |
+| OWA / Jira / Confluence diagnostic HTTPS HEAD | PASS | TLS validation passed; responses 302 / 200 / 302 respectively |
+| Certificate wizard UI | PASS | Settings, readable result pane, live HTTPS output and refusal without IT confirmation observed |
+| Check Point signature/service/authentication indicators | PASS for observed state | Missing Network Extension listing is reported separately and is not treated as proof of missing permission |
+| TrustSettings/public certificate inventory before/after inspection | UNCHANGED | Existing trust was preserved; corporate authenticity was not inferred from trust |
+| Native monitor liveness | PASS | 40 consecutive ready samples; heartbeat age no more than 1.98 s |
+| Real Beta process crash | PASS | Request refused during crash, launchd recovery 9.45 s, verified HTTPS after recovery |
+| Real Beta process suspension | PASS | Stale heartbeat reported RECOVERING; request timed out; recovered after SIGCONT. This is not a real sleep test |
+| Stop and busy loopback port | PASS | Stop removes product LaunchAgent; stopped proxy refuses connection; occupied port reports PROXY_FAILED |
+| Installation/configuration/backup/rollback/uninstall | PASS | File lifecycle exercised in a separate temporary install tree; unrelated app namespace preserved |
+| Existing working router | PASS | Verified HTTPS still available after crash and lifecycle tests; its source/configuration preserved |
+
+## Required physical transition checks
+
+| Scenario | Status |
+|---|---|
+| Actual Check Point disconnect and reconnection with the native Beta | PENDING coordinated transition window |
+| Real macOS sleep/wake | PENDING user participation |
+| Physical network change and return | PENDING user participation |
+| Reboot, user login, launchd autostart and VPN return | PENDING user participation |
+| Packet capture proving absence of corporate DNS/TCP on the external interface during real loss | PENDING; unit tests and socket binding do not replace this observation |
+
+## Explicit limitations
+
+- This is an experimental prerelease for a controlled pilot, not broad production certification.
+- Downloaded/quarantined installation on a separate clean Mac, Developer ID signing and notarization are not completed. Local install/signature checks do not prove Gatekeeper acceptance.
+- macOS 13 is a compilation target only. macOS versions other than 27.0.1, Intel, different Check Point modes and other external VPN products are not verified.
+- Windows has an architecture/validation plan only. No supported Windows build exists.
+- No authenticated browser application login was tested for the new product. PAC/extension failure, browser bypass, DoH and clients that fall back to DIRECT are outside the demonstrated SOCKS guarantee.
+- VPN interface ownership uses route/peer evidence, not a vendor attestation. Different VPN topologies require independent tests.
+- No independent authorized corporate certificate source was available. CA authenticity remains unconfirmed. No new real CA was installed or removed; consented import/undo still needs an authorized pilot with IT.
+- TLS diagnostics evaluate local trust/hostname/validity offline. Online revocation, all possible SSO/client-certificate flows and every Check Point OS approval are not certified.
+- The configured Check Point site's HTTPS certificate failed system SSL policy in the observed environment. It was not trusted automatically. Its HTTPS chain is not proof of the IKE gateway chain or a reason to alter working Check Point trust.
+- There is no host-wide firewall, multi-user authentication, transparent routing, IPv6 transport or UDP forwarding. Only explicit SOCKS5 domain CONNECT is supported.
+
+All tests above were run locally. GitHub Actions are disabled; no workflow is part of this repository.

@@ -1,0 +1,10 @@
+.build/
+dist/
+.private/
+.DS_Store
+*.log
+*.pem
+*.key
+config.json
+state.json
+diagnostics*.json
