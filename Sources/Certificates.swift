@@ -216,4 +216,3 @@ enum Certificates {
         receipt.undone = true; try JSONFile.write(receipt, to: url)
     }
 }
-

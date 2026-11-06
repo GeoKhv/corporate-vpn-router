@@ -70,9 +70,9 @@ enum HTTPSCertificates {
             sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, host)
             let queue = DispatchQueue(label: "corporate-vpn-router.tls-probe.\(UUID().uuidString)", qos: .userInitiated)
             sec_protocol_options_set_challenge_block(tls.securityProtocolOptions, { _, complete in
-                box.lock.locked { box.result.clientCertificateRequested = true; box.result.trustExplanation = "The server requested an individual TLS identity. Use your organization's enrollment; this product does not copy keys." }
+                box.lock.locked { box.result.clientCertificateRequested = true; box.result.trustExplanation = "The server requested a TLS identity; the request may be optional. Confirm whether enrollment is required with IT. This product does not copy keys." }
                 complete(nil)
-                box.finish("CLIENT_CERTIFICATE_REQUIRED_USE_CORPORATE_ENROLLMENT")
+                box.finish("CLIENT_CERTIFICATE_REQUESTED_CONFIRM_ENROLLMENT_WITH_IT")
             }, queue)
             sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, secTrust, complete in
                 let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
@@ -108,7 +108,7 @@ enum HTTPSCertificates {
                     })
                 case .failed:
                     let issue = box.lock.locked { box.result.issue }
-                    box.finish(issue.hasPrefix("TLS_TRUST_FAILED_") ? issue : "TLS_HANDSHAKE_FAILED_OR_CLIENT_IDENTITY_REQUIRED")
+                    box.finish(issue.hasPrefix("TLS_TRUST_FAILED_") ? issue : "TLS_HANDSHAKE_FAILED_REVIEW_SERVER_POLICY")
                 case .cancelled: box.finish("TLS_CANCELLED")
                 default: break
                 }
