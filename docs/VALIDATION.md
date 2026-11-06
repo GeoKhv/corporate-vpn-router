@@ -7,7 +7,7 @@ Recorded locally on 2026-11-06. This is a manually curated summary, not a diagno
 - macOS 27.0.1, Apple Silicon arm64.
 - Installed Check Point Endpoint Security VPN, bundle build `986203103`, active IdP authentication. Authentication was not migrated or shared.
 - External VPN in the test environment: Sota Connect 1.7.7. The product neither depends on it nor manages it. Other external VPNs and other Check Point builds remain unverified.
-- New product on a separate loopback port alongside the unchanged working prototype. System proxy, DNS, routes and certificate trust were not changed by installation or inspection.
+- New product on a separate loopback port alongside a private compatibility helper. Private routing rules and individual authentication were retained. The native installer/diagnostics do not write system proxy, DNS or routing settings or automatically change certificate trust.
 
 ## Completed
 
@@ -32,13 +32,16 @@ Recorded locally on 2026-11-06. This is a manually curated summary, not a diagno
 | External VPN packet observation during loss | PASS within observed scope | Zero matching packets for the finite corporate DNS/test-HTTPS filter on the current external VPN interface during a five-minute observation. Packet payloads were not saved. Physical egress was not captured |
 | Physical network change and return | PASS | Multiple physical IPv4/network states observed. Wi-Fi itself required reauthentication. Beta recovered without a manual restart; both proxies passed HTTPS afterward. Overall interruption is not a Router recovery-time SLA |
 | Real macOS sleep/wake | PASS for Beta | OS Sleep/User Wake counters incremented, service generations changed, verified HTTPS returned without restarting Beta. Short sleep only |
-| Existing working router | RESTORED | Source/configuration preserved. After sleep it still answered SOCKS greeting and updated state, but its HTTPS requests timed out; restarting only its original LaunchAgent restored HTTPS. This legacy behavior is separate from the native Beta |
+| Existing compatibility helper after sleep | RESTORED | It answered SOCKS greeting and updated state, but HTTPS requests timed out; restarting its original LaunchAgent restored HTTPS. This behavior is separate from the native Beta |
+| Real reboot and login autostart | PASS | Boot-session UUID changed. Beta was already running on the first read, with one launch, fresh state and the same automatically started PID throughout verification. Binary, configuration and LaunchAgent matched preboot hashes. No manual Beta start was used |
+| Corporate path after boot | PASS | With Check Point off, first state was WAITING_FOR_VPN. Once the VPN was Connected, all three configured corporate services passed HTTPS through the automatically started Beta |
+| Private browser-helper startup dependency | FIXED LOCALLY | Selected external rules still use the old loopback helper. Its corporate/external monitors were separated and its process class updated with backups; private configuration and routing methods remained unchanged. With a simulated 30 s corporate read delay, external readiness was 0.1 s and verified HTTPS succeeded; live process restart to external HTTPS took 0.75 s. These are controlled smoke timings, not a cold-boot/browser SLA |
+| Preservation after boot | PASS within recorded scope | Private configuration and certificate inventory/TrustSettings matched the initial comparisons. System web/SOCKS proxy matched the valid preboot host snapshot. Local compatibility-helper source/agent changes were intentional, backed up and separately reversible |
 
-## Required physical transition checks
+## Remaining coverage gaps
 
 | Scenario | Status |
 |---|---|
-| Reboot, user login, launchd autostart and VPN return | PENDING user participation |
 | Physical-interface packet capture / all-client non-leakage | NOT ESTABLISHED; scoped external-VPN observation does not provide a host-wide guarantee |
 
 ## Explicit limitations
@@ -50,6 +53,7 @@ Recorded locally on 2026-11-06. This is a manually curated summary, not a diagno
 - No authenticated browser application login was tested for the new product. PAC/extension failure, browser bypass, DoH and clients that fall back to DIRECT are outside the demonstrated SOCKS guarantee.
 - During the controlled disconnect, Beta was temporarily stopped to isolate a hanging interactive passkey login. The original path recovered after a fresh normal login, then Beta was restarted. Automatic Beta recovery was subsequently demonstrated during physical network and sleep transitions; automatic MFA/passkey approval is not provided.
 - The network-change test included separate Wi-Fi reauthentication; the user observed a few minutes of unavailable mail during the transition. This must not be reported as a measured Router-only recovery time.
+- Full cold boot and sleep were not repeated after the private compatibility-helper maintenance. Native Beta boot/sleep evidence remains independent of that helper. The complete initial browser-delay timeline was not captured, so the discovered startup dependency is not claimed to explain every second of that delay.
 - VPN interface ownership uses route/peer evidence, not a vendor attestation. Different VPN topologies require independent tests.
 - No independent authorized corporate certificate source was available. CA authenticity remains unconfirmed. No new real CA was installed or removed; consented import/undo still needs an authorized pilot with IT.
 - TLS diagnostics evaluate local trust/hostname/validity offline. Online revocation, all possible SSO/client-certificate flows and every Check Point OS approval are not certified.
