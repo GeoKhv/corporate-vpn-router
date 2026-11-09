@@ -282,16 +282,20 @@ def main():
     RUN.mkdir(parents=True,mode=0o700,exist_ok=True)
     lock=(RUN/'instance.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    policy=DATA/'ssl-policy.json'
-    config=json.loads((policy if policy.exists() else DATA/'config.json').read_text())
-    import re
+    from sites import validate, gate
     global POLICY
-    domains=config['domains']; ports=config['ports']
-    if not (1<=len(domains)<=256 and all(isinstance(d,str) and len(d)<=253 and '.' in d and
-       all(re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?',label) for label in d.split('.'))
-       and not d.split('.')[-1].isdigit() for d in domains)): raise Refused('INVALID_DOMAINS')
-    if not (1<=len(ports)<=32 and all(type(v) is int and 1<=v<=65535 for v in ports)): raise Refused('INVALID_PORTS')
-    POLICY=('|'+ '|'.join(domains)+'|','|'+ '|'.join(map(str,ports))+'|')
+    try:
+        profile = DATA/'work-sites.json'
+        if profile.exists():
+            config = validate(json.loads(profile.read_text()))
+        else:
+            old = DATA/'ssl-policy.json'
+            legacy=json.loads((old if old.exists() else DATA/'config.json').read_text())
+            config = {'version':1,'sites':[{'domain':d,'scope':'tree'} for d in legacy['domains']],
+                      'ports':legacy['ports'],'beforeLogin':[]}
+        POLICY=gate(config)
+    except (ValueError, TypeError, KeyError, OSError) as e:
+        raise Refused('INVALID_DOMAINS') from e
     with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as check:
         check.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         try: check.bind(('127.0.0.1',1090))

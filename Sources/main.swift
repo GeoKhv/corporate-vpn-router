@@ -27,4 +27,8 @@ do{
         }
     default:throw RouterError.invalidConfiguration
     }
-}catch{fputs("Corporate VPN Router: installation or launch failed.\n",stderr); exit(1)}
+}catch{if mode=="--ui" {
+    let a=NSAlert();a.messageText="Установка не завершена"
+    a.informativeText=(error as? RouterError) == .staleNetwork ? "Завершите прежнюю версию через меню VPN и снова откройте новое приложение." : "Не удалось проверить или заменить приложение и его автозапуск. Предыдущую настройку можно проверить в Finder."
+    NSApplication.shared.activate(ignoringOtherApps:true);a.runModal()
+}; fputs("Corporate VPN Router: installation or launch failed.\n",stderr); exit(1)}

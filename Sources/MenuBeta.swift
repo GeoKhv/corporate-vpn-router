@@ -24,6 +24,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var activeScope: LoginScope?, pendingLogin: String?
     var settingsWindow: RouterWindow?, hiddenByUser = false
     let domainField = NSTextField(), portField = NSTextField(), settingsNote = NSTextField(wrappingLabelWithString: "")
+    let sitesPanel=SitesPanel()
     var editScope: LoginScope?
     var checkButton = NSButton(), diagRows = [String:(NSImageView,NSTextField)]()
     let checks = ["Шлюз и pin", "Авторизация", "SSL-туннель", "SOCKS5 · 1090", "DNS в туннеле", "Корпоративный HTTPS"]
@@ -39,7 +40,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         for (title, action) in [("Открыть Corporate VPN Router", #selector(show)), ("Подключить", #selector(toggle)),
-                               ("Корпоративные домены и порты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Завершить", #selector(quit))] {
+                               ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Обновления…", #selector(updateLink)), ("Вернуться к beta.4…", #selector(rollbackMenu)), ("Удалить Router…", #selector(uninstallMenu)), ("Завершить", #selector(quit))] {
             let entry = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             entry.target = self
             if action == #selector(toggle) { menuConnect = entry }
@@ -56,7 +57,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             })
         }
         refresh()
-        if !CommandLine.arguments.contains("--login") { show() }
+        if !CommandLine.arguments.contains("--login") {
+            show()
+            if !paths.isTestRoot && !FileManager.default.fileExists(atPath:paths.data.appendingPathComponent("routing-mode.json").path) && !FileManager.default.fileExists(atPath:paths.data.appendingPathComponent("router-profile-receipt.json").path){settings()}
+        }
     }
     func installMainMenu() {
         let bar = NSMenu()
@@ -108,7 +112,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         useCode = NSButton(title:"Войти с кодом и паролем",target:self,action:#selector(fallbackToCode))
         promptBox = makeColumn([promptTitle, promptLabel, username, secretRow, submit, leaveOfficial], spacing:12)
         primary = NSButton(title: "Подключить", target: self, action: #selector(toggle))
-        let row = NSStackView(views: [primary, NSButton(title: "Настройки…", target: self, action: #selector(settings)),
+        let row = NSStackView(views: [primary, NSButton(title: "Рабочие сайты…", target: self, action: #selector(settings)),
                                       NSButton(title: "Диагностика…", target: self, action: #selector(diagnose))])
         attachColumn(makeColumn([state, detail, method, who, echo, promptBox, useCode, row]), to: window)
     }
@@ -205,11 +209,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         NSApp.activate(ignoringOtherApps: true); diagnostics.makeKeyAndOrderFront(nil)
     }
     @objc func probeHTTPS() {
-        guard health == .ready, let policy = policy(), policy.ports.contains(443) else { return }
+        guard health == .ready, let policy = storedWork(), policy.ports.contains(443) else { return }
         let endpointURL = paths.data.appendingPathComponent("certificate-endpoints.json")
         let configured = (try? JSONDecoder().decode([String:[String]].self, from: Data(contentsOf: endpointURL)))?["hosts"] ?? []
-        guard let host = (configured + policy.domains).first(where: { name in
-            Configuration.validHost(name) && policy.domains.contains { name == $0 || name.hasSuffix("." + $0) }
+        guard let host = (configured + policy.sites.map({$0.domain})).first(where: { name in
+            Configuration.validHost(name) && policy.work(name)
         }) else { return }
         let attempt = generation
         mark(5,.waiting,"проверяется"); refresh()
@@ -226,39 +230,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             }
         }
     }
-    func policy()->SSLPolicy? {
+    func legacyPolicy()->SSLPolicy? {
         for url in [policyURL,paths.config] where FileManager.default.fileExists(atPath:url.path) {
             return try? JSONDecoder().decode(SSLPolicy.self,from:Data(contentsOf:url))
         };return nil
-    }
-    @objc func settings() {
-        if settingsWindow == nil {
-            let w = makeWindow("Корпоративные назначения", 490, 225)
-            for field in [domainField, portField] { field.widthAnchor.constraint(equalToConstant:440).isActive=true }
-            settingsNote.preferredMaxLayoutWidth = 440
-            let save = NSButton(title:"Сохранить", target:self, action:#selector(savePolicy))
-            attachColumn(makeColumn([NSTextField(labelWithString:"Корпоративные доменные суффиксы"), domainField,
-                                     NSTextField(labelWithString:"Разрешённые TCP-порты"), portField, save, settingsNote]), to:w)
-            settingsWindow = w
-        }
-        domainField.stringValue = policy()?.domains.joined(separator:", ") ?? ""
-        portField.stringValue = policy()?.ports.map(String.init).joined(separator:", ") ?? "443"
-        settingsNote.stringValue = engine == nil ? "" : "Чтобы изменить настройки, отключите сеанс."
-        NSApp.activate(ignoringOtherApps:true); settingsWindow?.makeKeyAndOrderFront(nil)
-    }
-    @objc func savePolicy() {
-        guard engine == nil else { settingsNote.stringValue = "Чтобы изменить настройки, отключите сеанс."; return }
-        let ds = domainField.stringValue.lowercased().split(whereSeparator:{$0=="," || $0.isWhitespace}).map(String.init)
-        let ps = portField.stringValue.split(whereSeparator:{$0=="," || $0.isWhitespace})
-        guard !ds.isEmpty, ds.count <= 256,
-              ds.allSatisfy({Configuration.validHost($0) && $0.contains(".") && !$0.hasSuffix(".onion")}),
-              !ps.isEmpty, ps.count <= 32, ps.allSatisfy({(1...65535).contains(Int($0) ?? 0)}) else {
-            settingsNote.stringValue = "Нужны полные доменные имена и числовые порты."; return
-        }
-        do {
-            try JSONFile.write(SSLPolicy(domains:ds,ports:ps.compactMap{Int($0)}), to:policyURL)
-            settingsWindow?.performClose(nil)
-        } catch { settingsNote.stringValue = "Не удалось записать настройки." }
     }
     @objc func toggle() {
         if engine == nil { connect() }
@@ -299,7 +274,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         clearPrompt(); refresh(); reply(value)
     }
     func connect(){
-        guard policy() != nil else { settings(); return }
+        let route=Self.routeCommand("status")
+        guard route.code==0 && (route.output.hasPrefix("Расширение") || route.output.hasPrefix("Приложение")), storedWork() != nil else {settings();return}
         generation+=1; stopping=false; findings=[:]; pendingLogin=nil; activeScope=nil; clearPrompt();let g=generation;let p=Process(),rx=Pipe(),tx=Pipe()
         let resources=Bundle.main.resourceURL!
         p.executableURL=resources.appendingPathComponent("Runtime/bin/python3.13")
