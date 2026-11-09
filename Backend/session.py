@@ -14,8 +14,8 @@ STATE={}
 def status(stage, **values):
     STATE.update(stage=stage, **values)
     print(json.dumps({'stage':stage,**values}),flush=True)
-def request(kind,prompt):
-    print(json.dumps({'request':kind,'prompt':str(prompt)[:300]}),flush=True)
+def request(kind,prompt, **fields):
+    print(json.dumps({'request':kind,'prompt':str(prompt)[:300], **fields}),flush=True)
     line=sys.stdin.buffer.readline(8193)
     if not line or len(line)>8192: raise Refused('INPUT_CANCELLED')
     answer=json.loads(line)
@@ -23,8 +23,9 @@ def request(kind,prompt):
     return answer
 class PrivateUI:
     def print_header(self, header): pass
+    # Every dynamic challenge is secret, including SMS prompts via ask_str.
     def ask_str(self,prompt): return request('challenge',prompt)
-    ask_pwd=ask_str
+    def ask_pwd(self,prompt): return request('secret',prompt)
     def wait_input(self,values): return values
     def ask_sel(self,*args): raise Refused('AMBIGUOUS_REALM')
 def approve(receipt):
@@ -232,17 +233,14 @@ async def dataplane(session, address, context, client, ranges):
         next_stats=0
         while not stop.is_set():
             if ready and (protocol.is_ka_timeout() or protocol.is_auth_timeout()):
-                status('transport_lost', close_reason='session_timeout')
-                break
+                raise Refused('SESSION_TIMED_OUT')
             if ready and loop.time() >= next_stats:
                 status('traffic', counters=adapter.dev.counts)
                 next_stats=loop.time()+2
-            if not adapter.is_up and time.monotonic() - start > 20:
-                status('no_ssl_hello_reply', close_reason='hello_timeout')
-                break
+            if not ready and time.monotonic() - start > 20:
+                raise Refused('SSL_HELLO_TIMEOUT')
             if adapter.proc and adapter.proc.poll() is not None:
-                status('proxy_exited', close_reason='proxy_exited', proxy_exit_code=adapter.proc.returncode)
-                break
+                raise Refused('PROXY_EXITED')
             if adapter.is_up and not ready:
                 try:
                     reader, writer = await asyncio.open_connection('127.0.0.1', 1090)
@@ -266,6 +264,8 @@ async def dataplane(session, address, context, client, ranges):
                 await asyncio.wait_for(stop.wait(), 0.5)
             except asyncio.TimeoutError:
                 pass
+        if STATE.get('close_reason') != 'local_signal':
+            raise Refused('TRANSPORT_LOST' if ready else 'SSL_SESSION_REFUSED')
     finally:
         closing = True
         if transport:
@@ -293,6 +293,7 @@ def main():
     if not (1<=len(ports)<=32 and all(type(v) is int and 1<=v<=65535 for v in ports)): raise Refused('INVALID_PORTS')
     POLICY=('|'+ '|'.join(domains)+'|','|'+ '|'.join(map(str,ports))+'|')
     with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as check:
+        check.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
         try: check.bind(('127.0.0.1',1090))
         except OSError: raise Refused('SOCKS_PORT_OCCUPIED')
     logging.disable(logging.CRITICAL)
@@ -300,15 +301,40 @@ def main():
     address,context=anchor(approve)
     from cpyvpn import auth,client,utils,ssl_ctx
     install_tls_policy(ssl_ctx,utils,address,context)
+    browser = sys.argv[1:] == ['--browser']
     options=SimpleNamespace(server=address,nocert=False,mode='a',realm='',user='',
-        os='Darwin',ct='TRAC',force_logout=False,cookies=None)
+        os='Darwin',ct='TRAC',force_logout=False,cookies=None,support_saml=browser)
     session=auth.SNXAuth(options,PrivateUI())
-    realms=[r for r in session.gw_info.realms if [f.get('factor_type') for f in r.get('factors',{}).values()]==['password','password']]
-    if len(realms)!=1: raise Refused('EXPECTED_TWO_FACTOR_REALM_NOT_FOUND')
-    options.realm=realms[0]['id']
+    factors = ['identity_provider'] if browser else ['password','password']
+    realms = [r for r in session.gw_info.realms if
+              [v.get('factor_type') for _,v in sorted(r.get('factors',{}).items())] == factors]
+    if len(realms) != 1:
+        raise Refused('IDP_REALM_NOT_FOUND' if browser else 'EXPECTED_TWO_FACTOR_REALM_NOT_FOUND')
+    realm = realms[0]
+    options.realm = realm['id']
+    receipt = json.loads((DATA/'ssl-site.json').read_text())
     status('gateway_verified')
     try:
-        session.init()
+        if browser:
+            from browser_auth import authenticate
+            def launch(url):
+                handler = request('browser', '', url=url)
+                if not handler.startswith('/') or not handler.endswith('.app'):
+                    raise Refused('BROWSER_OPEN_FAILED')
+                return handler
+            username = authenticate(session, realm, receipt['site'], address, context, launch, status)
+            # Only the typed, successfully authenticated CCC username is eligible.
+            # Keep identity out of diagnostics, stderr and the public status file.
+            print(json.dumps({'identity':username, 'site':receipt['site'],
+                              'pin':receipt['ca_sha256'], 'realm':realm['id']}), flush=True)
+        else:
+            # Supply the explicit UserPass username. Prompt strings and subsequent
+            # challenges never determine which value can be remembered.
+            options.user = request('username', 'Логин', site=receipt['site'],
+                                   pin=receipt['ca_sha256'], realm=realm['id'])
+            if not options.user.strip():
+                raise Refused('USERNAME_REQUIRED')
+            session.init()
         status('authenticated')
         session.auth_obj.login=session.auth_obj.pwd=None
         ranges=utils.get_ranges(session.auth_obj.url,session.auth_obj.sid)

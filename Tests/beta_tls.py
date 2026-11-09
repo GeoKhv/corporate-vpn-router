@@ -60,7 +60,22 @@ class Fixture:
                 with self.context.wrap_socket(raw, server_side=True) as tls:
                     data = tls.recv(4096)
                     if data:
-                        self.application_data.append(data)
+                        # Headers and POST body may arrive in separate TLS records.
+                        # Drain the complete request before closing to avoid a TCP RST.
+                        while b'\r\n\r\n' not in data:
+                            part = tls.recv(4096)
+                            if not part:
+                                raise OSError('incomplete fixture headers')
+                            data += part
+                        headers, body = data.split(b'\r\n\r\n', 1)
+                        size = next((int(h.split(b':', 1)[1]) for h in headers.split(b'\r\n')
+                                     if h.lower().startswith(b'content-length:')), 0)
+                        while len(body) < size:
+                            part = tls.recv(4096)
+                            if not part:
+                                raise OSError('incomplete fixture request')
+                            body += part
+                        self.application_data.append(headers + b'\r\n\r\n' + body)
                         tls.sendall(self.response)
             except (ssl.SSLError, OSError):
                 raw.close()

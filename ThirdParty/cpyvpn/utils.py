@@ -180,7 +180,7 @@ def make_dns_list(dns_str):
 
 
 # Basic GW info retrieval
-def get_gw_info(url):
+def get_gw_info(url, support_saml=False):
 
     class retdata:
         pass
@@ -198,6 +198,8 @@ def get_gw_info(url):
             }
         }
     }
+    if support_saml:
+        req["CCCclientRequest"]["RequestData"]["client_info"]["client_support_saml"] = "true"
     ret = retdata()
 
     ret.cert_url = "/clients/cert/"

@@ -13,7 +13,7 @@ STAGE="$WORK/$NAME"
 mkdir -p "$STAGE" dist
 ditto --norsrc "$APP" "$STAGE/Corporate VPN Router.app"
 codesign --verify --deep --strict "$STAGE/Corporate VPN Router.app"
-cp README.md LICENSE "$STAGE/"
+cp README.md LICENSE "packaging/Restore beta.1.command" "$STAGE/"
 ditto docs "$STAGE/docs"
 ditto ThirdParty/licenses "$STAGE/Licenses"
 cp ThirdParty/README.md "$STAGE/Licenses/COMPONENTS.md"

@@ -7,7 +7,7 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$BUILD_DIR/module-cach
 export CLANG_MODULE_CACHE_PATH="$BUILD_DIR/module-cache"
 export SWIFT_MODULECACHE_PATH="$BUILD_DIR/module-cache"
 swiftc -D CVR_MENU_BETA -swift-version 5 -O -target arm64-apple-macos13.0 -module-cache-path "$BUILD_DIR/module-cache" \
-  -framework AppKit Sources/{Core,MacOS,Lifecycle,BetaInstall,MenuBeta,main}.swift -o "$APP/Contents/MacOS/CorporateVPNRouter"
+  -framework AppKit Sources/{Core,MacOS,Lifecycle,BetaInstall,MenuComponents,MenuBeta,main}.swift -o "$APP/Contents/MacOS/CorporateVPNRouter"
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -17,7 +17,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleExecutable</key><string>CorporateVPNRouter</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.2.0</string>
-<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleVersion</key><string>3</string>
 <key>LSMinimumSystemVersion</key><string>13.0</string>
 <key>LSUIElement</key><true/>
 <key>NSHighResolutionCapable</key><true/>

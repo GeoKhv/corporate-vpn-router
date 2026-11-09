@@ -290,7 +290,7 @@ class SNXAuth:
         host, port = p.host, p.port
         ssl_ctx.check_ssl_mode(host, port, opts.nocert)
 
-        self.gw_info = gwi = utils.get_gw_info("{}:{}".format(p.host, p.port))
+        self.gw_info = gwi = utils.get_gw_info("{}:{}".format(p.host, p.port), getattr(opts, "support_saml", False))
         self.cert_url, self.cookie_name = gwi.cert_url, gwi.cookie_name
 
     def init(self):
