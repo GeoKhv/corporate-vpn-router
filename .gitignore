@@ -8,3 +8,7 @@ dist/
 config.json
 state.json
 diagnostics*.json
+
+experiments/
+__pycache__/
+*.pyc

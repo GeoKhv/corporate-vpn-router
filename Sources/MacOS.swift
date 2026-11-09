@@ -50,6 +50,7 @@ func readCommand(_ path: String, _ args: [String]) -> String {
     return ""
 }
 
+#if !CVR_MENU_BETA
 final class OwnedSocket {
     let fd: Int32
     private let lock = NSLock()
@@ -213,3 +214,5 @@ final class MacOSAdapter: VPNPlatform {
         throw RouterError.dnsUnavailable
     }
 }
+
+#endif

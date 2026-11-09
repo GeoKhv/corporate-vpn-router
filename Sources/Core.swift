@@ -1,6 +1,6 @@
 import Foundation
 
-let productVersion = "0.1.0-beta.1"
+let productVersion = "0.2.0-beta.1"
 
 enum RouterError: String, Error {
     case unconfigured, invalidConfiguration, vpnUnavailable, dnsUnavailable
@@ -61,6 +61,7 @@ struct Configuration: Codable, Equatable {
     }
 }
 
+#if !CVR_MENU_BETA
 struct Link: Equatable {
     let interface: String
     let index: UInt32
@@ -93,6 +94,8 @@ struct PublicStatus: Codable {
     var generation: UInt64
     // No domains, addresses, username, site, packets or command output.
 }
+
+#endif
 
 enum JSONFile {
     static func write<T: Encodable>(_ value: T, to url: URL) throws {

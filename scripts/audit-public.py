@@ -2,6 +2,8 @@
 """Audit explicit public inputs and ZIP payloads. Private deny patterns never leave this Mac."""
 import argparse
 import re
+import io
+import tarfile
 import subprocess
 import sys
 import zipfile
@@ -24,6 +26,10 @@ failures = []
 def check(name, data):
     if any(s in data.lower() for s in denied) or any(p.search(data) for p in patterns):
         failures.append(name)
+    if name.endswith(('.tar.gz', '.tgz')):
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:gz') as nested:
+            for member in nested:
+                if member.isfile(): check(name + ':' + member.name, nested.extractfile(member).read())
 
 if args.zip:
     with zipfile.ZipFile(args.zip) as archive:

@@ -1,0 +1,8 @@
+{
+  "license_path": "licenses/LICENSE.cpython.txt",
+  "licenses": [
+    "Python-2.0",
+    "CNRI-Python"
+  ],
+  "python_version": "3.13.18"
+}

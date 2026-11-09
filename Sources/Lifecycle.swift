@@ -50,6 +50,7 @@ enum Lifecycle {
         }
     }
 
+    #if !CVR_MENU_BETA
     static func stop(_ paths: ProductPaths) throws {
         try verifyOwnership(paths)
         if running(paths) {
@@ -156,4 +157,5 @@ enum Lifecycle {
             throw error
         }
     }
+    #endif
 }

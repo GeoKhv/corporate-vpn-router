@@ -1,0 +1,7 @@
+Copyright 2020 Nikolay A. Krylov <krylovna |at| gmail |dot| com>
+
+The cpyvpn is a free software package and can be redistributed and/or modified under
+the terms of the GNU General Public License as published by the Free Software Foundation,
+version 3 of the License. For more details, see LICENSE-GPLv3 file.
+
+The GPL v3 license applies to all source files unless stated otherwise inside file header.
