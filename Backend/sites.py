@@ -1,6 +1,5 @@
-"""Private, versioned routing policy shared by the PAC compiler and SOCKS gate."""
-import base64, ipaddress, json, re
-from pathlib import Path
+"""Private, versioned routing policy shared by the HTTP router and SOCKS gate."""
+import re
 
 LABEL = re.compile(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?')
 def hostname(s):
@@ -20,14 +19,3 @@ def gate(cfg):
     validate(cfg)
     tokens = ['!' + x for x in cfg['beforeLogin']] + [('=' if r['scope']=='exact' else '')+r['domain'] for r in cfg['sites']]
     return '|'+ '|'.join(tokens)+'|', '|'+ '|'.join(map(str,cfg['ports']))+'|'
-
-def pac(cfg):
-    validate(cfg)
-    # No DNS calls, HTTP service, lifetime dependency on the menu, or DIRECT alternative on a Work match.
-    return ('function FindProxyForURL(url,host){var h=host.toLowerCase().replace(/\\.+$/,"");'
-        +'var b='+json.dumps(cfg['beforeLogin'],separators=(',',':'))+';if(b.indexOf(h)>=0)return "DIRECT";'
-        +'var r='+json.dumps([[s['domain'],s['scope']=='tree'] for s in cfg['sites']],separators=(',',':'))+';'
-        +'for(var i=0;i<r.length;i++){var d=r[i][0];if(h===d||(r[i][1]&&h.slice(-d.length-1)==="."+d))return "SOCKS5 127.0.0.1:1090";}return "DIRECT";}')
-
-def proxy(cfg):
-    return {'ProxyMode':'pac_script','ProxyPacMandatory':True,'ProxyPacUrl':'data:application/x-ns-proxy-autoconfig;base64,'+base64.b64encode(pac(cfg).encode()).decode()}

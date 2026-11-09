@@ -1,4 +1,12 @@
 # Mac Beta 0.2
+
+## Candidate beta.6
+
+An independent user LaunchAgent runs the loopback HTTP proxy. Chrome reads the effective macOS HTTP and HTTPS settings. Naked TCP sockets use the existing system route for personal traffic. Corporate CONNECT targets go to loopback SOCKS with ATYP=DOMAIN. The supervisor verifies the native listener owner, and the router checks the worker generation on both sides of the SOCKS greeting before disclosing a target name. HTTPS bytes stay opaque. A rule change cancels forwarding tasks and replaces the native SOCKS child on the existing packet FD. Saving waits for local acknowledgement from the router and any active supervisor. The SSL transport remains subject to its existing pin and lifetime rules.
+
+The native setup transaction snapshots each eligible service by ID under the SCPreferences lock. Only an effective global manual proxy permits retirement of the exactly identified beta.5 profile. Restoration compares protocol groups against the installed values. The process supervisor restores service after a crash while the endpoint configured by macOS remains fixed. Network Extensions may publish a different global proxy configuration. An unconfigured primary service can make Chrome choose a direct connection before a user-space observer can react. The system-mode migration on the test Mac has not been accepted.
+
+## Earlier versions
 Chrome Work → SOCKS5 with remote DNS → loopback-only ocproxy → lwIP → Unix datagram socket pair → cpyvpn SLIM over TLS → gateway. The host sees TCP to the validated gateway, never a TUN device, corporate route, or system DNS configuration change. The system resolver is used for the public gateway only. Corporate names are looked up inside the packet tunnel using the first gateway-provided IPv4 resolver.
 
 The managed worker and supervisor use anonymous pipes for credentials/lifetime. Death of the parent closes the downstream proxy. Allowlisted domain suffixes match on DNS label boundaries, before lookup; ports must be explicitly allowed. Raw IP addressing, UDP and public destinations outside the list are refused. This is unauthenticated local SOCKS: other processes on the same Mac can use an active session within its allowlist. Keep the domain list narrow. A hostile local user/process is outside the trust model.

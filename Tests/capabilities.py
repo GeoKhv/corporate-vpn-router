@@ -14,7 +14,7 @@ for case, realms, failure, expected in [
  ('network',[],TimeoutError(),'BROWSER_CAPABILITY_UNKNOWN'),
  ('available',[{'factors':{'0':{'factor_type':'identity_provider'}},'id':'fixture'}],None,'HANDOFF_REACHED')]:
  with tempfile.TemporaryDirectory() as temp:
-  root=Path(temp); (root/'config.json').write_text(json.dumps({'domains':['corp.invalid'],'ports':[443]}))
+  root=Path(temp); (root/'work-sites.json').write_text(json.dumps(dict(version=1,sites=[dict(domain='corp.invalid',scope='exact')],ports=[443],beforeLogin=[])))
   with patch.object(session,'DATA',root),patch.object(session,'RUN',root/'SSL'),patch.object(session,'guard_parent'),patch.object(session.socket,'socket'),patch.object(session,'anchor',return_value=('127.0.0.1',None)) as anchor,patch.object(session,'install_tls_policy'),patch.object(auth,'SNXAuth',side_effect=failure,return_value=SimpleNamespace(gw_info=SimpleNamespace(realms=realms))),patch.object(official_handoff,'prepare',side_effect=Refused('HANDOFF_REACHED')) as prepare,patch.object(sys,'argv',['session.py','--browser']):
    try:session.main()
    except Refused as error:assert str(error)==expected,(case,str(error))

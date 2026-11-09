@@ -18,12 +18,12 @@ enum BetaInstall {
         guard fd >= 0 else{throw RouterError.io};defer{close(fd)}
         guard flock(fd,LOCK_EX|LOCK_NB)==0 else{throw RouterError.staleNetwork}
     }
-    static func beta4(_ paths:ProductPaths)->URL?{
+    static func beta5(_ paths:ProductPaths)->URL?{
         let fm=FileManager.default
         return (try? fm.contentsOfDirectory(at:paths.data,includingPropertiesForKeys:nil))?.first{ url in
             url.lastPathComponent.hasPrefix("rollback-") &&
-            (try? String(contentsOf:url.appendingPathComponent("Contents/Resources/VERSION")).trimmingCharacters(in:.whitespacesAndNewlines))=="0.2.0-beta.4" &&
-            command("/usr/bin/codesign",["--verify","--deep","--strict","-R=cdhash H\"9f36b474a132a4cc2603b321b734d426916f8784\"",url.path],timeout:30).code==0
+            (try? String(contentsOf:url.appendingPathComponent("Contents/Resources/VERSION")).trimmingCharacters(in:.whitespacesAndNewlines))=="0.2.0-beta.5" &&
+            command("/usr/bin/codesign",["--verify","--deep","--strict","-R=cdhash H\"3ca41db3fd8e567a01fab830cbc691434b004b6f\"",url.path],timeout:30).code==0
         }
     }
     static func install(_ paths:ProductPaths)throws{

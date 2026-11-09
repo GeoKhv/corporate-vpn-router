@@ -5,7 +5,19 @@ The policy precedence/installation in the ordinary profile is a separate accepta
 import base64, http.server, json, os, subprocess, sys, tempfile, threading, uuid
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'Backend'))
-from sites import proxy
+from sites import validate
+
+def pac(cfg):
+    validate(cfg)
+    # No DNS calls, HTTP service, lifetime dependency on the menu, or DIRECT alternative on a Work match.
+    return ('function FindProxyForURL(url,host){var h=host.toLowerCase().replace(/\\.+$/,"");'
+        +'var b='+json.dumps(cfg['beforeLogin'],separators=(',',':'))+';if(b.indexOf(h)>=0)return "DIRECT";'
+        +'var r='+json.dumps([[s['domain'],s['scope']=='tree'] for s in cfg['sites']],separators=(',',':'))+';'
+        +'for(var i=0;i<r.length;i++){var d=r[i][0];if(h===d||(r[i][1]&&h.slice(-d.length-1)==="."+d))return "SOCKS5 127.0.0.1:1090";}return "DIRECT";}')
+
+def proxy(cfg):
+    return {'ProxyMode':'pac_script','ProxyPacMandatory':True,'ProxyPacUrl':'data:application/x-ns-proxy-autoconfig;base64,'+base64.b64encode(pac(cfg).encode()).decode()}
+
 chrome='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 seen=[]
 class Origin(http.server.BaseHTTPRequestHandler):

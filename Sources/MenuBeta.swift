@@ -40,7 +40,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         for (title, action) in [("Открыть Corporate VPN Router", #selector(show)), ("Подключить", #selector(toggle)),
-                               ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Обновления…", #selector(updateLink)), ("Вернуться к beta.4…", #selector(rollbackMenu)), ("Удалить Router…", #selector(uninstallMenu)), ("Завершить", #selector(quit))] {
+                               ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Обновления…", #selector(updateLink)), ("Вернуться к beta.5…", #selector(rollbackMenu)), ("Удалить Router…", #selector(uninstallMenu)), ("Завершить", #selector(quit))] {
             let entry = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             entry.target = self
             if action == #selector(toggle) { menuConnect = entry }
@@ -179,7 +179,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         method.isEnabled = engine == nil; primary.isEnabled = !stopping
         primary.isHidden = requestKind == "switch_official"
         echo.isHidden = requestKind == "switch_official"
-        primary.title = engine == nil ? "Подключить" : (health == .ready ? "Отключить" : "Отменить вход")
+        primary.title = engine == nil ? "Подключить" : (health == .ready ? "Отключить рабочий туннель" : "Отменить вход")
         useCode.isHidden = !browserMode || engine != nil || health == .ready
         leaveOfficial.isHidden = requestKind != "switch_official"
         menuConnect.title = primary.title; promptBox.isHidden = requestKind == nil
@@ -275,7 +275,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func connect(){
         let route=Self.routeCommand("status")
-        guard route.code==0 && (route.output.hasPrefix("Расширение") || route.output.hasPrefix("Приложение")), storedWork() != nil else {settings();return}
+        guard route.code==0 && route.output.hasPrefix("Системный прокси") && SystemProxy.effective(), storedWork() != nil else {settings();return}
         generation+=1; stopping=false; findings=[:]; pendingLogin=nil; activeScope=nil; clearPrompt();let g=generation;let p=Process(),rx=Pipe(),tx=Pipe()
         let resources=Bundle.main.resourceURL!
         p.executableURL=resources.appendingPathComponent("Runtime/bin/python3.13")

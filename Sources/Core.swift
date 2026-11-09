@@ -1,6 +1,6 @@
 import Foundation
 
-let productVersion = "0.2.0-beta.5"
+let productVersion = "0.2.0-beta.6"
 
 enum RouterError: String, Error {
     case unconfigured, invalidConfiguration, vpnUnavailable, dnsUnavailable

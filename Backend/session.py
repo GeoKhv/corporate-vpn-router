@@ -167,8 +167,7 @@ class PacketVNA:
         lifetime_read, self.lifetime = os.pipe()
         packet_fd = self.dev.peer.fileno()
         env = {'VPNFD': str(packet_fd), 'INTERNAL_IP4_ADDRESS': self.addr,
-               'INTERNAL_IP4_DNS': ' '.join(self.dns), 'INTERNAL_IP4_MTU': '1400',
-               'CVR_DOMAINS': POLICY[0], 'CVR_PORTS': POLICY[1]}
+               'INTERNAL_IP4_DNS': ' '.join(self.dns), 'INTERNAL_IP4_MTU': '1400'}
         self.proc = subprocess.Popen([sys.executable, '-I', '-B', str(ROOT / 'proxy_supervisor.py'), str(lifetime_read)],
             pass_fds=(packet_fd, lifetime_read), env=env, start_new_session=True,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -282,18 +281,9 @@ def main():
     RUN.mkdir(parents=True,mode=0o700,exist_ok=True)
     lock=(RUN/'instance.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-    from sites import validate, gate
-    global POLICY
+    from sites import validate
     try:
-        profile = DATA/'work-sites.json'
-        if profile.exists():
-            config = validate(json.loads(profile.read_text()))
-        else:
-            old = DATA/'ssl-policy.json'
-            legacy=json.loads((old if old.exists() else DATA/'config.json').read_text())
-            config = {'version':1,'sites':[{'domain':d,'scope':'tree'} for d in legacy['domains']],
-                      'ports':legacy['ports'],'beforeLogin':[]}
-        POLICY=gate(config)
+        validate(json.loads((DATA/'work-sites.json').read_bytes()))
     except (ValueError, TypeError, KeyError, OSError) as e:
         raise Refused('INVALID_DOMAINS') from e
     with socket.socket(socket.AF_INET,socket.SOCK_STREAM) as check:

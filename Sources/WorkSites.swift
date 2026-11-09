@@ -21,15 +21,8 @@ extension BetaMenu {
         guard let res = Bundle.main.resourceURL else { return CommandResult(code:1,output:"Нет встроенного runtime.") }
         let result=command(res.appendingPathComponent("Runtime/bin/python3.13").path,
                        ["-I","-B",res.appendingPathComponent("Engine/routing.py").path,op]+args,timeout:28)
-        if op=="status" && result.code==0 && result.output.hasPrefix("Приложение") {
-            let key="ProxySettings" as CFString,id="com.google.Chrome" as CFString
-            CFPreferencesAppSynchronize(id)
-            let actual=CFPreferencesCopyAppValue(key,id) as? NSDictionary
-            let data=ProductPaths().data.appendingPathComponent("active-proxy.json")
-            let expected=(try? Data(contentsOf:data)).flatMap{try? JSONSerialization.jsonObject(with:$0) as? NSDictionary}
-            guard CFPreferencesAppValueIsForced(key,id), let current=actual, let expected, current.isEqual(expected) else {
-                return CommandResult(code:1,output:"macOS ещё не подтверждает обязательную политику Chrome. Проверьте профиль и chrome://policy.")
-            }
+        if (op=="status" || op=="retire") && result.output.hasPrefix("Системный прокси") && SystemProxy.chromeProxyForced() {
+            return CommandResult(code:1,output:"macOS продолжает применять политику прокси Chrome. Переключение не подтверждено.")
         }
         return result
     }
@@ -57,11 +50,11 @@ extension BetaMenu {
             let row1=NSStackView(views:[p.list,panelButton("Добавить",#selector(newSite)),panelButton("Удалить строку",#selector(removeSite))])
             let row2=NSStackView(views:[p.domain,p.scope,panelButton("В список",#selector(editSite))])
             let row3=NSStackView(views:[p.address,panelButton("Проверить маршрут",#selector(previewRoute))])
-            let row4=NSStackView(views:[panelButton("Приложение…",#selector(appRouting)),panelButton("Расширение…",#selector(extensionRouting)),panelButton("Проверить статус",#selector(routeStatus))])
+            let row4=NSStackView(views:[panelButton("Включить системный прокси…",#selector(appRouting)),panelButton("Вернуть прежние сетевые настройки…",#selector(restoreRouting))])
             let row5=NSStackView(views:[panelButton("Импорт профиля…",#selector(importSites)),panelButton("Сохранить список",#selector(savePolicy))])
             attachColumn(makeColumn([NSTextField(labelWithString:"1. Рабочие сайты · добавьте домен или импортируйте профиль"),row1,row2,
                 NSTextField(labelWithString:"Доступ до входа · точные имена шлюза и авторизации, через запятую"),p.login,
-                row5,row3,p.preview,NSTextField(labelWithString:"2. Кто управляет маршрутами Chrome?"),row4,p.status,settingsNote]),to:w)
+                row5,row3,p.preview,NSTextField(labelWithString:"2. Системный прокси macOS"),row4,p.status,settingsNote]),to:w)
             settingsWindow=w
         }
         routeStatus()
@@ -107,31 +100,78 @@ extension BetaMenu {
         let port=url.port ?? (url.scheme=="http" ? 80:443)
         p.preview.stringValue="По списку: "+(p.draft.beforeLogin.contains(h) ? "доступ до входа · системный маршрут":p.draft.work(h) ? (p.draft.ports.contains(port) ? "рабочий · SOCKS5 внутри SSL":"рабочий · порт запрещён в SOCKS5"):"обычный · системный маршрут")
     }
-    @objc func routeStatus(){let r=Self.routeCommand("status");sitesPanel.status.stringValue=r.output.trimmingCharacters(in:.whitespacesAndNewlines)
-        if r.code==0 && r.output.hasPrefix("Приложение"){sitesPanel.status.stringValue += ". В обычном Chrome откройте chrome://policy → обновите политики. До проверки ProxySettings не отключайте прежнее расширение."}}
+    @objc func routeStatus(){
+        let r=Self.routeCommand("status")
+        let state=r.output.trimmingCharacters(in:.whitespacesAndNewlines)
+        sitesPanel.status.stringValue=state=="Системный прокси" && !SystemProxy.effective() ? "Служба сети не публикует настройки Router. Проверьте режим перед открытием рабочих сайтов." : state
+    }
     func confirmAction(_ title:String,_ msg:String,_ yes:String)->Bool{let a=NSAlert();a.messageText=title;a.informativeText=msg;a.addButton(withTitle:yes);a.addButton(withTitle:"Отмена");return a.runModal() == .alertFirstButtonReturn}
-    func submitDraft(_ op:String){
-        guard engine==nil else{settingsNote.stringValue="Сначала отключите туннель.";return}
+    @objc func savePolicy(){
         if !sitesPanel.domain.stringValue.isEmpty && !editSite(){return}
         readLogin()
         let temp=paths.data.appendingPathComponent("draft-"+UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:temp)}
         do{try JSONFile.write(sitesPanel.draft,to:temp)}catch{settingsNote.stringValue="Не удалось сохранить черновик.";return}
-        let r=Self.routeCommand(op,[temp.path]),message=r.output.trimmingCharacters(in:.whitespacesAndNewlines)
-        if op=="prepare" && r.code==0 {
-            let ok=NSWorkspace.shared.open(URL(fileURLWithPath:message))
-            settingsNote.stringValue=ok ? "Подтвердите профиль Router в Системных настройках → Основные → Управление устройством. Затем нажмите «Проверить статус».":"macOS не открыла профиль."
-        }else{settingsNote.stringValue=message}
+        settingsNote.stringValue=Self.routeCommand("save",[temp.path]).output
         routeStatus()
     }
+    func closeChromeForMigration() throws -> URL? {
+        let apps=NSRunningApplication.runningApplications(withBundleIdentifier:"com.google.Chrome")
+        guard !apps.isEmpty else{return nil}
+        guard let location=apps.first?.bundleURL,
+              apps.allSatisfy({$0.bundleURL==location}),
+              command("/usr/bin/codesign",["--verify","--strict","-R=anchor apple generic and identifier \"com.google.Chrome\" and certificate leaf[subject.OU] = \"EQHXZ8M8AV\"",location.path],timeout:30).code==0
+        else {throw ProxyFailure("Не удалось проверить основное приложение Google Chrome.")}
+        guard apps.allSatisfy({$0.terminate()}) else{throw ProxyFailure("Chrome не подтвердил штатное завершение.")}
+        let until=Date().addingTimeInterval(18)
+        while Date()<until && apps.contains(where:{!$0.isTerminated}) {Thread.sleep(forTimeInterval:0.1)}
+        guard apps.allSatisfy({$0.isTerminated}) else{throw ProxyFailure("Завершение Chrome отменено или браузер ожидает ответа. Прежний профиль сохранён.")}
+        return location
+    }
+    func reopenChrome(_ location:URL?) {
+        guard let location else{return}
+        let options=NSWorkspace.OpenConfiguration()
+        options.arguments=["--restore-last-session"]
+        NSWorkspace.shared.openApplication(at:location,configuration:options){_,_ in}
+    }
     @objc func appRouting(){
-        guard confirmAction("Передать рабочие маршруты приложению?","Только Chrome: обязательный профиль заменит управление расширения во всех профилях этого пользователя. Настройки расширения сохраняются. Остальные сайты идут обычным путём. Ошибка PAC может заблокировать весь Chrome. macOS запросит установку.","Подготовить профиль") else{return};submitDraft("prepare")
+        guard confirmAction("Включить системный прокси macOS?",
+            "Сохраните список рабочих сайтов. Router запустит отдельный фоновый процесс и попросит macOS настроить HTTP и HTTPS для Wi-Fi и Ethernet. Программы, учитывающие системный прокси, также увидят эти настройки. Сохраните формы и загрузки в Chrome. При переходе Router один раз штатно закроет браузер и снова откроет его с восстановлением вкладок.",
+            "Включить") else {return}
+        let preflight=Self.routeCommand("preflight")
+        guard preflight.code==0 else {settingsNote.stringValue=preflight.output;return}
+        do {
+            try SystemProxy.startAgent(paths)
+            try SystemProxy.transact(paths,restore:false)
+            for _ in 0..<30 where !SystemProxy.effective() {Thread.sleep(forTimeInterval:0.1)}
+            guard SystemProxy.effective() else {
+                try SystemProxy.transact(paths,restore:true)
+                throw ProxyFailure("Основная сеть не применила системный прокси. Прежние настройки восстановлены.")
+            }
+            let chrome=try closeChromeForMigration()
+            guard SystemProxy.effective() else {
+                reopenChrome(chrome)
+                throw ProxyFailure("Основная сеть изменилась. Переход остановлен.")
+            }
+            let retired=Self.routeCommand("retire")
+            if SystemProxy.effective() {reopenChrome(chrome)}
+            guard retired.code==0 else {throw ProxyFailure(retired.output)}
+            settingsNote.stringValue="Системный режим включён."
+        } catch {settingsNote.stringValue=error.localizedDescription}
+        routeStatus()
     }
-    @objc func extensionRouting(){
-        guard confirmAction("Вернуть управление расширению?","Удаляется только профиль Router. Проверьте расширение и Work → SOCKS5, прежде чем открывать рабочие сайты: без контроллера Chrome может пойти напрямую.","Вернуть управление") else{return}
-        let r=Self.routeCommand("extension");settingsNote.stringValue=r.output;routeStatus()
+    @objc func restoreRouting(){
+        guard confirmAction("Вернуть прежние сетевые настройки?",
+            "Маршрутизация рабочих сайтов через локальный прокси прекратится. Все программы снова будут использовать настройки соответствующих служб. Чужие изменения останутся в силе.",
+            "Вернуть настройки") else {return}
+        do {
+            try SystemProxy.transact(paths,restore:true)
+            try SystemProxy.stopAgent(paths)
+            settingsNote.stringValue="Прежние сетевые настройки восстановлены."
+        } catch {settingsNote.stringValue=error.localizedDescription}
+        routeStatus()
     }
-    @objc func savePolicy(){if FileManager.default.fileExists(atPath:paths.data.appendingPathComponent("router-profile-receipt.json").path){appRouting()}else{submitDraft("save")}}
+
 }
 
 extension BetaMenu {
@@ -143,13 +183,16 @@ extension BetaMenu {
         return true
     }
     func releaseForMaintenance()->Bool{
-        if FileManager.default.fileExists(atPath:paths.data.appendingPathComponent("router-profile-receipt.json").path){
-            let result=Self.routeCommand("extension")
-            if result.code != 0 {maintenanceError(result.output);return false}
-        };return true
+        do {
+            try SystemProxy.transact(paths,restore:true)
+            try SystemProxy.stopAgent(paths)
+            return true
+        }catch{maintenanceError(error.localizedDescription);return false}
     }
     @objc func uninstallMenu(){
-        guard canMaintain(),confirmAction("Удалить Corporate VPN Router?","Профиль Chrome будет снят. Настройте расширение перед открытием рабочих сайтов. Приложение переместится в Корзину, его автозапуск будет удалён. Приватные данные, логин и копии сохранятся.","Удалить"),releaseForMaintenance() else{return}
+        guard canMaintain(),confirmAction("Удалить Corporate VPN Router?","Прежние сетевые настройки будут восстановлены. Приложение переместится в Корзину, его автозапуск будет удалён. Приватные данные, логин и копии сохранятся.","Удалить"),releaseForMaintenance() else{return}
+        let retired=Self.routeCommand("uninstall-owned")
+        guard retired.code==0 else{maintenanceError(retired.output);return}
         do{
             let plist=try BetaInstall.checkedAgent(paths)
             if FileManager.default.fileExists(atPath:plist.path){try FileManager.default.trashItem(at:plist,resultingItemURL:nil)}
@@ -160,14 +203,19 @@ extension BetaMenu {
     }
     @objc func rollbackMenu(){
         guard canMaintain() else{return}
-        guard let u=BetaInstall.beta4(paths) else{maintenanceError("Резервной копии с подписью опубликованной beta.4 нет. Используйте архив beta.4 со страницы релизов.");return}
-        guard confirmAction("Восстановить beta.4?","Будет снят профиль Router для Chrome. В beta.4 маршрутизацией управляет сохранённое расширение; проверьте его перед открытием рабочих сайтов.","Восстановить"),releaseForMaintenance() else{return}
-        // beta.4 installs its verified copy synchronously. Leave the menu lock
-        // only when the new app is on disk; open after this instance exits.
-        let r=command(u.appendingPathComponent("Contents/MacOS/CorporateVPNRouter").path,["--install"],timeout:90)
-        guard r.code==0 else{maintenanceError("Не удалось восстановить приложение.");return}
-        let p=Process();p.executableURL=URL(fileURLWithPath:"/bin/sh")
-        p.arguments=["-c","while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open \"$2\"","router",String(getpid()),paths.app.path]
-        do{try p.run();NSApp.terminate(nil)}catch{maintenanceError("beta.4 установлена. Завершите Router и откройте его ещё раз.")}
+        guard let u=BetaInstall.beta5(paths) else{maintenanceError("Резервной копии с подписью опубликованной beta.5 нет. Используйте архив beta.5 со страницы релизов.");return}
+        guard confirmAction("Восстановить beta.5?","Для отката потребуется исходный профиль beta.5. После его подтверждения Router вернёт прежние настройки сети и откроет проверенную копию приложения.","Восстановить") else{return}
+        let profile=Self.routeCommand("rollback-profile")
+        guard profile.code==0 else{maintenanceError(profile.output);return}
+        if profile.output.hasPrefix("confirm"){
+            NSWorkspace.shared.open(paths.data.appendingPathComponent("Chrome Work Sites.mobileconfig"))
+            maintenanceError("Подтвердите сохранённый профиль beta.5 в macOS, затем снова выберите откат.")
+            return
+        }
+        guard releaseForMaintenance() else{return}
+        let p=Process()
+        p.executableURL=URL(fileURLWithPath:"/bin/sh")
+        p.arguments=["-c","while kill -0 \"$1\" 2>/dev/null; do sleep 0.2; done; exec /usr/bin/open -n \"$2\"","router",String(getpid()),u.path]
+        do{try p.run();NSApp.terminate(nil)}catch{maintenanceError("Не удалось запустить проверенную копию beta.5.")}
     }
 }

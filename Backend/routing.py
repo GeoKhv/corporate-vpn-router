@@ -1,8 +1,9 @@
-"""Manage one user-scoped macOS configuration profile. Never edit Chrome's profile DB."""
-import json, os, plistlib, subprocess, sys, tempfile, uuid, getpass
+"""Validate private rules and retire only a byte-for-byte owned beta.5 policy."""
+import json, os, plistlib, subprocess, sys, tempfile, fcntl, getpass
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from sites import proxy, validate, hostname
+from sites import validate
+from policy_control import synchronize, HTTP_CONTROL, SOCKS_CONTROL
 DATA=Path.home()/'Library/Application Support/Corporate VPN Router'
 CHROME='com.google.Chrome'
 KEYS={'ProxySettings','ProxyMode','ProxyPacUrl','ProxyServer','ProxyBypassList','ProxyPacMandatory','ProxyOverrideRules','ProxyPolicy'}
@@ -50,14 +51,6 @@ def checked():
 def preference_dirs():
     return (Path.home()/'Library/Preferences',Path('/Library/Preferences'),Path('/Library/Managed Preferences'),Path('/Library/Managed Preferences')/getpass.getuser())
 
-def payload(rec,cfg):
-    inner={'PayloadType':'com.apple.ManagedClient.preferences','PayloadVersion':1,'PayloadIdentifier':rec['id']+'.settings',
-           'PayloadDisplayName':'Google Chrome · рабочие сайты','PayloadUUID':rec['payload'],
-           'PayloadContent':{CHROME:{'Forced':[{'mcx_preference_settings':{'ProxySettings':proxy(cfg)}}]}}}
-    return dict(PayloadIdentifier=rec['id'],PayloadUUID=rec['uuid'],PayloadDisplayName='Corporate VPN Router · Chrome',
-                PayloadDescription='Обязательные правила прокси только в Google Chrome для текущего пользователя.',
-                PayloadOrganization='Corporate VPN Router',PayloadType='Configuration',PayloadScope='User',PayloadVersion=1,PayloadContent=[inner])
-
 def owned_proxy(owned):
     if owned is None:return None
     items=owned.get('ProfileItems',[])
@@ -71,72 +64,125 @@ def owned_proxy(owned):
         except (KeyError,TypeError,IndexError):pass
     raise Conflict('Содержимое установленного профиля изменилось; автоматическая замена запрещена.')
 
-def confirm():
-    rec,owned=checked()
-    actual=owned_proxy(owned)
-    if actual and actual not in rec['issued']:raise Conflict('Политика изменена извне.')
-    candidate=read(PENDING)
-    if candidate and proxy(candidate)==actual:
-        put(WORK,candidate); (DATA/PENDING).unlink()
-    cfg=read(WORK)
-    if actual and cfg and proxy(cfg)==actual and (DATA/PENDING).exists():return 'Ожидается замена профиля; пока действует прежний список'
-    if actual and cfg and proxy(cfg)==actual:
-        if read('active-proxy.json')!=actual:put('active-proxy.json',actual)
-        return 'Приложение · профиль установлен'
-    if actual:raise Conflict('Политика Chrome отличается от рабочих сайтов. Не начинайте сеанс.')
-    if rec:return 'Ожидается установка профиля в настройках macOS'
-    return 'Расширение' if read('routing-mode.json')=='extension' else 'Режим не выбран'
+def migration_check():
+    rec, installed = checked()
+    if installed and owned_proxy(installed) not in rec.get('issued', []):
+        raise Conflict('Содержимое профиля beta.5 отличается от сохранённого.')
+    return rec, installed
 
-def prepare(cfg):
-    cfg=validate(cfg)
-    # A saved exact gateway exception never includes its siblings. Numeric gateways
-    # and the loopback callback cannot match a work domain.
-    site=read('ssl-site.json',{}).get('site')
+
+def verify_gateway(cfg):
+    site = read('ssl-site.json', {}).get('site')
     if not site:
-        try:
-            from trust import official_info
-            site=official_info()[0]
-        except Exception as e:
-            raise Conflict('Не удалось определить шлюз. Проверьте сохранённый сайт в Check Point.') from e
-    if site and any(site==r['domain'] or (r['scope']=='tree' and site.endswith('.'+r['domain'])) for r in cfg['sites']) and site not in cfg['beforeLogin']:
-        raise Conflict('Добавьте имя сохранённого шлюза в «До входа».')
-    rec,owned=checked()
-    if not rec:
-        # System proxies remain unchanged, but DIRECT could bypass one in Chrome.
-        system=subprocess.check_output(['/usr/sbin/scutil','--proxy'],text=True)
-        if any(k+' : 1' in system for k in ('HTTPEnable','HTTPSEnable','ProxyAutoConfigEnable','ProxyAutoDiscoveryEnable','SOCKSEnable')):
-            raise Conflict('В macOS включён другой прокси. Используйте расширение или обратитесь в ИТ.')
-        rec=dict(id='com.geokhv.corporate-vpn-router.chrome.'+str(uuid.uuid4()),uuid=str(uuid.uuid4()).upper(),payload=str(uuid.uuid4()).upper(),issued=[])
-        put('routing-before.json',{'system':system,'priorMode':read('routing-mode.json'),'chromeProfile':'untouched','priorRouterProfile':None})
-    elif owned and owned_proxy(owned) not in rec['issued']: raise Conflict('Существующий профиль изменён.')
-    new=proxy(cfg)
-    if new not in rec['issued']:rec['issued'].append(new)
-    put(R,rec);put(PENDING,cfg);put(FILE,plistlib.dumps(payload(rec,cfg)))
-    return str(DATA/FILE)
+        from trust import official_info
+        site = official_info()[0]
+    if any(site == r['domain'] or (r['scope'] == 'tree' and site.endswith('.'+r['domain']))
+           for r in cfg['sites']) and site not in cfg['beforeLogin']:
+        raise Conflict('Добавьте точное имя шлюза в список доступа до входа.')
 
-def release():
-    rec,owned=checked()
-    if owned:
-        if owned_proxy(owned) not in rec['issued']:raise Conflict('Существующий профиль изменён.')
-        subprocess.run(['/usr/bin/profiles','remove','-type','configuration','-identifier',rec['id'],'-forced'],check=True,timeout=20)
-        if checked()[1]:raise Conflict('macOS ещё не удалила профиль Router.')
-    for name in (PENDING,FILE,R,'active-proxy.json'):
-        (DATA/name).unlink(missing_ok=True)
-    put('routing-mode.json','extension')
-    return 'Расширение · прежние настройки Chrome сохранены'
+
+def retire_profile():
+    rec, installed = migration_check()
+    if installed:
+        subprocess.run(['/usr/bin/profiles','remove','-type','configuration','-identifier',rec['id'],'-forced'],
+                       check=True, timeout=30)
+        if migration_check()[1]:
+            raise Conflict('macOS ещё не сняла профиль beta.5.')
+    # Keep the original receipt and mobileconfig for an explicit beta.5 rollback.
+
+
+def extension_conflict():
+    # A disabled extension retains its files, Sync settings and private profile.
+    root = Path.home()/'Library/Application Support/Google/Chrome'
+    for folder in [root/'Default', *root.glob('Profile *')]:
+        for name in ('Secure Preferences', 'Preferences'):
+            p = folder/name
+            if not p.exists():
+                continue
+            settings = json.loads(p.read_bytes()).get('extensions', {}).get('settings', {})
+            for ext in settings.values():
+                manifest = ext.get('manifest', {})
+                if not manifest and ext.get('location') == 4 and ext.get('path'):
+                    source = Path(ext['path'])/'manifest.json'
+                    if source.is_file():
+                        manifest = json.loads(source.read_bytes())
+                if ('proxy' in manifest.get('permissions', []) and not ext.get('disable_reasons')
+                        and ext.get('state', 1) == 1):
+                    raise Conflict('В Chrome включено расширение с разрешением proxy. Выключите его в списке расширений, сохранив данные.')
+
+
+def save(cfg):
+    cfg = validate(cfg)
+    verify_gateway(cfg)
+    rec, installed = migration_check()
+    if installed and cfg != read(WORK):
+        raise Conflict('Сначала включите системный режим. Пока действует проверенная beta.5.')
+    os.chdir(DATA)
+    with open('policy-save.lock', 'a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        put(WORK, cfg)
+        synchronize(SOCKS_CONTROL)
+        synchronize(HTTP_CONTROL, required=(DATA/'system-proxy.plist').exists())
+    return 'Список сохранён. Новые правила применены.'
+
 
 def main():
-    os.umask(0o077); DATA.mkdir(mode=0o700,parents=True,exist_ok=True)
+    os.umask(0o077)
+    DATA.mkdir(mode=0o700,parents=True,exist_ok=True)
     op=sys.argv[1]
-    if op=='prepare':return prepare(json.loads(Path(sys.argv[2]).read_text()))
-    if op=='status':return confirm()
-    if op=='extension':return release()
     if op=='save':
-        cfg=validate(json.loads(Path(sys.argv[2]).read_text()))
-        if read(R):raise Conflict('Сначала примените профиль через macOS.')
-        put(WORK,cfg);return 'Сохранено'
+        return save(json.loads(Path(sys.argv[2]).read_bytes()))
+    if op=='ready':
+        os.chdir(DATA)
+        synchronize(HTTP_CONTROL, required=True)
+        return 'Готово'
+    if op=='preflight':
+        migration_check()
+        cfg = validate(read(WORK))
+        verify_gateway(cfg)
+        extension_conflict()
+        return 'Готово'
+    if op=='uninstall-owned':
+        retire_profile()
+        return 'Готово'
+    if op=='rollback-profile':
+        rec, installed = migration_check()
+        if installed is None:
+            rollback = read('beta5-sites.json')
+            if not rec or not rollback or not (DATA/FILE).is_file():
+                raise Conflict('Локальная копия профиля beta.5 отсутствует.')
+            return 'confirm'
+        # Only restore a list whose old PAC was verified during migration.
+        original = read('beta5-sites.json')
+        if original:
+            put(WORK, original)
+            os.chdir(DATA)
+            synchronize(SOCKS_CONTROL)
+            synchronize(HTTP_CONTROL)
+        return 'ready'
+    if op=='retire':
+        extension_conflict()
+        _, installed = migration_check()
+        if installed:
+            cfg=validate(read(WORK))
+            if read('active-proxy.json') != owned_proxy(installed):
+                raise Conflict('Не удалось сверить архивную политику beta.5.')
+            put('beta5-sites.json',cfg)
+        retire_profile()
+        put('routing-mode.json','system')
+        return 'Системный прокси'
+    if op=='status':
+        if migration_check()[1]:
+            return 'Установлен профиль beta.5'
+        extension_conflict()
+        return 'Системный прокси' if read('routing-mode.json') == 'system' else 'Режим выключен'
     raise ValueError()
+
+
 if __name__=='__main__':
-    try:print(main())
-    except Conflict as e:print(str(e));sys.exit(1)
-    except Exception:print('Не удалось проверить профиль или выполнить действие. Проверьте права macOS и формат списка.');sys.exit(1)
+    try:
+        print(main())
+    except Conflict as e:
+        print(str(e)); sys.exit(1)
+    except Exception:
+        print('Действие не подтверждено. Проверьте состояние профиля, маршрутизатора и формат списка.'); sys.exit(1)
