@@ -1,10 +1,8 @@
 # Переход, эксплуатация и возврат
 
-## Возврат с beta.2 на beta.1
+## Возврат с beta.3 на beta.2
 
-Выберите «Завершить» в меню Router, затем откройте **Restore beta.1.command** из распакованного архива. Скрипт находит локальную резервную копию, сверяет её подпись с опубликованной beta.1 и устанавливает приложение обратно. Сохраняются правила Work/Life, Sota, pin и настройки Chrome.
-
-Если локальной копии нет, завершите Router и откройте приложение из [Mac-архива beta.1](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.2.0-beta.1/Corporate-VPN-Router-0.2.0-beta.1-macOS-arm64.zip). SHA-256 архива — `fb4dc83159b11045b6091f27da77f70e390e9ad5f5dba2003c5f6dfae08b09fb`.
+Выберите «Завершить» в меню Router, затем откройте **Restore beta.2.command** из распакованного архива. Скрипт проверяет подпись локальной резервной копии опубликованной beta.2 и устанавливает приложение обратно. Сохраняются логины, Work/Life, Sota, pin и настройки Chrome. При отсутствии копии завершите Router и установите приложение из [предыдущего Mac Beta-релиза](https://github.com/GeoKhv/corporate-vpn-router/releases/tag/v0.2.0-beta.2).
 
 ## Возврат к схеме до beta.1
 

@@ -297,11 +297,14 @@ def main():
         try: check.bind(('127.0.0.1',1090))
         except OSError: raise Refused('SOCKS_PORT_OCCUPIED')
     logging.disable(logging.CRITICAL)
+    browser = sys.argv[1:] == ['--browser']
+    if browser:
+        from official_handoff import prepare
+        prepare(request)
     status('verifying_gateway')
     address,context=anchor(approve)
     from cpyvpn import auth,client,utils,ssl_ctx
     install_tls_policy(ssl_ctx,utils,address,context)
-    browser = sys.argv[1:] == ['--browser']
     options=SimpleNamespace(server=address,nocert=False,mode='a',realm='',user='',
         os='Darwin',ct='TRAC',force_logout=False,cookies=None,support_saml=browser)
     session=auth.SNXAuth(options,PrivateUI())

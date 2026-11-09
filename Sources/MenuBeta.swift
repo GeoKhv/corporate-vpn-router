@@ -87,7 +87,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         detail.textColor = .secondaryLabelColor; detail.preferredMaxLayoutWidth = 460
         detail.widthAnchor.constraint(equalToConstant: 460).isActive = true
         let state = NSStackView(views: [statusIcon, label])
-        method.selectedSegment = 0; method.target = self; method.action = #selector(changeMethod)
+        method.selectedSegment = UserDefaults.standard.string(forKey:"lastSuccessfulAuthMethod") == "browser" ? 1 : 0; method.target = self; method.action = #selector(changeMethod)
         edit = NSButton(title: "Изменить", target: self, action: #selector(changeLogin))
         let who = NSStackView(views: [account, edit])
         echo.target = self; echo.action = #selector(changeEcho)
@@ -285,7 +285,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             value = username.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
             guard !value.isEmpty else { return }
             pendingLogin = value
-        case "trust": value = "accept"
+        case "trust", "switch_official": value = "accept"
         default: value = secret.stringValue
         }
         clearPrompt(); refresh(); reply(value)
@@ -332,13 +332,29 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         if let kind = msg["request"] as? String {
             guard p.isRunning, input != nil else { return }
+            if kind == "close_official_gui" {
+                let ok = OfficialGUI.closeIfIdle()
+                if !ok { reply("failed"); return }
+                // Wait without blocking the menu app until the signed GUI has
+                // exited. Never force-kill it or touch a launchd service.
+                let attempt = generation
+                func finish(_ remaining: Int) {
+                    guard self.generation == attempt, !self.stopping else { return }
+                    let running = NSWorkspace.shared.runningApplications.contains { $0.bundleURL?.standardizedFileURL == OfficialGUI.url.standardizedFileURL }
+                    if !running { self.reply("closed") }
+                    else if remaining == 0 { self.reply("failed") }
+                    else { DispatchQueue.main.asyncAfter(deadline:.now()+0.2) { finish(remaining-1) } }
+                }
+                finish(40)
+                return
+            }
             if kind == "browser", browserMode, let raw = msg["url"] as? String, let url = URL(string: raw), url.scheme == "https" {
                 stage = "Вход в браузере"; note = "Подтвердите вход на странице корпоративного провайдера."
                 let ws = NSWorkspace.shared
                 let handler = ws.urlForApplication(toOpen: url)
                 refresh(); reply(ws.open(url) ? (handler?.path ?? "failed") : "failed"); return
             }
-            guard ["trust","username","challenge","secret"].contains(kind) else { stop("Неизвестный запрос шлюза."); return }
+            guard ["trust","username","challenge","secret","switch_official"].contains(kind) else { stop("Неизвестный запрос шлюза."); return }
             if kind == "username" {
                 guard !browserMode, let site = msg["site"] as? String, let pin = msg["pin"] as? String,
                       let realm = msg["realm"] as? String else { stop("Не указан профиль входа."); return }
@@ -351,10 +367,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             }
             requestKind = kind
             promptLabel.stringValue = (kind == "trust" ? "Подтвердите привязку к шлюзу\n" : "") + (msg["prompt"] as? String ?? "")
-            username.isHidden = kind != "username"; secretRow.isHidden = kind == "username" || kind == "trust"
-            submit.title = kind == "trust" ? "Подтвердить" : "Продолжить"
+            username.isHidden = kind != "username"; secretRow.isHidden = ["username","trust","switch_official"].contains(kind)
+            submit.title = kind == "switch_official" ? "Переключиться на Router" : kind == "trust" ? "Подтвердить" : "Продолжить"
             refresh(); if !hiddenByUser { show() }
-            window.makeFirstResponder(kind == "username" ? username : kind == "trust" ? submit : secret)
+            window.makeFirstResponder(kind == "username" ? username : ["trust","switch_official"].contains(kind) ? submit : secret)
             return
         }
         switch msg["stage"] as? String {
@@ -382,6 +398,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         case "socks_starting":
             mark(2,.ready,"SLIM выдал адрес и DNS"); mark(3,.waiting,"проверяется")
         case "connected":
+            UserDefaults.standard.set(browserMode ? "browser" : "otp", forKey:"lastSuccessfulAuthMethod")
             mark(3,.ready,"проверены ответ и владелец"); health = .ready; stage = "Подключено"
             note = "SOCKS5h доступен на 127.0.0.1:1090."
         case "traffic":
@@ -395,7 +412,9 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             clearPrompt()
             let code = msg["code"] as? String ?? ""
             let reasons = ["OFFICIAL_VPN_NOT_IDLE":"Отключите официальный VPN.", "SOCKS_PORT_OCCUPIED":"Порт 1090 занят.",
-                           "BROWSER_PORT_UNAVAILABLE":"Порт возврата 7779 занят. Закройте GUI официального VPN в состоянии Idle или выберите OTP + пароль.",
+                           "BROWSER_PORT_UNAVAILABLE":"Порт возврата 7779 занят другим приложением. Освободите его или выберите OTP + пароль.",
+                           "OFFICIAL_GUI_HANDOFF_FAILED":"Не удалось штатно закрыть GUI Check Point или порт 7779 занят посторонним процессом.",
+                           "OFFICIAL_DISCONNECT_FAILED":"Официальный VPN не подтвердил отключение. Повторите переключение.",
                            "IDP_REALM_NOT_FOUND":"Шлюз не объявил однозначный браузерный способ входа.",
                            "BROWSER_TIMEOUT":"За три минуты браузер не вернул ответ этой попытки.",
                            "BROWSER_PROOF_REJECTED":"Шлюз отклонил ответ браузера для этой попытки.",

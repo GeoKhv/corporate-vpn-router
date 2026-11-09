@@ -18,7 +18,7 @@ def owned(path):
         if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_mode & 0o022:
             raise Refused('UNTRUSTED_OFFICIAL_DIRECTORY')
 
-def site():
+def official_info():
     trac=CP/'trac'
     owned(trac)
     vendor='anchor apple generic and certificate leaf[subject.OU] = "TZ3UEPFYKD" and identifier "trac"'
@@ -29,8 +29,13 @@ def site():
     sites=re.findall(r'^Conn ([a-zA-Z0-9.-]+):\s*\n\s*gw: ([0-9.]+)\s*$',p.stdout.decode(errors='replace'),re.M)
     if p.returncode or len(sites)!=1: raise Refused('OFFICIAL_SITE_AMBIGUOUS')
     statuses=re.findall(r'^\s*status:\s*([^\r\n]+)',p.stdout.decode(errors='replace'),re.M)
-    if [s.strip() for s in statuses]!=['Idle']: raise Refused('OFFICIAL_VPN_NOT_IDLE')
+    if len(statuses)!=1: raise Refused('OFFICIAL_STATE_UNKNOWN')
     host,ip=sites[0]; ip=str(ipaddress.IPv4Address(ip))
+    return host.lower(),ip,statuses[0].strip()
+
+def site():
+    host,ip,state=official_info()
+    if state!='Idle': raise Refused('OFFICIAL_VPN_NOT_IDLE')
     if ip not in {r[4][0] for r in socket.getaddrinfo(host,443,socket.AF_INET,socket.SOCK_STREAM)}:
         raise Refused('SITE_ADDRESS_MISMATCH')
     return host.lower(),ip
