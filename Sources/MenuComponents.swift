@@ -66,28 +66,66 @@ struct AccountBook {
     }
 }
 
-// Draw only a directly typed character, outside the secure editor. The
-// transient glyph is not selectable, copied, or exposed as a label to AX.
-final class EchoGlyph: NSView {
-    private(set) var character: String?
+// AppKit retains its native secure field editor. Only one bullet-sized region
+// inside that editor receives a temporary, non-accessible drawing overlay.
+final class InlineSecureField: NSSecureTextField {
+    private var overlay: SecureCharacterOverlay?
     private var timer: Timer?
-    func hide() {
-        timer?.invalidate()
-        timer = nil
-        character = nil
-        needsDisplay = true
+    private var selectionObserver: NSObjectProtocol?
+    var echoEnabled = true
+
+    func hideEcho() {
+        timer?.invalidate(); timer = nil
+        overlay?.removeFromSuperview(); overlay = nil
+        if let selectionObserver { NotificationCenter.default.removeObserver(selectionObserver) }
+        selectionObserver = nil
     }
-    func typed(_ text: String) {
-        hide()
-        guard text.count == 1, !text.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else { return }
-        character = text
-        needsDisplay = true
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: false) { [weak self] _ in self?.hide() }
+    func showTypedCharacter(event: NSEvent?) {
+        hideEcho()
+        guard echoEnabled, window?.isKeyWindow == true,
+              let event, event.type == .keyDown,
+              ![51,117,114].contains(event.keyCode),
+              event.modifierFlags.intersection([.command,.control,.function]).isEmpty,
+              let typed = event.characters, !typed.isEmpty,
+              !typed.unicodeScalars.contains(where:{CharacterSet.controlCharacters.contains($0)}),
+              let editor = currentEditor() as? NSTextView, !editor.hasMarkedText(),
+              editor.selectedRange().length == 0, editor.selectedRange().location > 0,
+              let layout = editor.layoutManager, let container = editor.textContainer else { return }
+        let text = editor.string as NSString
+        let range = text.rangeOfComposedCharacterSequence(at:editor.selectedRange().location-1)
+        let character = text.substring(with:range)
+        guard character.decomposedStringWithCanonicalMapping.contains(typed.decomposedStringWithCanonicalMapping) else { return }
+        layout.ensureLayout(for:container)
+        let glyphs = layout.glyphRange(forCharacterRange:range, actualCharacterRange:nil)
+        var rect = layout.boundingRect(forGlyphRange:glyphs, in:container)
+        rect.origin.x += editor.textContainerOrigin.x
+        rect.origin.y += editor.textContainerOrigin.y
+        guard rect.width > 0 else { return }
+        let view = SecureCharacterOverlay(frame:rect)
+        view.character = character; view.font = editor.font ?? .systemFont(ofSize:13)
+        view.background = editor.backgroundColor
+        view.foreground = editor.textColor ?? .textColor
+        editor.addSubview(view); overlay = view
+        selectionObserver = NotificationCenter.default.addObserver(forName:NSTextView.didChangeSelectionNotification, object:editor, queue:.main) { [weak self] _ in self?.hideEcho() }
+        timer = Timer.scheduledTimer(withTimeInterval:1, repeats:false) { [weak self] _ in self?.hideEcho() }
     }
+}
+
+private final class SecureCharacterOverlay: NSView {
+    var character = "", font = NSFont.systemFont(ofSize:13)
+    var background = NSColor.textBackgroundColor, foreground = NSColor.textColor
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) {
-        guard let character else { return }
-        (character as NSString).draw(at: NSPoint(x: 3, y: 2), withAttributes: [
-            .foregroundColor: NSColor.labelColor, .font: NSFont.systemFont(ofSize: 14)])
+        background.setFill(); bounds.fill()
+        let size = (character as NSString).size(withAttributes:[.font:font])
+        let scale = min(1, bounds.width / max(size.width,1))
+        NSGraphicsContext.saveGraphicsState()
+        let transform = AffineTransform(scale:scale)
+        (transform as NSAffineTransform).concat()
+        (character as NSString).draw(at:NSPoint(x:0,y:(bounds.height/scale-size.height)/2),
+                                    withAttributes:[.font:font,.foregroundColor:foreground])
+        NSGraphicsContext.restoreGraphicsState()
     }
 }
 

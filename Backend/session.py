@@ -298,22 +298,32 @@ def main():
         except OSError: raise Refused('SOCKS_PORT_OCCUPIED')
     logging.disable(logging.CRITICAL)
     browser = sys.argv[1:] == ['--browser']
-    if browser:
-        from official_handoff import prepare
-        prepare(request)
     status('verifying_gateway')
-    address,context=anchor(approve)
+    # Check real gateway capabilities over the existing pinned TLS policy while
+    # an official session can still be active. No credential or disconnect yet.
+    address,context=anchor(approve, require_idle=False)
     from cpyvpn import auth,client,utils,ssl_ctx
     install_tls_policy(ssl_ctx,utils,address,context)
     options=SimpleNamespace(server=address,nocert=False,mode='a',realm='',user='',
         os='Darwin',ct='TRAC',force_logout=False,cookies=None,support_saml=browser)
-    session=auth.SNXAuth(options,PrivateUI())
+    try:
+        session=auth.SNXAuth(options,PrivateUI())
+    except Exception as error:
+        if browser:
+            raise Refused('BROWSER_CAPABILITY_UNKNOWN') from error
+        raise
     factors = ['identity_provider'] if browser else ['password','password']
     realms = [r for r in session.gw_info.realms if
               [v.get('factor_type') for _,v in sorted(r.get('factors',{}).items())] == factors]
     if len(realms) != 1:
-        raise Refused('IDP_REALM_NOT_FOUND' if browser else 'EXPECTED_TWO_FACTOR_REALM_NOT_FOUND')
+        raise Refused(('BROWSER_NOT_ADVERTISED' if not realms else 'BROWSER_REALM_AMBIGUOUS') if browser else 'EXPECTED_TWO_FACTOR_REALM_NOT_FOUND')
     realm = realms[0]
+    from official_handoff import prepare
+    prepare(request, browser=browser)
+    # Recheck Idle and the same pinned identity following an accepted switch.
+    checked_address,context=anchor(approve)
+    if checked_address != address: raise Refused('SAVED_SITE_OR_PIN_CHANGED')
+    install_tls_policy(ssl_ctx,utils,address,context)
     options.realm = realm['id']
     receipt = json.loads((DATA/'ssl-site.json').read_text())
     status('gateway_verified')

@@ -25,3 +25,15 @@ A foreign Python listener on 7779 survived the attempted Router connection. Rout
 Tests/handoff.py covers Idle, accepted switch, rejected switch, unknown state and GUI failure. Browser callback, strict TLS/pin and AppKit regressions passed. The packet tunnel implementation is unchanged.
 
 The separate beta.3 OTP/password session served the same TLS-verified 302/401/302, with Sota reachable and SOCKS denials 2/2/2/7. After full exit and reinstall, OTP and the scoped username were restored. Reconnect immediately asked for OTP, without asking for a username. Cancel left the successful-method preference intact. The local rollback to the verified published beta.2 and reinstallation of the exact beta.3 ZIP both passed. A final Passkey session from that ZIP again served the corporate endpoints with official Idle. Chrome's mandatory PAC still passed 140 checks for 2 Work and 76 Life.
+
+## Mac Beta 0.2.0-beta.4 · 9 November 2026
+
+Tests/capabilities.py drives the production session entry point with absent IdP realms, ambiguous realms and a network error. All are rejected before calling the official handoff. The native GUI/port capability check also precedes consent and disconnect. Tests/handoff.py verifies consent, refusal and cancellation. TLS/pin and callback regressions pass.
+
+On the installed secure field, test keyboard input showed a temporary character inside its position among the bullets, followed by complete masking after one second. Insertion in the middle, replacing a selection, deleting and pasting a string containing combining accents and an emoji sequence were inspected visually. Paste stayed fully masked. The secure accessibility role remained intact. The focus-dependent auxiliary menu-tests assertion failed during development and was removed from the final test program. It was unrelated to the installed app's process. Direct committed input for every third-party IME was not certified.
+
+A real code/password session reused the saved login and served corporate TLS-verified 302/401/302 while the official client was Idle. Sota remained reachable. SOCKS restrictions returned 2/2/2/7 and the active mandatory Chrome PAC passed 140 checks for 2 Work and 76 Life. The input and preflight changes preserve the existing packet transport.
+
+The rollback helper restored the verified published beta.3. Reinstalling the exact beta.4 ZIP retained the username and last successful code/password choice. The final installed ZIP then completed a new existing-Passkey request in the ordinary Chrome profile. It provided SOCKS5 1090 with corporate TLS-verified 302/401/302, official Idle and three in-tunnel DNS requests/replies. In-app HTTPS diagnostics independently produced verified HTTP 302. Closing diagnostics kept the tunnel up.
+
+Compatibility of older Check Point installations is determined through their validated CLI/configuration and actual gateway capabilities. This Mac's installed client was used for live validation. A matrix of older client releases and all third-party IMEs was not tested.

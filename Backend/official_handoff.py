@@ -5,8 +5,10 @@ import time
 from trust import CP, Refused, official_info
 
 
-def prepare(request):
+def prepare(request, browser=True):
     _, _, state = official_info()
+    if request('check_official_gui', '', check_port=browser) != 'available':
+        raise Refused('BROWSER_LOCAL_UNAVAILABLE' if browser else 'OFFICIAL_GUI_HANDOFF_FAILED')
     if state != 'Idle':
         if state not in ('Connected', 'Connecting', 'Reconnecting'):
             raise Refused('OFFICIAL_STATE_UNKNOWN')
@@ -22,10 +24,12 @@ def prepare(request):
             if time.monotonic() >= deadline:
                 raise Refused('OFFICIAL_DISCONNECT_FAILED')
             time.sleep(.25)
-    if request('close_official_gui', '') != 'closed':
+    if request('close_official_gui', '', check_port=browser) != 'closed':
         raise Refused('OFFICIAL_GUI_HANDOFF_FAILED')
     # Exclusive bind checks availability. The browser handler binds again before
     # issuing UserPass, refusing any intervening contender.
+    if not browser:
+        return
     try:
         with socket.socket() as probe:
             probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

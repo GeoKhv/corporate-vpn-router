@@ -33,9 +33,9 @@ def official_info():
     host,ip=sites[0]; ip=str(ipaddress.IPv4Address(ip))
     return host.lower(),ip,statuses[0].strip()
 
-def site():
+def site(require_idle=True):
     host,ip,state=official_info()
-    if state!='Idle': raise Refused('OFFICIAL_VPN_NOT_IDLE')
+    if require_idle and state!='Idle': raise Refused('OFFICIAL_VPN_NOT_IDLE')
     if ip not in {r[4][0] for r in socket.getaddrinfo(host,443,socket.AF_INET,socket.SOCK_STREAM)}:
         raise Refused('SITE_ADDRESS_MISMATCH')
     return host.lower(),ip
@@ -62,8 +62,8 @@ def accepted(cn,words):
     entries=re.findall(r':\s*\("([^"\n]+)"\s*:--Fingerprint--\s*\("([A-Z ]+)"\)\s*\)',section)
     if entries!=[(cn,words)]: raise Refused('OFFICIAL_PIN_MISMATCH')
 
-def anchor(approve):
-    host,ip=site()
+def anchor(approve, require_idle=True):
+    host,ip=site() if require_idle else site(require_idle=False)
     # Certificate inventory only: stdin is EOF and no application data is sent.
     p=subprocess.run(['/usr/bin/openssl','s_client','-connect',ip+':443','-servername',host,'-showcerts'],
         stdin=subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=12)

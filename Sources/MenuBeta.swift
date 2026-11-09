@@ -9,9 +9,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var item: NSStatusItem!, window: RouterWindow!, diagnostics: RouterWindow!
     let label = NSTextField(labelWithString: ""), detail = NSTextField(wrappingLabelWithString: "")
     let account = NSTextField(labelWithString: ""), statusIcon = NSImageView()
-    let method = NSSegmentedControl(labels: ["OTP + пароль", "Passkey в браузере"], trackingMode: .selectOne, target: nil, action: nil)
+    let method = NSSegmentedControl(labels: ["Код + пароль", "Ключ доступа в браузере"], trackingMode: .selectOne, target: nil, action: nil)
+    let promptTitle = NSTextField(wrappingLabelWithString:"")
+    var leaveOfficial = NSButton(), useCode = NSButton()
     let promptLabel = NSTextField(wrappingLabelWithString: "")
-    let username = NSTextField(), secret = NSSecureTextField(), glyph = EchoGlyph()
+    let username = NSTextField(), secret = InlineSecureField()
     let echo = NSButton(checkboxWithTitle: "Показывать последний символ на секунду", target: nil, action: nil)
     var primary = NSButton(), edit = NSButton(), submit = NSButton(), menuConnect = NSMenuItem()
     var promptBox: NSStackView!, secretRow: NSStackView!
@@ -97,16 +99,18 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             field.widthAnchor.constraint(equalToConstant: 280).isActive = true
         }
         username.placeholderString = "Логин"
-        glyph.widthAnchor.constraint(equalToConstant: 22).isActive = true
-        glyph.heightAnchor.constraint(equalToConstant: 23).isActive = true
-        secretRow = NSStackView(views: [secret, glyph])
+        secretRow = NSStackView(views: [secret])
         submit = NSButton(title: "Продолжить", target: self, action: #selector(answer))
         promptLabel.preferredMaxLayoutWidth = 455
-        promptBox = makeColumn([promptLabel, username, secretRow, submit], spacing: 6)
+        promptTitle.preferredMaxLayoutWidth = 510
+        promptTitle.font = .systemFont(ofSize:19,weight:.semibold)
+        leaveOfficial = NSButton(title:"Оставить Check Point",target:self,action:#selector(leaveCheckPoint))
+        useCode = NSButton(title:"Войти с кодом и паролем",target:self,action:#selector(fallbackToCode))
+        promptBox = makeColumn([promptTitle, promptLabel, username, secretRow, submit, leaveOfficial], spacing:12)
         primary = NSButton(title: "Подключить", target: self, action: #selector(toggle))
         let row = NSStackView(views: [primary, NSButton(title: "Настройки…", target: self, action: #selector(settings)),
                                       NSButton(title: "Диагностика…", target: self, action: #selector(diagnose))])
-        attachColumn(makeColumn([state, detail, method, who, echo, promptBox, row]), to: window)
+        attachColumn(makeColumn([state, detail, method, who, echo, promptBox, useCode, row]), to: window)
     }
     func setupDiagnostics() {
         let title = NSTextField(labelWithString: "Проверки текущего сеанса")
@@ -125,11 +129,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { show(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if sender == window { hiddenByUser = true; glyph.hide() }
+        if sender == window { hiddenByUser = true; secret.hideEcho() }
         sender.orderOut(nil)
         return false
     }
-    func windowDidResignKey(_ n: Notification) { glyph.hide() }
+    func windowDidResignKey(_ n: Notification) { secret.hideEcho() }
     @objc func quit() { NSApp.terminate(nil) }
     func applicationWillTerminate(_ n: Notification) { stop("Приложение завершено.") }
     @objc func changeMethod() { activeScope=nil; refresh() }
@@ -150,27 +154,30 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         refresh()
     }
     @objc func changeEcho() {
-        UserDefaults.standard.set(echo.state == .off, forKey: "disableCharacterEcho"); glyph.hide()
+        UserDefaults.standard.set(echo.state == .off, forKey: "disableCharacterEcho"); secret.hideEcho()
     }
     func controlTextDidChange(_ n: Notification) {
-        glyph.hide()
-        guard n.object as? NSTextField === secret, echo.state == .on, window.isKeyWindow,
-              let event = NSApp.currentEvent, event.type == .keyDown,
-              event.modifierFlags.intersection([.command,.control,.function]).isEmpty,
-              let typed = event.characters, typed.count == 1,
-              let editor = secret.currentEditor() as? NSTextView, !editor.hasMarkedText(),
-              NSMaxRange(editor.selectedRange()) > 0 else { return }
-        let prefix = (editor.string as NSString).substring(to: editor.selectedRange().location)
-        if prefix.hasSuffix(typed) { glyph.typed(typed) }
+        guard n.object as? NSTextField === secret else { return }
+        secret.echoEnabled = echo.state == .on
+        secret.showTypedCharacter(event:NSApp.currentEvent)
     }
-    func controlTextDidEndEditing(_ n: Notification) { glyph.hide() }
+    @objc func leaveCheckPoint() { stop("Официальное подключение сохранено.") }
+    @objc func fallbackToCode() {
+        guard engine == nil else { return }
+        method.selectedSegment = 0; changeMethod(); connect()
+    }
+    func controlTextDidEndEditing(_ n: Notification) { secret.hideEcho() }
     func refresh() {
         label.stringValue = stage; detail.stringValue = note; statusIcon.image = health.dot()
         let who = displayedAccount()
         account.stringValue = "Пользователь · " + (pendingLogin ?? who?.username ?? (browserMode ? "выбирается в браузере" : "не указан"))
         edit.isHidden = who == nil; edit.isEnabled = engine == nil || health == .ready
         method.isEnabled = engine == nil; primary.isEnabled = !stopping
+        primary.isHidden = requestKind == "switch_official"
+        echo.isHidden = requestKind == "switch_official"
         primary.title = engine == nil ? "Подключить" : (health == .ready ? "Отключить" : "Отменить вход")
+        useCode.isHidden = !browserMode || engine != nil || health == .ready
+        leaveOfficial.isHidden = requestKind != "switch_official"
         menuConnect.title = primary.title; promptBox.isHidden = requestKind == nil
         item.button?.image = health.dot()
         item.button?.title = " " + health.menuTitle; item.button?.toolTip = "Corporate VPN Router · " + stage
@@ -258,7 +265,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         else { stop(health == .ready ? "Сеанс завершён." : "Вход отменён.") }
     }
     func clearPrompt() {
-        glyph.hide(); _ = secret.abortEditing(); _ = username.abortEditing(); requestKind = nil; username.stringValue = ""; secret.stringValue = ""
+        secret.hideEcho(); _ = secret.abortEditing(); _ = username.abortEditing(); requestKind = nil; username.stringValue = ""; secret.stringValue = ""
+        promptTitle.stringValue = ""; promptTitle.isHidden = true
         promptLabel.stringValue = ""; promptBox?.isHidden = true
     }
     func stop(_ reason: String) {
@@ -332,8 +340,12 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         if let kind = msg["request"] as? String {
             guard p.isRunning, input != nil else { return }
+            if kind == "check_official_gui" {
+                reply(OfficialGUI.compatible(checkPort:msg["check_port"] as? Bool ?? true) ? "available" : "unavailable")
+                return
+            }
             if kind == "close_official_gui" {
-                let ok = OfficialGUI.closeIfIdle()
+                let ok = OfficialGUI.closeIfIdle(checkPort:msg["check_port"] as? Bool ?? true)
                 if !ok { reply("failed"); return }
                 // Wait without blocking the menu app until the signed GUI has
                 // exited. Never force-kill it or touch a launchd service.
@@ -349,7 +361,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 return
             }
             if kind == "browser", browserMode, let raw = msg["url"] as? String, let url = URL(string: raw), url.scheme == "https" {
-                stage = "Вход в браузере"; note = "Подтвердите вход на странице корпоративного провайдера."
+                stage = "Вход в браузере"; note = "Продолжите вход у провайдера. Личный ключ доступен только настроенным пользователям. Для кода и пароля отмените этот вход."
                 let ws = NSWorkspace.shared
                 let handler = ws.urlForApplication(toOpen: url)
                 refresh(); reply(ws.open(url) ? (handler?.path ?? "failed") : "failed"); return
@@ -368,7 +380,20 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             requestKind = kind
             promptLabel.stringValue = (kind == "trust" ? "Подтвердите привязку к шлюзу\n" : "") + (msg["prompt"] as? String ?? "")
             username.isHidden = kind != "username"; secretRow.isHidden = ["username","trust","switch_official"].contains(kind)
-            submit.title = kind == "switch_official" ? "Переключиться на Router" : kind == "trust" ? "Подтвердить" : "Продолжить"
+            let switching = kind == "switch_official"
+            promptTitle.stringValue = switching ? "Подключить рабочие сайты через это приложение?" : ""
+            promptTitle.isHidden = !switching
+            if switching {
+                stage = "Подтверждение подключения"; note = "Check Point сейчас подключён."
+                promptLabel.stringValue = "Официальный VPN отключится, GUI Check Point закроется и начнётся вход в этом приложении. Рабочие сайты временно потеряют доступ до завершения входа. Внешний VPN продолжит работать."
+            }
+            submit.title = switching ? "Отключить Check Point и продолжить" : kind == "trust" ? "Подтвердить" : "Продолжить"
+            submit.controlSize = switching ? .large : .regular
+            submit.font = .systemFont(ofSize:switching ? 15 : 13,weight:switching ? .semibold : .regular)
+            submit.keyEquivalent = switching ? "\r" : ""
+            submit.bezelStyle = .rounded
+            submit.bezelColor = switching ? .controlAccentColor : nil
+            window.setContentSize(NSSize(width:570,height:switching ? 430 : 410))
             refresh(); if !hiddenByUser { show() }
             window.makeFirstResponder(kind == "username" ? username : ["trust","switch_official"].contains(kind) ? submit : secret)
             return
@@ -411,11 +436,18 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         case "failed":
             clearPrompt()
             let code = msg["code"] as? String ?? ""
+
             let reasons = ["OFFICIAL_VPN_NOT_IDLE":"Отключите официальный VPN.", "SOCKS_PORT_OCCUPIED":"Порт 1090 занят.",
                            "BROWSER_PORT_UNAVAILABLE":"Порт возврата 7779 занят другим приложением. Освободите его или выберите OTP + пароль.",
                            "OFFICIAL_GUI_HANDOFF_FAILED":"Не удалось штатно закрыть GUI Check Point или порт 7779 занят посторонним процессом.",
                            "OFFICIAL_DISCONNECT_FAILED":"Официальный VPN не подтвердил отключение. Повторите переключение.",
-                           "IDP_REALM_NOT_FOUND":"Шлюз не объявил однозначный браузерный способ входа.",
+                           "BROWSER_LOCAL_UNAVAILABLE":"Не удалось подготовить браузерный вход: порт занят или GUI не прошёл проверку. Официальный VPN сохранён. Можно выбрать код и пароль.",
+                           "BROWSER_NOT_ADVERTISED":"Шлюз не предлагает браузерный вход. Можно войти с кодом и паролем.",
+                           "BROWSER_REALM_AMBIGUOUS":"Шлюз предлагает несколько браузерных профилей. Выбор не определён. Можно использовать код и пароль.",
+                           "BROWSER_CAPABILITY_UNKNOWN":"Не удалось проверить возможности браузерного входа. Проверьте сеть или выберите код и пароль.",
+                           "TimeoutError":"Шлюз не ответил вовремя. Возможности входа не проверены.",
+                           "ConnectionRefusedError":"Шлюз недоступен. Возможности входа не проверены.",
+                           "IDP_REALM_NOT_FOUND":"Возможности браузерного входа не определены.",
                            "BROWSER_TIMEOUT":"За три минуты браузер не вернул ответ этой попытки.",
                            "BROWSER_PROOF_REJECTED":"Шлюз отклонил ответ браузера для этой попытки.",
                            "SSL_SESSION_REFUSED":"После авторизации шлюз закрыл SSL-сеанс до готовности SOCKS.",

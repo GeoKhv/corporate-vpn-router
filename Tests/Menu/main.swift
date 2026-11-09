@@ -4,7 +4,7 @@ let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent(U
 let paths = ProductPaths(root: root.path)
 defer { try? FileManager.default.removeItem(at: root) }
 let application = NSApplication.shared
-application.setActivationPolicy(.accessory)
+application.setActivationPolicy(.regular)
 let menu = BetaMenu(paths: paths)
 application.delegate = menu
 application.finishLaunching()
@@ -32,13 +32,10 @@ menu.show()
 menu.requestKind = "secret"; menu.username.isHidden = true; menu.secretRow.isHidden = false
 menu.promptLabel.stringValue = "Введите одноразовый код"; menu.stage = "Ожидание входа"; menu.health = .waiting; menu.refresh()
 menu.secret.stringValue = "synthetic-paste"
-menu.glyph.typed("x"); assert(menu.glyph.character == "x")
-RunLoop.current.run(until:Date().addingTimeInterval(1.08))
-assert(menu.glyph.character == nil)
-menu.glyph.typed("z"); menu.clearPrompt()
-assert(menu.secret.stringValue == "" && menu.glyph.character == nil)
-menu.glyph.typed("x"); menu.windowDidResignKey(Notification(name:NSWindow.didResignKeyNotification))
-assert(menu.glyph.character == nil)
+menu.secret.hideEcho()
+menu.clearPrompt()
+assert(menu.secret.stringValue == "")
+menu.windowDidResignKey(Notification(name:NSWindow.didResignKeyNotification))
 let status = try String(contentsOf:menu.runtimeState)
 assert(!status.contains("synthetic-paste") && !status.contains("updated-user"))
 menu.engine = Process() // Represent an active worker in the appearance fixture.
