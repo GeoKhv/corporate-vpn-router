@@ -1,6 +1,6 @@
 # Системный режим на Mac
 
-Эта инструкция относится к локальному кандидату 0.2.0-beta.6 для Apple Silicon. Приёмка перехода на основном Mac ещё продолжается. Для установленной beta.5 используйте [инструкцию её выпуска](https://github.com/GeoKhv/corporate-vpn-router/blob/v0.2.0-beta.5/docs/COLLEAGUES.ru.md).
+Эта инструкция относится к локальному кандидату 0.2.0-beta.6 для Apple Silicon. На основном Mac с активной Sota проверка выявила несовместимость. Системные параметры основной службы не указывают на Router. На этом Mac сохранена beta.5. Для установленной beta.5 используйте [инструкцию её выпуска](https://github.com/GeoKhv/corporate-vpn-router/blob/v0.2.0-beta.5/docs/COLLEAGUES.ru.md).
 
 ### Включение
 
