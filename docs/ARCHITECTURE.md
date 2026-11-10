@@ -1,12 +1,12 @@
 # Mac Beta 0.2
 
-## Candidate beta.6
+## Mac beta.6: fixed Chrome proxy
 
 Chrome receives one mandatory, user-scoped ProxySettings dictionary: fixed_servers with a single HTTP endpoint at 127.0.0.1:1091. The profile contains no PAC, domain list, bypass list or direct fallback. The app replaces only its own known profile and never edits network-service settings. A one-time restart closes connections opened under the previous policy. A random, expiring HTTP request opened in Chrome must reach the router before setup succeeds. Subsequent domain edits never change Chrome policy.
 
 An independent Aqua LaunchAgent runs the loopback router. Raw TCP follows the existing system route for Life and exact authentication exceptions. Work is sent as a domain (SOCKS ATYP=DOMAIN) to the restricted corporate worker. The router checks the worker generation before and after the SOCKS greeting. HTTPS bytes stay opaque. An edit cancels forwarding tasks, replaces the native SOCKS child on the existing packet FD and waits for the router and any active supervisor. Launchd restarts a crashed router independently of the menu and MFA. Disconnecting the tunnel blocks Work while Life stays available. The Check Point SSL protocol and pin requirements are unchanged.
 
-The earlier system-proxy experiment did not work with the active Sota network service on the test Mac; see VALIDATION.md. It is not part of this candidate.
+The earlier system-proxy experiment did not work with the active Sota network service on the test Mac; see VALIDATION.md. It is not part of the fixed Chrome proxy mode.
 
 ## Earlier versions
 Chrome Work → SOCKS5 with remote DNS → loopback-only ocproxy → lwIP → Unix datagram socket pair → cpyvpn SLIM over TLS → gateway. The host sees TCP to the validated gateway, never a TUN device, corporate route, or system DNS configuration change. The system resolver is used for the public gateway only. Corporate names are looked up inside the packet tunnel using the first gateway-provided IPv4 resolver.
