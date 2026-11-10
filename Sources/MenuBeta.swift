@@ -25,6 +25,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var settingsWindow: RouterWindow?, hiddenByUser = false
     let domainField = NSTextField(), portField = NSTextField(), settingsNote = NSTextField(wrappingLabelWithString: "")
     let sitesPanel=SitesPanel()
+    var enrollmentTimer: Timer?
+    var activated: Bool { FileManager.default.fileExists(atPath: paths.data.appendingPathComponent("chrome-fixed-verified").path) }
     var editScope: LoginScope?
     var checkButton = NSButton(), diagRows = [String:(NSImageView,NSTextField)]()
     let checks = ["Шлюз и pin", "Авторизация", "SSL-туннель", "SOCKS5 · 1090", "DNS в туннеле", "Корпоративный HTTPS"]
@@ -275,7 +277,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func connect(){
         let route=Self.routeCommand("status")
-        guard route.code==0 && route.output.hasPrefix("Системный прокси") && SystemProxy.effective(), storedWork() != nil else {settings();return}
+        guard route.code==0 && route.output.hasPrefix("Chrome ·") && BrowserRouter.effective(), activated, storedWork() != nil else {settings();return}
         generation+=1; stopping=false; findings=[:]; pendingLogin=nil; activeScope=nil; clearPrompt();let g=generation;let p=Process(),rx=Pipe(),tx=Pipe()
         let resources=Bundle.main.resourceURL!
         p.executableURL=resources.appendingPathComponent("Runtime/bin/python3.13")

@@ -1,5 +1,5 @@
 """Validate private rules and retire only a byte-for-byte owned beta.5 policy."""
-import json, os, plistlib, subprocess, sys, tempfile, fcntl, getpass
+import socket, re, hashlib, json, os, plistlib, subprocess, sys, tempfile, fcntl, getpass, uuid
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from sites import validate
@@ -9,7 +9,9 @@ CHROME='com.google.Chrome'
 KEYS={'ProxySettings','ProxyMode','ProxyPacUrl','ProxyServer','ProxyBypassList','ProxyPacMandatory','ProxyOverrideRules','ProxyPolicy'}
 R='router-profile-receipt.json'
 WORK='work-sites.json'
-PENDING='pending-sites.json'
+FIXED={'ProxyMode':'fixed_servers','ProxyServer':'http://127.0.0.1:1091'}
+PROFILE='Chrome Local Router.mobileconfig'
+BACKUP='beta5-routing-backup.json'
 FILE='Chrome Work Sites.mobileconfig'
 class Conflict(Exception): pass
 
@@ -35,6 +37,8 @@ def checked():
     for p in listing:
         if rec and p.get('ProfileIdentifier')==rec['id']:
             if p.get('ProfileUUID','').upper()!=rec['uuid']: raise Conflict('Идентификатор занят чужим профилем.')
+            if owned or p.get('ProfileIsManaged') or p.get('ProfileRemovalDisallowed'):
+                raise Conflict('Управляемый или неоднозначный профиль: обратитесь в ИТ.')
             owned=p
         elif any(k in str(p.get('ProfileItems')) for k in KEYS) and CHROME in str(p.get('ProfileItems')):
             raise Conflict('Прокси Chrome задан другим профилем. Обратитесь в ИТ.')
@@ -91,38 +95,82 @@ def retire_profile():
     # Keep the original receipt and mobileconfig for an explicit beta.5 rollback.
 
 
-def extension_conflict():
-    # A disabled extension retains its files, Sync settings and private profile.
-    root = Path.home()/'Library/Application Support/Google/Chrome'
-    for folder in [root/'Default', *root.glob('Profile *')]:
-        for name in ('Secure Preferences', 'Preferences'):
-            p = folder/name
-            if not p.exists():
-                continue
-            settings = json.loads(p.read_bytes()).get('extensions', {}).get('settings', {})
-            for ext in settings.values():
-                manifest = ext.get('manifest', {})
-                if not manifest and ext.get('location') == 4 and ext.get('path'):
-                    source = Path(ext['path'])/'manifest.json'
-                    if source.is_file():
-                        manifest = json.loads(source.read_bytes())
-                if ('proxy' in manifest.get('permissions', []) and not ext.get('disable_reasons')
-                        and ext.get('state', 1) == 1):
-                    raise Conflict('В Chrome включено расширение с разрешением proxy. Выключите его в списке расширений, сохранив данные.')
+def payload(rec, proxy):
+    settings = {'Forced':[{'mcx_preference_settings':{'ProxySettings':proxy}}]}
+    item = dict(PayloadType='com.apple.ManagedClient.preferences', PayloadVersion=1,
+                PayloadIdentifier=rec['id']+'.settings', PayloadUUID=rec['payload'],
+                PayloadContent={CHROME:settings})
+    return dict(PayloadType='Configuration', PayloadScope='User', PayloadVersion=1,
+                PayloadIdentifier=rec['id'], PayloadUUID=rec['uuid'],
+                PayloadDisplayName='Corporate VPN Router · Chrome',
+                PayloadDescription='Google Chrome использует локальный прокси Corporate VPN Router.',
+                PayloadContent=[item])
+
+
+def prepare():
+    cfg = validate(read(WORK))
+    verify_gateway(cfg)
+    rec, installed = migration_check()
+    current = owned_proxy(installed)
+    if current == FIXED:
+        return 'active'
+    if installed:
+        if current.get('ProxyMode') != 'pac_script' or current != read('active-proxy.json'):
+            raise Conflict('Не удалось подтвердить исходную политику beta.5.')
+        old = plistlib.loads((DATA/FILE).read_bytes())
+        if old.get('PayloadIdentifier') != rec['id'] or old.get('PayloadUUID') != rec['uuid']:
+            raise Conflict('Не совпадает копия профиля для отката.')
+        expected = payload(rec,current)['PayloadContent'][0]
+        items = old.get('PayloadContent',[])
+        if len(items)!=1 or any(items[0].get(k)!=v for k,v in expected.items()):
+            raise Conflict('Локальный профиль для отката отличается от установленного.')
+        if (DATA/'pending-sites.json').exists():
+            raise Conflict('Осталось неподтверждённое изменение beta.5.')
+        put(BACKUP, dict(profileSHA=hashlib.sha256((DATA/FILE).read_bytes()).hexdigest(), policy=current, sites=cfg, receipt={**rec,'issued':[v for v in rec['issued'] if v!=FIXED]}))
+    elif not rec:
+        rec = dict(id='com.geokhv.corporate-vpn-router.chrome.'+str(uuid.uuid4()),
+                   uuid=str(uuid.uuid4()).upper(),payload=str(uuid.uuid4()).upper(),issued=[])
+    if FIXED not in rec['issued']:
+        rec['issued'].append(FIXED)
+        put(R,rec)
+    put(PROFILE, plistlib.dumps(payload(rec,FIXED)))
+    return str(DATA/PROFILE)
+
+
+def rollback():
+    rec, installed = migration_check()
+    backup = read(BACKUP)
+    if not backup or backup['receipt']['id']!=rec.get('id'):
+        raise Conflict('Копия исходного профиля beta.5 отсутствует.')
+    actual = owned_proxy(installed)
+    if hashlib.sha256((DATA/FILE).read_bytes()).hexdigest()!=backup.get('profileSHA'):
+        raise Conflict('Исходный файл профиля beta.5 изменился.')
+    if actual is None or actual == FIXED:
+        return 'confirm'
+    if actual != backup['policy']:
+        raise Conflict('Исходная политика beta.5 ещё не восстановлена.')
+    put(WORK, validate(backup['sites']))
+    os.chdir(DATA)
+    synchronize(SOCKS_CONTROL)
+    synchronize(HTTP_CONTROL)
+    put(R,backup['receipt'])
+    put('active-proxy.json',actual)
+    return 'ready'
 
 
 def save(cfg):
     cfg = validate(cfg)
     verify_gateway(cfg)
     rec, installed = migration_check()
-    if installed and cfg != read(WORK):
-        raise Conflict('Сначала включите системный режим. Пока действует проверенная beta.5.')
+    active = owned_proxy(installed)
+    if installed and active != FIXED and cfg != read(WORK):
+        raise Conflict('Сначала подтвердите постоянный прокси Chrome. Пока действует проверенная beta.5.')
     os.chdir(DATA)
     with open('policy-save.lock', 'a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         put(WORK, cfg)
         synchronize(SOCKS_CONTROL)
-        synchronize(HTTP_CONTROL, required=(DATA/'system-proxy.plist').exists())
+        synchronize(HTTP_CONTROL, required=active == FIXED)
     return 'Список сохранён. Новые правила применены.'
 
 
@@ -132,50 +180,36 @@ def main():
     op=sys.argv[1]
     if op=='save':
         return save(json.loads(Path(sys.argv[2]).read_bytes()))
+    if op in ('challenge','observed'):
+        os.chdir(DATA)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(3)
+            sock.connect(HTTP_CONTROL)
+            sock.sendall(b'N' if op=='challenge' else b'V')
+            with sock.makefile('rb') as incoming:
+                answer=incoming.read(64).decode()
+        if op=='observed' and answer=='1':
+            return 'observed'
+        if op=='challenge' and re.fullmatch(r'[0-9a-f]{40}',answer):
+            return 'http://router-check.invalid/'+answer
+        raise Conflict('Запрос основного Chrome пока не наблюдался.')
     if op=='ready':
         os.chdir(DATA)
         synchronize(HTTP_CONTROL, required=True)
         return 'Готово'
-    if op=='preflight':
-        migration_check()
-        cfg = validate(read(WORK))
-        verify_gateway(cfg)
-        extension_conflict()
-        return 'Готово'
+    if op=='prepare':
+        return prepare()
+    if op=='rollback-profile':
+        return rollback()
     if op=='uninstall-owned':
         retire_profile()
         return 'Готово'
-    if op=='rollback-profile':
-        rec, installed = migration_check()
-        if installed is None:
-            rollback = read('beta5-sites.json')
-            if not rec or not rollback or not (DATA/FILE).is_file():
-                raise Conflict('Локальная копия профиля beta.5 отсутствует.')
-            return 'confirm'
-        # Only restore a list whose old PAC was verified during migration.
-        original = read('beta5-sites.json')
-        if original:
-            put(WORK, original)
-            os.chdir(DATA)
-            synchronize(SOCKS_CONTROL)
-            synchronize(HTTP_CONTROL)
-        return 'ready'
-    if op=='retire':
-        extension_conflict()
-        _, installed = migration_check()
-        if installed:
-            cfg=validate(read(WORK))
-            if read('active-proxy.json') != owned_proxy(installed):
-                raise Conflict('Не удалось сверить архивную политику beta.5.')
-            put('beta5-sites.json',cfg)
-        retire_profile()
-        put('routing-mode.json','system')
-        return 'Системный прокси'
     if op=='status':
-        if migration_check()[1]:
-            return 'Установлен профиль beta.5'
-        extension_conflict()
-        return 'Системный прокси' if read('routing-mode.json') == 'system' else 'Режим выключен'
+        _, installed = migration_check()
+        proxy = owned_proxy(installed)
+        if proxy == FIXED:
+            return 'Chrome · локальный прокси'
+        return 'Профиль beta.5' if installed else 'Профиль Chrome не установлен'
     raise ValueError()
 
 

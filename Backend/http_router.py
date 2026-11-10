@@ -6,6 +6,8 @@ import fcntl
 import ipaddress
 import json
 import re
+import secrets
+import time
 import struct
 import sys
 from pathlib import Path
@@ -99,6 +101,8 @@ class Router:
         self.config = None
         self.stamp = None
         self.clients = set()
+        self.challenge = None
+        self.witness = False
 
     def refresh(self):
         try:
@@ -120,6 +124,15 @@ class Router:
         try:
             command = await asyncio.wait_for(reader.readexactly(1), 2)
         except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError):
+            writer.close()
+            return
+        if command in (b'N', b'V'):
+            if command == b'N':
+                self.challenge = (secrets.token_hex(20), time.monotonic()+90)
+                self.witness = False
+                writer.write(self.challenge[0].encode())
+            else:
+                writer.write(b'1' if self.witness else b'0')
             writer.close()
             return
         if command != b'S':
@@ -168,6 +181,17 @@ class Router:
                 host_headers = [v for k, v in headers if k == b'host']
                 if len(host_headers) != 1 or authority(host_headers[0].decode('ascii'), 80) != (host, port):
                     raise ValueError()
+            if host == 'router-check.invalid':
+                if not (not connect and method == 'GET' and port == 80 and self.challenge
+                        and u.path == '/' + self.challenge[0] and not u.query
+                        and time.monotonic() < self.challenge[1]):
+                    raise OSError('no browser challenge')
+                # The random token is handed only to the installed Chrome through LaunchServices.
+                self.challenge = None
+                self.witness = True
+                body = 'Corporate VPN Router: Chrome использует локальный прокси.'.encode()
+                writer.write(b'HTTP/1.1 200 OK\r\nCache-Control: no-store\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: '+str(len(body)).encode()+b'\r\nConnection: close\r\n\r\n'+body)
+                return
             self.refresh()
             cfg = self.config
             if not cfg:
@@ -254,18 +278,46 @@ class Router:
         raise OSError('direct connection failed')
 
 
-async def main():
+def launchd_listener():
+    # launchd retains its own descriptor through SIGKILL/relaunch; the port cannot
+    # be taken by a different listener between generations.
+    import ctypes as c
+    lib = c.CDLL(None)
+    fds = c.POINTER(c.c_int)()
+    count = c.c_size_t()
+    activate = lib.launch_activate_socket
+    activate.argtypes = [c.c_char_p, c.POINTER(c.POINTER(c.c_int)), c.POINTER(c.c_size_t)]
+    error = activate(b'Listener', c.byref(fds), c.byref(count))
+    if error:
+        raise OSError(error, 'launchd socket activation failed')
+    try:
+        if count.value != 1:
+            for i in range(count.value):
+                os.close(fds[i])
+            raise OSError('unexpected listeners')
+        listener = socket.socket(fileno=fds[0])
+    finally:
+        lib.free(c.cast(fds, c.c_void_p))
+    if listener.family != socket.AF_INET or listener.getsockname() != (ADDRESS, PORT):
+        listener.close()
+        raise OSError('unexpected listen address')
+    listener.setblocking(False)
+    return listener
+
+
+async def main(launchd=False):
     os.umask(0o077)
     os.chdir(DATA)
     lock = open('http-router.lock','a')
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     router = Router(DATA / 'work-sites.json')
     router.refresh()
-    server = await asyncio.start_server(router.handle, ADDRESS, PORT, limit=LIMIT)
+    server = (await asyncio.start_server(router.handle, sock=launchd_listener(), limit=LIMIT) if launchd
+              else await asyncio.start_server(router.handle, ADDRESS, PORT, limit=LIMIT))
     control = await asyncio.start_unix_server(router.confirm, sock=bind_control(HTTP_CONTROL))
     async with server, control:
         await asyncio.gather(router.watch(), server.serve_forever(), control.serve_forever())
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    asyncio.run(main(launchd=sys.argv[1:]==['--launchd']))

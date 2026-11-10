@@ -1,5 +1,5 @@
 """Verify migrations cannot remove foreign/modified policies or silently enable an extension."""
-import copy, json, os, sys, tempfile
+import copy, plistlib, json, os, sys, tempfile
 from pathlib import Path
 from unittest.mock import patch
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'Backend'))
@@ -29,6 +29,26 @@ with tempfile.TemporaryDirectory() as tmp, patch.object(r,'DATA',Path(tmp)),patc
         listed[0]['ProfileItems'][0]['PayloadContent']['extra']={}
         denied(r.retire_profile)
         listed[0]=copy.deepcopy(record)
+        old_proxy=receipt['issued'][0]
+        r.put('active-proxy.json',old_proxy)
+        raw=plistlib.dumps(r.payload(receipt,old_proxy));r.put(r.FILE,raw)
+        generated=Path(r.prepare())
+        fixed=plistlib.loads(generated.read_bytes())
+        assert fixed['PayloadUUID']==receipt['uuid'] and b'work.example' not in generated.read_bytes()
+        assert fixed['PayloadContent'][0]['PayloadContent'][r.CHROME]['Forced'][0]['mcx_preference_settings']=={'ProxySettings':r.FIXED}
+        changed=copy.deepcopy(cfg);changed['sites'].append({'domain':'new.example','scope':'exact'})
+        denied(lambda:r.save(changed))
+        listed[0]['ProfileItems']=fixed['PayloadContent']
+        assert r.prepare()=='active' and r.rollback()=='confirm'
+        with patch.object(r,'synchronize') as sync:
+            r.save(changed)
+            assert sync.call_args_list[-1].args==(r.HTTP_CONTROL,) and sync.call_args_list[-1].kwargs=={'required':True}
+        assert generated.read_bytes()==plistlib.dumps(fixed) and r.read(r.WORK)==changed
+        r.put(r.FILE,raw+b' ');denied(r.rollback)
+        r.put(r.FILE,raw);listed[0]=copy.deepcopy(record)
+        assert r.rollback()=='ready' and r.read(r.WORK)==cfg and r.read(r.R)==receipt
+        listed[0]['ProfileRemovalDisallowed']=True;denied(r.prepare)
+        listed[0]=copy.deepcopy(record)
         r.retire_profile()
         assert listed==[{'ProfileIdentifier':'foreign-safe'}] and r.read(r.R)==receipt
         assert r.save(cfg) and r.read(r.WORK)==cfg
@@ -37,4 +57,4 @@ with tempfile.TemporaryDirectory() as tmp, patch.object(r,'DATA',Path(tmp)),patc
         listed.append({'ProfileIdentifier':'IT','ProfileItems':[{'PayloadType':'com.google.Chrome','ProxyMode':'fixed_servers'}]})
         denied(r.migration_check)
     os.chdir(old)
-print('PASS exact beta.5 retirement, preserve rollback and foreign profile, reject changed policy and missing gateway exception.')
+print('PASS fixed profile replacement, immediate edits, verified rollback, exact beta.5 retirement, preserve rollback and foreign profile, reject changed policy and missing gateway exception.')
