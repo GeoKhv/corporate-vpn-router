@@ -103,7 +103,11 @@ extension BetaMenu {
     @objc func routeStatus(){
         let r=Self.routeCommand("status")
         let state=r.output.trimmingCharacters(in:.whitespacesAndNewlines)
-        sitesPanel.status.stringValue=state
+        if r.code==0 && state.hasPrefix("Chrome ·") {
+            sitesPanel.status.stringValue = Self.routeCommand("ready").code==0
+              ? (activated ? "Chrome · постоянный прокси подтверждён, маршрутизатор готов." : "Профиль установлен. Ожидается проверка из Chrome.")
+              : "Профиль установлен, но маршрутизатор пока не отвечает."
+        }else{sitesPanel.status.stringValue=state}
     }
     func confirmAction(_ title:String,_ msg:String,_ yes:String)->Bool{let a=NSAlert();a.messageText=title;a.informativeText=msg;a.addButton(withTitle:yes);a.addButton(withTitle:"Отмена");return a.runModal() == .alertFirstButtonReturn}
     @objc func savePolicy(){
@@ -170,7 +174,9 @@ extension BetaMenu {
         }catch{settingsNote.stringValue=error.localizedDescription}
     }
     @objc func appRouting(){
-        if BrowserRouter.effective() && activated {routeStatus();return}
+        if BrowserRouter.effective() && activated {
+            do{try BrowserRouter.startAgent(paths);routeStatus()}catch{settingsNote.stringValue=error.localizedDescription};return
+        }
         guard confirmAction("Настроить постоянный прокси Chrome?", "Сохраните незавершённые формы и загрузки. После подтверждения профиля в macOS Router один раз перезапустит обычный Chrome и откроет страницу проверки. Список сайтов останется только в приложении.", "Продолжить") else{return}
         do {
             try BrowserRouter.startAgent(paths)
@@ -228,6 +234,7 @@ extension BetaMenu {
             maintenanceError("Подтвердите сохранённый профиль beta.5 в macOS, затем снова выберите откат.")
             return
         }
+        guard BrowserRouter.restored(paths) else{maintenanceError("macOS ещё не применила исходную политику beta.5. Маршрутизатор продолжает работать.");return}
         do {let location=try closeChromeForMigration();reopenChrome(location)} catch {maintenanceError(error.localizedDescription);return}
         try? FileManager.default.removeItem(at:paths.data.appendingPathComponent("chrome-fixed-verified"))
         guard releaseForMaintenance() else{return}

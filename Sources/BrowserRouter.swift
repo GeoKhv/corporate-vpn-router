@@ -9,12 +9,22 @@ struct ProxyFailure: LocalizedError {
 
 enum BrowserRouter {
     static let label = "com.geokhv.corporate-vpn-router.http"
-    static func effective() -> Bool {
+    static func forcedProxy() -> NSDictionary? {
         let chrome="com.google.Chrome" as CFString, key="ProxySettings" as CFString
         CFPreferencesAppSynchronize(chrome)
         let proxy=CFPreferencesCopyAppValue(key,chrome) as? NSDictionary
-        return CFPreferencesAppValueIsForced(key,chrome) && proxy?.isEqual(to:[
+        return CFPreferencesAppValueIsForced(key,chrome) ? proxy : nil
+    }
+    static func effective() -> Bool {
+        return forcedProxy()?.isEqual(to:[
             "ProxyMode":"fixed_servers","ProxyServer":"http://127.0.0.1:1091"]) == true
+    }
+    static func restored(_ paths:ProductPaths) -> Bool {
+        let url=paths.data.appendingPathComponent("active-proxy.json")
+        guard let data=try? Data(contentsOf:url),
+              let old=try? JSONSerialization.jsonObject(with:data) as? [String:Any],
+              old["ProxyMode"] as? String=="pac_script" else{return false}
+        return forcedProxy()?.isEqual(to:old)==true
     }
     static func agentSpec(_ p:ProductPaths)->[String:Any] {
         let resources=p.app.appendingPathComponent("Contents/Resources")
