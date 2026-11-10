@@ -125,7 +125,7 @@ extension BetaMenu {
         guard !apps.isEmpty else{return nil}
         guard let location=apps.first?.bundleURL,
               apps.allSatisfy({$0.bundleURL==location}),
-              command("/usr/bin/codesign",["--verify","--strict","-R=anchor apple generic and identifier \"com.google.Chrome\" and certificate leaf[subject.OU] = \"EQHXZ8M8AV\"",location.path],timeout:30).code==0
+              command("/usr/bin/codesign",["--verify","--strict=symlinks","-R=anchor apple generic and identifier \"com.google.Chrome\" and certificate leaf[subject.OU] = \"EQHXZ8M8AV\"",location.path],timeout:30).code==0
         else {throw ProxyFailure("Не удалось проверить основное приложение Google Chrome.")}
         guard apps.allSatisfy({$0.terminate()}) else{throw ProxyFailure("Chrome не подтвердил штатное завершение.")}
         let until=Date().addingTimeInterval(18)

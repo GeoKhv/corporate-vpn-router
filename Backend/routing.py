@@ -102,7 +102,7 @@ def payload(rec, proxy):
                 PayloadContent={CHROME:settings})
     return dict(PayloadType='Configuration', PayloadScope='User', PayloadVersion=1,
                 PayloadIdentifier=rec['id'], PayloadUUID=rec['uuid'],
-                PayloadDisplayName='Corporate VPN Router · Chrome',
+                PayloadDisplayName='Corporate VPN Router · beta.6 · Локальный прокси Chrome',
                 PayloadDescription='Google Chrome использует локальный прокси Corporate VPN Router.',
                 PayloadContent=[item])
 
