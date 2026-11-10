@@ -226,7 +226,7 @@ extension BetaMenu {
     @objc func rollbackMenu(){
         guard canMaintain() else{return}
         guard let u=BetaInstall.beta5(paths) else{maintenanceError("Резервной копии с подписью опубликованной beta.5 нет. Используйте архив beta.5 со страницы релизов.");return}
-        guard confirmAction("Восстановить beta.5?","Для отката потребуется исходный профиль beta.5. После его подтверждения Router восстановит исходный список и откроет проверенную копию приложения.","Восстановить") else{return}
+        guard confirmAction("Восстановить beta.5?","Сохраните формы и дождитесь загрузок в Chrome. После подтверждения исходного профиля в macOS Router перезапустит Chrome, восстановит прежний список сайтов и откроет проверенную копию beta.5.","Восстановить") else{return}
         let profile=Self.routeCommand("rollback-profile")
         guard profile.code==0 else{maintenanceError(profile.output);return}
         if profile.output.hasPrefix("confirm"){
