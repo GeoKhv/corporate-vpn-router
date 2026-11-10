@@ -133,11 +133,10 @@ extension BetaMenu {
         guard apps.allSatisfy({kill($0.processIdentifier,0) != 0}) else{throw ProxyFailure("Завершение Chrome отменено или браузер ожидает ответа. Прежний профиль сохранён.")}
         return location
     }
-    func reopenChrome(_ location:URL?) {
+    func reopenChrome(_ location:URL?) throws {
         guard let location else{return}
-        let options=NSWorkspace.OpenConfiguration()
-        options.arguments=["--restore-last-session"]
-        NSWorkspace.shared.openApplication(at:location,configuration:options){_,_ in}
+        guard command("/usr/bin/open",["-a",location.path,"--args","--restore-last-session"],timeout:30).code==0
+        else {throw ProxyFailure("macOS не смогла вновь открыть Chrome с сохранёнными вкладками.")}
     }
     func waitForProfile(){
         enrollmentTimer?.invalidate()
@@ -154,22 +153,17 @@ extension BetaMenu {
             guard Self.routeCommand("status").output.hasPrefix("Chrome ·") else{throw ProxyFailure("Профиль ещё не подтверждён.")}
             let location=try closeChromeForMigration() ?? URL(fileURLWithPath:"/Applications/Google Chrome.app")
             let r=Self.routeCommand("challenge")
-            guard r.code==0,let url=URL(string:r.output.trimmingCharacters(in:.whitespacesAndNewlines)),url.host=="router-check.invalid" else{reopenChrome(location);throw ProxyFailure("Маршрутизатор не подтвердил начало проверки.")}
-            let options=NSWorkspace.OpenConfiguration();options.arguments=["--restore-last-session"]
-            NSWorkspace.shared.open([url],withApplicationAt:location,configuration:options){[weak self] _,err in
-                DispatchQueue.main.async {
-                    guard let self=self else{return}
-                    if err != nil {self.settingsNote.stringValue="Не удалось открыть основной Chrome.";return}
-                    let until=Date().addingTimeInterval(55)
-                    self.enrollmentTimer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){[weak self] t in
-                        guard let self=self else{t.invalidate();return}
-                        if Self.routeCommand("observed").code==0 && BrowserRouter.effective(){
-                            t.invalidate()
-                            do{try JSONFile.write(true,to:self.paths.data.appendingPathComponent("chrome-fixed-verified"));self.settingsNote.stringValue="Маршрут подтверждён запросом из Chrome. Можно подключить рабочий туннель и менять список."}
-                            catch{self.settingsNote.stringValue="Не удалось сохранить результат проверки."}
-                        }else if Date()>until {t.invalidate();self.settingsNote.stringValue="Запрос Chrome не пришёл через Router. Рабочий режим не подтверждён; доступен откат."}
-                    }
-                }
+            guard r.code==0,let url=URL(string:r.output.trimmingCharacters(in:.whitespacesAndNewlines)),url.host=="router-check.invalid" else{try reopenChrome(location);throw ProxyFailure("Маршрутизатор не подтвердил начало проверки.")}
+            try reopenChrome(location)
+            guard command("/usr/bin/open",["-a",location.path,url.absoluteString],timeout:30).code==0 else{throw ProxyFailure("Не удалось открыть страницу проверки в основном Chrome.")}
+            let until=Date().addingTimeInterval(55)
+            self.enrollmentTimer=Timer.scheduledTimer(withTimeInterval:1,repeats:true){[weak self] t in
+                guard let self=self else{t.invalidate();return}
+                if Self.routeCommand("observed").code==0 && BrowserRouter.effective(){
+                    t.invalidate()
+                    do{try JSONFile.write(true,to:self.paths.data.appendingPathComponent("chrome-fixed-verified"));self.settingsNote.stringValue="Маршрут подтверждён запросом из Chrome. Можно подключить рабочий туннель и менять список."}
+                    catch{self.settingsNote.stringValue="Не удалось сохранить результат проверки."}
+                }else if Date()>until {t.invalidate();self.settingsNote.stringValue="Запрос Chrome не пришёл через Router. Рабочий режим не подтверждён; доступен откат."}
             }
         }catch{settingsNote.stringValue=error.localizedDescription}
     }
@@ -235,7 +229,7 @@ extension BetaMenu {
             return
         }
         guard BrowserRouter.restored(paths) else{maintenanceError("macOS ещё не применила исходную политику beta.5. Маршрутизатор продолжает работать.");return}
-        do {let location=try closeChromeForMigration();reopenChrome(location)} catch {maintenanceError(error.localizedDescription);return}
+        do {let location=try closeChromeForMigration();try reopenChrome(location)} catch {maintenanceError(error.localizedDescription);return}
         try? FileManager.default.removeItem(at:paths.data.appendingPathComponent("chrome-fixed-verified"))
         guard releaseForMaintenance() else{return}
         let p=Process()
