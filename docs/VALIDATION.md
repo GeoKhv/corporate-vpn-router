@@ -122,3 +122,81 @@ approval, a fresh physical user login, and another Mac/macOS version were not
 tested. No security protection was disabled. See [DMG.md](DMG.md) for the local
 build, install layout and remaining limitations; beta.5 profile rollback remains
 the existing, separately confirmed app workflow.
+
+## Installer correction · 11 November 2026
+
+The reported post-approval generic alert came from `Sources/main.swift` on a
+*different* Mac. That machine and its failing process/error state were not
+available. The message discarded the underlying error, so it cannot establish
+Gatekeeper, an old installation, or any particular filesystem failure as the
+cause of that incident. The current Mac has the correctly signed published
+beta.6 at the canonical user path, no system-wide duplicate, valid menu/HTTP
+LaunchAgents, and a connected session. Those observations do not diagnose the
+other Mac.
+
+Code inspection confirmed that the original menu installer discarded ditto and
+codesign stderr, released the menu lock before replacing files, and did not undo
+the app replacement if writing its LaunchAgent failed. The distribution shell
+executed the nested original installer and depended on a sibling bundle for its
+secondary drop target. Both paths made diagnosis and quarantined/translocated
+launch fragile. The correction shares one transaction, keeps the menu lock,
+restores the app on a post-placement login-item failure, preserves existing
+agent bytes, captures both command streams, resolves its bundle independently
+of argv[0], and separates installation from native launch confirmation.
+
+The installer-fix.1 candidate passed non-root integration checks in a disposable
+home on macOS 27.0.1 arm64:
+
+- Empty-home install, exact payload inventory and deep strict signature.
+- Actual menu startup, duplicate exclusion and refusal to replace a running app.
+- A real Aqua launchd login job with a unique disposable label and isolated home.
+- Rejection of a foreign login plist and a tampered payload before replacement.
+- Actual LaunchAgents-directory permission denial after app replacement, with
+  the exact previous app restored and no new rollback leftover.
+- Update from the exact original beta.6 embedded in the old read-only DMG;
+  exact backup, synthetic sites/accounts/profile data preserved, customized
+  disabled RunAtLoad bytes preserved, one canonical app and one login plist.
+- Restoration and launch of that original backup.
+- All 83 existing project checks passed.
+
+Two extracted writable test copies of the original ZIP acquired FinderInfo and
+were rejected by strict codesign (`resource fork, Finder information, or similar
+detritus not allowed`). No attributes were stripped. The update test instead
+used the exact hash-verified original app on the old read-only DMG. This is a
+specific observed verification error, not proof of the other Mac's incident.
+
+On the real connected home, the corrected installer refused with the busy-lock
+message and errno 35. The application and persistent settings matched preflight
+SHA-256 values; menu PID 99095 and HTTP PID 99092 were unchanged, and the tunnel
+still reported connected. Chrome and Sota were not restarted or reconfigured.
+
+Native quarantine checks used Safari to download the exact candidate bytes from
+an HTTP server bound only to 127.0.0.1. The download had Safari quarantine
+`0083`, and DiskImageMounter mounted it with the `quarantine` flag. Gatekeeper
+blocked the installer and the installed app until the user individually approved
+them in Privacy & Security. Nothing stripped quarantine or disabled protection.
+
+After approval, the application ran under a real App Translocation path in an
+empty disposable home, held that home's menu lock and reported disconnected.
+Its strict signature passed; its quarantine remained present (`00c3`, macOS's
+user-approved state). The same installed path was then restored to the exact
+published beta.6 and updated again from the Safari-downloaded image. The old
+bundle was backed up exactly, synthetic sites/accounts/profile settings and a
+customized disabled login agent stayed byte-identical, and the updated app
+launched under App Translocation after macOS's new per-file approval.
+
+This native test exposed an additional shell bug: NSWorkspace may return a
+process that is still suspended by Gatekeeper. Testing isTerminated after two
+seconds could report success before the user rejected launch. The final shell
+waits for isFinishedLaunching, detects termination and has a 30-second timeout
+with an explicit installed-path/permission message. The final image has SHA-256
+`faa89825703a37a64a546351089313def91b6a10cc5374f120a6bdeb4f15279c`;
+the payload CDHash remains `13f2a4efffe657f303fa79a3d6f5e7105c3e0248`,
+identical to the app that passed native first-launch and update checks. Its full
+integration suite passed again. Final-shell native acceptance passed: after individual approval, the final
+Safari-downloaded shell installed in a new empty home. Gatekeeper blocked the
+installed app; dismissing its warning with Done produced the explicit message
+“Приложение установлено”, the exact destination, the launch-termination reason
+and the per-app approval action. The shell did not report successful launch or
+ask for reinstallation. Quarantine remained present on that installed app. No second physical
+Mac, separate login, or fresh OS trust database has been certified.

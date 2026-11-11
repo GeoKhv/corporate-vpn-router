@@ -34,6 +34,5 @@ with DSStore.open(str(root/'.DS_Store'), 'w+') as store:
         'scrollPositionX': 0.0, 'scrollPositionY': 0.0,
     }
     store['.']['pBBk'] = bookmark
-    store['Corporate VPN Router.app']['Iloc'] = (240, 255)
-    store['Программы.app']['Iloc'] = (610, 255)
+    store['Установить Corporate VPN Router.app']['Iloc'] = (425, 255)
     store['Установка и откат.txt']['Iloc'] = (740, 90)

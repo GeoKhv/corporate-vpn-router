@@ -1,88 +1,66 @@
-// Distribution UI only. The published VPN bundle is never rebuilt or re-signed.
+// Self-contained distribution UI; all filesystem mutations use the shared transaction.
 import AppKit
 import Foundation
 import Darwin
 
-struct InstallFailure: LocalizedError {
-    let errorDescription: String?
-    init(_ text: String) { errorDescription = text }
-}
-
 enum Distribution {
-    static let appName = "Corporate VPN Router.app"
-    static var home: URL { FileManager.default.homeDirectoryForCurrentUser }
+    static let appName = AppInstallation.appName
+    static var home: URL { FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath() }
     static var destination: URL { home.appendingPathComponent("Applications/" + appName) }
-    static var payload: URL {
-        let bundle = Bundle.main.bundleURL
-        let launcher = bundle.lastPathComponent == appName ? bundle : bundle.deletingLastPathComponent().appendingPathComponent(appName)
-        return launcher.appendingPathComponent("Contents/Resources/Payload/" + appName)
-    }
-    static func run(_ tool: String, _ args: [String]) throws -> Int32 {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: tool); process.arguments = args
-        process.standardOutput = FileHandle.nullDevice; process.standardError = FileHandle.nullDevice
-        try process.run(); process.waitUntilExit(); return process.terminationStatus
-    }
-    static func verifiedPayload() throws -> URL {
-        let source = payload
-        guard try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=cdhash H\"06684ffbb00baba39f611a7d20c9c643791e893d\"", source.path]) == 0,
-              try String(contentsOf: source.appendingPathComponent("Contents/Resources/VERSION")).trimmingCharacters(in: .whitespacesAndNewlines) == "0.2.0-beta.6" else {
-            throw InstallFailure("Не удалось проверить исходное приложение beta.6. Скачайте DMG заново из GitHub Releases.")
-        }
-        return source
-    }
-    static func install(launch: Bool) throws {
-        // This guard must precede all writes and the original --install call.
-        // Never move a live app or restart its HTTP router / SSL worker.
-        let data = home.appendingPathComponent("Library/Application Support/Corporate VPN Router")
-        let lock = data.appendingPathComponent("menu.lock")
-        if FileManager.default.fileExists(atPath: lock.path) {
-            let fd = open(lock.path, O_RDONLY | O_NOFOLLOW)
-            guard fd >= 0 else { throw InstallFailure("Не удалось проверить работающее приложение.") }
-            defer { close(fd) }
-            guard flock(fd, LOCK_EX | LOCK_NB) == 0 else {
-                throw InstallFailure("Router работает. Установка не начата; VPN-сеанс сохранён. Когда закончите работу, выберите «Завершить» в меню Router и повторите перенос.")
-            }
-        }
-        // A system-wide copy would be a second app: refuse instead of deleting it.
-        if FileManager.default.fileExists(atPath: "/Applications/" + appName) {
-            throw InstallFailure("В /Applications уже есть Corporate VPN Router. Завершите его и уберите эту лишнюю копию в резервную папку. Затем повторите установку в ~/Applications. Настройки Router не удаляйте.")
-        }
-        let source = try verifiedPayload()
-        guard try run(source.appendingPathComponent("Contents/MacOS/CorporateVPNRouter").path, ["--install"]) == 0 else {
-            throw InstallFailure("Штатный установщик отказал в замене приложения или автозапуска. Завершите Router и повторите установку. Пользовательские настройки не удаляйте.")
-        }
-        guard try run("/usr/bin/codesign", ["--verify", "--deep", "--strict", "-R=cdhash H\"06684ffbb00baba39f611a7d20c9c643791e893d\"", destination.path]) == 0 else {
-            throw InstallFailure("Установленная копия не прошла проверку подписи.")
-        }
-        if launch {
-            guard try run("/usr/bin/open", [destination.path]) == 0 else {
-                throw InstallFailure("Приложение установлено в ~/Applications. Откройте его из этой папки.")
-            }
-        }
+    static var payload: URL { Bundle.main.bundleURL.appendingPathComponent("Contents/Resources/Payload/" + appName) }
+    static func install() throws {
+        _ = try AppInstallation.install(source: payload, home: home, requirement: payloadRequirement)
     }
 }
 
 final class Installer: NSObject, NSApplicationDelegate {
     var started = false
+    var finishedLaunch = false
     func applicationDidFinishLaunching(_ notification: Notification) {
         DispatchQueue.main.async { self.perform() }
     }
     func application(_ sender: NSApplication, openFiles filenames: [String]) {
-        // Accept only our launcher. Never execute an arbitrary dropped bundle.
-        let expected = Bundle.main.bundleURL.deletingLastPathComponent().appendingPathComponent(Distribution.appName).standardizedFileURL
-        guard filenames.count == 1, URL(fileURLWithPath: filenames[0]).standardizedFileURL == expected else {
-            show("Перенесите Corporate VPN Router из этого DMG на «Программы»."); return
-        }
+        // Dropped paths are never executed or copied. Install only our pinned payload.
         perform()
         sender.reply(toOpenOrPrint: .success)
     }
     func perform() {
         guard !started else { return }; started = true
         do {
-            try Distribution.install(launch: true)
-            NSApp.terminate(nil)
-        } catch { show(error.localizedDescription) }
+            try Distribution.install()
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.createsNewApplicationInstance = true
+            // Preserve explicit disposable-home overrides during native launch tests.
+            if ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] != nil {
+                configuration.environment = ["HOME": Distribution.home.path, "CFFIXED_USER_HOME": Distribution.home.path]
+            }
+            NSWorkspace.shared.openApplication(at: Distribution.destination, configuration: configuration) { application, error in
+                DispatchQueue.main.async {
+                    guard !self.finishedLaunch else { return }
+                    if let error = error { self.launchFailed(error.localizedDescription); return }
+                    guard let application = application else { self.launchFailed("LaunchServices не вернул запущенное приложение."); return }
+                    self.checkLaunch(application)
+                }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 30) {
+                if !self.finishedLaunch { self.launchFailed("macOS не подтвердила запуск за 30 секунд.") }
+            }
+        } catch { show(AppInstallation.describe(error)) }
+    }
+    func checkLaunch(_ application: NSRunningApplication) {
+        guard !finishedLaunch else { return }
+        if application.isTerminated {
+            launchFailed("macOS завершила приложение до окончания запуска.")
+        } else if application.isFinishedLaunching {
+            finishedLaunch = true; NSApp.terminate(nil)
+        } else {
+            // A process suspended by Gatekeeper exists but has not launched AppKit.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { self.checkLaunch(application) }
+        }
+    }
+    func launchFailed(_ detail: String) {
+        finishedLaunch = true
+        show("Приложение установлено: \(Distribution.destination.path)\n\(detail)\nЕсли macOS показывает блокировку, разрешите именно Corporate VPN Router: «Системные настройки → Конфиденциальность и безопасность → Всё равно открыть», затем откройте его из ~/Applications. Повторно устанавливать DMG не нужно.")
     }
     func show(_ text: String) {
         let alert = NSAlert(); alert.messageText = "Установка Corporate VPN Router"; alert.informativeText = text
@@ -92,8 +70,8 @@ final class Installer: NSObject, NSApplicationDelegate {
 
 umask(0o077)
 if CommandLine.arguments.dropFirst().first == "--install-only" {
-    do { try Distribution.install(launch: false); print(Distribution.destination.path) }
-    catch { fputs(error.localizedDescription + "\n", stderr); exit(1) }
+    do { try Distribution.install(); print(Distribution.destination.path) }
+    catch { fputs(AppInstallation.describe(error) + "\n", stderr); exit(1) }
 } else if CommandLine.arguments.dropFirst().first == "--home" {
     print(Distribution.home.path)
 } else {

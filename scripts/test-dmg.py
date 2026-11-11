@@ -18,7 +18,8 @@ scripts = Path(__file__).resolve().parent
 sys.path.insert(0, str(scripts/'dmg'))
 from metadata import DSStore, Alias
 name = 'Corporate VPN Router.app'
-cdhash = '06684ffbb00baba39f611a7d20c9c643791e893d'
+old_cdhash = '06684ffbb00baba39f611a7d20c9c643791e893d'
+cdhash = None
 
 def run(*args, env=None, ok=True):
     result = subprocess.run([str(arg) for arg in args], env=env, capture_output=True, text=True, timeout=90)
@@ -48,10 +49,12 @@ with tempfile.TemporaryDirectory(prefix='cvr-dmg-test-', dir='/private/tmp') as 
     run('/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-noautoopen', '-mountpoint', mount, image)
     process = None
     try:
-        launcher = mount/name
-        target = mount/'Программы.app'
+        launcher = mount/'Установить Corporate VPN Router.app'
+        target = launcher
         payload = launcher/'Contents/Resources/Payload'/name
-        for path in [launcher, target, payload]:
+        cdhash = run('/usr/bin/codesign', '-dvvv', payload, ok=False).stderr.split('CDHash=')[1].splitlines()[0]
+        assert (payload/'Contents/Resources/INSTALLER_REVISION').read_text().strip() == 'installer-fix.1'
+        for path in [launcher, payload]:
             signature(path, vpn=path == payload)
         manifest = json.loads((launcher/'Contents/Resources/Payload.manifest.json').read_text())
         assert inventory(payload) == manifest
@@ -89,7 +92,8 @@ with tempfile.TemporaryDirectory(prefix='cvr-dmg-test-', dir='/private/tmp') as 
         assert job['ProgramArguments'] == [str(executable), '--login']
         assert job['Label'] == 'com.geokhv.corporate-vpn-router.menu'
         assert not list(data.glob('rollback-*.app'))
-        report['fresh_install'] = 'PASS (non-root, disposable home, exact published files)'
+        report['fresh_install'] = 'PASS (non-root, disposable home, exact fixed payload)'
+        report['payload_cdhash'] = cdhash
 
         # Synthetic user data only; never copy the owner's actual corporate data.
         markers = {
@@ -116,8 +120,33 @@ with tempfile.TemporaryDirectory(prefix='cvr-dmg-test-', dir='/private/tmp') as 
         duplicate = run(executable, '--login', env=env)
         assert duplicate.returncode == 0 and process.poll() is None
         assert agent.read_bytes() == before_agent
+        relocated = run(payload/'Contents/MacOS/CorporateVPNRouter', '--login', env=env)
+        assert relocated.returncode == 0 and process.poll() is None
+        assert agent.read_bytes() == before_agent
+        assert not list(data.glob('rollback-*.app'))
+        report['relocated_identity'] = 'PASS (same signed bundle at another path recognized without self-reinstallation)'
         report['launch_and_busy_refusal'] = 'PASS (actual beta.6 GUI startup, second instance exits, zero install writes while running)'
         process.terminate(); process.wait(timeout=10); process = None
+
+        # Exercise the written login arguments through real launchd under a unique test label.
+        login_test = plistlib.loads(before_agent)
+        login_test['Label'] += '.installation-test.' + root.name
+        login_test['EnvironmentVariables'] = {'HOME': str(home), 'CFFIXED_USER_HOME': str(home)}
+        login_file = root/'login-test.plist'
+        login_file.write_bytes(plistlib.dumps(login_test))
+        service = 'gui/' + str(os.getuid()) + '/' + login_test['Label']
+        try:
+            run('/bin/launchctl', 'bootstrap', 'gui/' + str(os.getuid()), login_file)
+            for _ in range(50):
+                state = run('/bin/launchctl', 'print', service).stdout
+                if 'state = running' in state: break
+                time.sleep(0.1)
+            assert 'state = running' in state
+            refused = run(installer, '--install-only', env=env, ok=False)
+            assert refused.returncode != 0 and 'VPN-сеанс сохранён' in refused.stderr
+        finally:
+            run('/bin/launchctl', 'bootout', service, ok=False)
+        report['launchd_login'] = 'PASS (real Aqua launchd, unique disposable label, canonical executable with --login)'
 
         # Invalid launch-agent ownership must refuse an update without replacing files.
         agent.write_bytes(plistlib.dumps({'Label': 'example.foreign.agent', 'ProgramArguments': ['/usr/bin/false']}))
@@ -138,24 +167,51 @@ with tempfile.TemporaryDirectory(prefix='cvr-dmg-test-', dir='/private/tmp') as 
         assert refused.returncode != 0 and snapshot(home) == before
         report['damaged_payload_refusal'] = 'PASS (signature failure before installation)'
 
-        # Update the existing exact beta.6 and check its entire rollback inventory.
+        # Mid-transaction failure: app has already been replaced when agent write fails.
+        agent.unlink()
+        agent.parent.chmod(0o500)
+        before = inventory(installed)
+        backups_before = list(data.glob('rollback-*.app'))
+        try:
+            refused = run(installer, '--install-only', env=env, ok=False)
+            assert refused.returncode != 0 and 'автозапуск' in refused.stderr and str(agent) in refused.stderr
+            assert 'NSCocoaErrorDomain' in refused.stderr
+            assert inventory(installed) == before
+            assert list(data.glob('rollback-*.app')) == backups_before
+            assert not agent.exists()
+        finally:
+            agent.parent.chmod(0o700)
+            agent.write_bytes(before_agent)
+        report['agent_write_failure_rollback'] = 'PASS (actual permission denial after app replacement; exact app restored)'
+
+        # Real published beta.6 is the update source, not another freshly built copy.
+        original = Path(sys.argv[2]).resolve()
+        signature_original = run('/usr/bin/codesign', '--verify', '--deep', '--strict', '-R=cdhash H"' + old_cdhash + '"', original)
+        shutil.rmtree(installed)
+        run('/usr/bin/ditto', original, installed)
+        # Preserve a disabled/customized login item byte-for-byte.
+        spec = plistlib.loads(before_agent)
+        spec['RunAtLoad'] = False
+        before_agent = plistlib.dumps(spec)
+        agent.write_bytes(before_agent)
         previous = inventory(installed)
         run(source_installer, '--install-only', env=env)
         backups = list(data.glob('rollback-*.app'))
         assert len(backups) == 1 and inventory(backups[0]) == previous
         assert inventory(installed) == manifest
-        signature(installed, vpn=True); signature(backups[0], vpn=True)
+        signature(installed, vpn=True)
+        run('/usr/bin/codesign', '--verify', '--deep', '--strict', '-R=cdhash H"' + old_cdhash + '"', backups[0])
         assert all((data/k).read_bytes() == v for k, v in markers.items())
         assert agent.read_bytes() == before_agent
         assert len(list((home/'Applications').glob('*.app'))) == 1
         assert len(list((home/'Library/LaunchAgents').glob('*.plist'))) == 1
-        report['existing_install_update'] = 'PASS (backup exact, one app, same login agent and user data)'
+        report['existing_install_update'] = 'PASS (published beta.6 backup exact, one app, customized login agent and user data preserved)'
 
         # Exercise the documented same-version rollback, without changing profiles.
         shutil.move(installed, root/'updated.app')
         run('/usr/bin/ditto', backups[0], installed)
         assert inventory(installed) == previous
-        signature(installed, vpn=True)
+        run('/usr/bin/codesign', '--verify', '--deep', '--strict', '-R=cdhash H"' + old_cdhash + '"', installed)
         assert agent.read_bytes() == before_agent
         assert all((data/k).read_bytes() == v for k, v in markers.items())
         process = subprocess.Popen([str(executable), '--login'], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

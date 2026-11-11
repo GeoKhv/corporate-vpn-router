@@ -1,72 +1,102 @@
-# macOS DMG distribution for the unchanged beta.6
+# macOS DMG · beta.6 installer-fix.1
 
-Build locally on an Apple Silicon Mac with Xcode command line tools and Python
-3.9+. No Actions, sudo, Finder automation, Developer ID or notarization service
-is used. Two hash-pinned, pure-Python metadata wheels are vendored under
-`scripts/dmg/vendor` with their licenses; no package installation or network
-access is required once the published ZIP has been downloaded. Finder view
-metadata is written directly with [ds_store](https://ds-store.readthedocs.io/en/v1.3.1/)
-and volume-relative aliases, following [dmgbuild](https://github.com/dmgbuild/dmgbuild/blob/v1.6.5/src/dmgbuild/core.py).
+The corrected asset is `Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64-installer-fix.1.dmg`.
+The previous DMG, ZIPs and checksums remain release assets. Do not overwrite them.
+
+Build locally on Apple Silicon with Xcode command line tools and Python 3.9+.
+No Actions, sudo, Developer ID or notarization service is used. The metadata
+libraries and their licenses are vendored in `scripts/dmg/vendor`.
 
 ```sh
-gh release download v0.2.0-beta.6 --repo GeoKhv/corporate-vpn-router \
-  --pattern Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64.zip --dir /tmp/cvr-input
-bash scripts/package-dmg.sh /tmp/cvr-input/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64.zip
-python3 scripts/test-dmg.py dist/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64.dmg
+bash scripts/package-dmg.sh /path/to/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64.zip
+python3 -B scripts/test-dmg.py \
+  dist/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64-installer-fix.1.dmg \
+  '/path/to/original-beta.6/Corporate VPN Router.app'
 ```
 
-The builder pins the published ZIP SHA-256 and beta.6 CDHash, verifies its deep
-strict signature, and compares every payload file, directory mode and symlink
-before/after packaging. It never invokes `build.sh`, signs the VPN payload, or
-overwrites the ZIP, existing checksums or an existing DMG. `CVR_DIST_DIR` selects
-a fresh output directory. SHA-256 is in the adjacent `.dmg.sha256` file.
-This reproduces the packaging procedure and identical VPN payload; DMG bytes
-are not deterministic (filesystem UUID/timestamps, Finder metadata and locally
-compiled distribution shells can vary with macOS/Xcode).
+The builder verifies the published ZIP SHA-256
+`83aa9bfbeb3a8441d9963e1c1fc32cf8d32b3eb97ee0055cd3684217e8ef293c`
+and original application CDHash `06684ffbb00baba39f611a7d20c9c643791e893d`.
+It rebuilds the Swift menu executable with the installation corrections, updates
+CFBundleVersion to 8, adds `Resources/INSTALLER_REVISION` (`installer-fix.1`), and
+signs the resulting bundle ad hoc. Every original resource, including the VPN
+engine, native worker, CPython runtime and licenses, is compared byte-for-byte.
+The shell pins the resulting application CDHash and verifies it before copying,
+in staging, and after placement. The adjacent `.dmg.sha256` identifies the image.
+A fresh `CVR_DIST_DIR` can be used for another build; existing images are refused.
 
-The visible Corporate VPN Router is a distribution launcher with an icon. Its
-`Contents/Resources/Payload/Corporate VPN Router.app` is the exact published app.
-The separate “Программы” drop target is an installer application with a folder
-and download-arrow icon, explicitly described as such in the image. Both call
-the original `--install` and open only `~/Applications/Corporate VPN Router.app`.
-There is deliberately no `/Applications` shortcut: beta.6 self-installs to the
-user's Applications folder and a conventional system-wide copy would duplicate
-it. Double-clicking the launcher is the equivalent accessible installation path.
-The installed app retains its original generic icon; its signed resources are
-unchanged. The DMG/launcher icons belong to the distribution shells only.
+## Installation
 
-The wrapper checks the live `menu.lock` before writes, refuses an existing
-system-wide copy, and relies on beta.6's ownership, signature, backup and login
-agent checks. The original installer repeats its lock check. It neither registers
-new login jobs nor stops/reloads either existing job. Existing HTTP proxy jobs,
-settings, Chrome enrollment and the SSL tunnel are not changed by packaging.
-An existing app must be quit by its user before updating. A manually started
-older/system-wide copy or manual Finder replacement is outside this installer.
+The DMG contains one self-contained **Установить Corporate VPN Router.app**.
+Double-click it. It installs only to `~/Applications/Corporate VPN Router.app`.
+There is no drop target, sibling-app dependency or system Applications shortcut.
+App Translocation can relocate the installer without hiding its payload.
+The payload is copied as files; the shell never directly executes its nested
+Mach-O file or calls the original `--install` across a quarantine boundary.
 
-The integration test mounts read-only, checks image integrity, signatures and
-payload inventory, installs to a disposable home with `CFFIXED_USER_HOME`, runs
-the actual published app there, checks refusal while its lock is held, tests a
-same-version update/backup and restores that backup. No real home, launchd job,
-network profile, credentials or live VPN is mutated. The environment override is
-checked against Foundation before installation; failure stops the test. Tests
-must run without sudo. This is an isolated installation/launch test on the real
-Mac, not a second physical user login or a fresh-machine Gatekeeper test.
+`Sources/InstallTransaction.swift` is shared by the shell and the app's explicit
+`--install`. The transaction validates destination ownership and login arguments,
+rejects user symlinks, and holds `menu.lock` until commit or rollback. It never
+stops or reloads any production launchd job. A running menu refuses replacement;
+the existing VPN session remains live. A second installer is excluded by the
+same lock. A system-wide copy is reported instead of overwritten.
 
-Both shells and the payload are ad hoc signed; the DMG is unsigned. `spctl`
-rejection is expected without Developer ID/notarization. A browser-downloaded,
-quarantined first launch may require per-app approval in macOS Settings, subject
-to organizational policy. Never disable Gatekeeper or remove quarantine. A full
-quarantined first-install approval on a second clean Mac remains a separate check.
+The staged app is verified before the old app is moved to a unique rollback
+bundle. Failure of placement, final signature verification or creation of a new
+menu LaunchAgent restores the previous app. If rollback itself fails, the error
+names both recovery locations. Existing login-agent bytes and settings are
+preserved, including disabled RunAtLoad and launchctl overrides. A fresh install
+creates the user LaunchAgent for `CorporateVPNRouter --login`; the installer
+opens the app through NSWorkspace and waits for `isFinishedLaunching`, separately
+from installation. A process suspended by Gatekeeper is not a successful launch;
+the shell reports installation success with a specific launch error or a 30-second
+timeout. No HTTP router plist, Chrome profile, credentials or site list is
+rewritten.
 
-Upload only after local acceptance, without replacing any beta.6 asset:
+The app resolves its own bundle through Foundation instead of trusting argv[0].
+When Gatekeeper translocates an installed app, it recognizes the same verified
+executable, Info.plist and signed resource manifest at the installed location;
+it does not replace that app over itself. Startup still takes the ordinary menu
+lock. Each filesystem/command failure includes the operation, path and system
+error or captured codesign/ditto output. Launch denial reports that installation
+already succeeded and points to the installed location.
+
+## Quarantine and acceptance
+
+Neither the installer nor the builder removes quarantine or changes Gatekeeper.
+Both bundles are ad hoc signed, without Developer ID/notarization; the image is
+unsigned. First launch may therefore require **Privacy & Security → Open Anyway**
+for **Установить Corporate VPN Router**, and a separate approval for
+**Corporate VPN Router** if macOS blocks the installed application. Approve only
+the named item after verifying the source and SHA-256. An organizational policy
+that forbids this approval is not bypassed.
+
+The integration test runs non-root, mounts the image read-only and installs in a
+verified disposable Foundation home. It checks fresh installation, actual menu
+startup, exclusion while running, a unique temporary Aqua launchd job, foreign
+login-agent and damaged-payload refusal, actual write-permission failure after
+replacement with restoration of the previous app, update of the published
+beta.6, preservation of customized login bytes and synthetic settings, and
+restoration/launch of the exact old bundle. It never loads the production labels.
+
+These tests are distinct from Gatekeeper acceptance. `hdiutil attach` alone does
+not reproduce a browser-downloaded first launch. A quarantined image must be
+opened using DiskImageMounter and observed mounted with `quarantine`; launch
+through LaunchServices, keep quarantine, and record the actual approval and
+result. An empty disposable home on this Mac is not a second physical Mac or a
+fresh OS trust database. See `VALIDATION.md` for observed results and limits.
+
+## Publication
+
+Only publish after acceptance. Upload the new names without `--clobber`:
 
 ```sh
 gh release upload v0.2.0-beta.6 --repo GeoKhv/corporate-vpn-router \
-  dist/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64.dmg \
-  dist/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64.dmg.sha256
+  dist/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64-installer-fix.1.dmg \
+  dist/Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64-installer-fix.1.dmg.sha256
 ```
 
-Keep the existing `SHA256SUMS.txt` and ZIPs intact. Verify the new download and
-compare the old release asset IDs/digests after publication. Installation-file
-rollback is documented in the DMG; beta.5's Chrome migration rollback still
-uses the existing app menu and its separately confirmed profile.
+Download the new assets again, compare SHA-256, and compare every previous asset
+ID and digest with the pre-publication inventory. The original `SHA256SUMS.txt`
+and ZIPs stay intact. File rollback of beta.6 is described in the colleague
+instructions; beta.5 Chrome-profile rollback remains the separate app workflow.

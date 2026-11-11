@@ -27,22 +27,18 @@ enum BetaInstall {
         }
     }
     static func install(_ paths:ProductPaths)throws{
-        let fm=FileManager.default, source=try Lifecycle.sourceApp()
-        try Lifecycle.verifyOwnership(paths);try paths.createData();_ = try checkedAgent(paths); try idle(paths)
-        if source.standardizedFileURL != paths.app.standardizedFileURL {
-            try fm.createDirectory(at:paths.app.deletingLastPathComponent(),withIntermediateDirectories:true)
-            let stage=paths.app.deletingLastPathComponent().appendingPathComponent(".CVR-\(UUID().uuidString).app")
-            defer{try? fm.removeItem(at:stage)}
-            guard command("/usr/bin/ditto",[source.path,stage.path],timeout:60).code==0,
-                  command("/usr/bin/codesign",["--verify","--deep","--strict",stage.path],timeout:30).code==0 else{throw RouterError.io}
-            let old=paths.data.appendingPathComponent("rollback-\(UUID().uuidString).app")
-            let exists=fm.fileExists(atPath:paths.app.path)
-            if exists{try fm.moveItem(at:paths.app,to:old)}
-            do{try fm.moveItem(at:stage,to:paths.app)}catch{if exists{try? fm.moveItem(at:old,to:paths.app)};throw error}
+        _ = try AppInstallation.install(source: Lifecycle.sourceApp(), home: paths.home)
+    }
+
+    static func isInstalledCopy(_ source: URL, _ paths: ProductPaths) throws -> Bool {
+        if source.resolvingSymlinksInPath() == paths.app.resolvingSymlinksInPath() { return true }
+        // Gatekeeper can run the installed bundle from App Translocation.
+        // Recognize the same verified code instead of installing it over itself.
+        for relative in ["Contents/MacOS/CorporateVPNRouter", "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"] {
+            guard FileManager.default.contentsEqual(atPath: source.appendingPathComponent(relative).path, andPath: paths.app.appendingPathComponent(relative).path) else { return false }
         }
-        let url=try checkedAgent(paths)
-        try fm.createDirectory(at:url.deletingLastPathComponent(),withIntermediateDirectories:true)
-        let spec:[String:Any]=["Label":label,"ProgramArguments":[paths.executable.path,"--login"],"RunAtLoad":true,"LimitLoadToSessionType":"Aqua","Umask":0o077]
-        try PropertyListSerialization.data(fromPropertyList:spec,format:.xml,options:0).write(to:url,options:.atomic)
+        try AppInstallation.verify(source)
+        try AppInstallation.verify(paths.app)
+        return true
     }
 }

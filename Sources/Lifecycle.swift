@@ -25,9 +25,11 @@ struct ProductPaths {
 
 enum Lifecycle {
     static func sourceApp() throws -> URL {
-        let binary = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let app = binary.deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        guard app.pathExtension == "app", FileManager.default.fileExists(atPath: app.appendingPathComponent("Contents/Info.plist").path) else { throw RouterError.io }
+        // argv[0] is caller-controlled and may be only the executable name.
+        let app = Bundle.main.bundleURL.resolvingSymlinksInPath()
+        guard app.pathExtension == "app", FileManager.default.fileExists(atPath: app.appendingPathComponent("Contents/Info.plist").path) else {
+            throw InstallationError(step: "Не удалось определить папку запущенного приложения", detail: app.path)
+        }
         return app
     }
     static func installed(_ paths: ProductPaths) -> Bool { FileManager.default.isExecutableFile(atPath: paths.executable.path) }
