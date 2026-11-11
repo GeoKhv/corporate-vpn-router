@@ -12,6 +12,7 @@ from pathlib import Path
 parser = argparse.ArgumentParser()
 parser.add_argument('--deny-file', type=Path, help='Private newline-separated forbidden literals; do not commit this file')
 parser.add_argument('--zip', type=Path)
+parser.add_argument('--directory', type=Path, help='Audit a mounted distribution (read-only)')
 args = parser.parse_args()
 root = Path(__file__).resolve().parent.parent
 denied = [s.strip().lower().encode() for s in args.deny_file.read_text().splitlines() if s.strip()] if args.deny_file else []
@@ -31,7 +32,25 @@ def check(name, data):
             for member in nested:
                 if member.isfile(): check(name + ':' + member.name, nested.extractfile(member).read())
 
-if args.zip:
+if args.zip and args.directory:
+    parser.error('Choose --zip or --directory')
+if args.directory:
+    for path in args.directory.rglob('*'):
+        name = str(path.relative_to(args.directory))
+        if any(part in name.split('/') for part in ['.private', '.build', '__MACOSX', '.git']):
+            failures.append(name)
+        if path.is_symlink():
+            target = path.readlink()
+            try:
+                path.resolve().relative_to(args.directory.resolve())
+                outside = False
+            except ValueError:
+                outside = True
+            if target.is_absolute() or outside:
+                failures.append(name)
+        elif path.is_file():
+            check(name, path.read_bytes())
+elif args.zip:
     with zipfile.ZipFile(args.zip) as archive:
         for info in archive.infolist():
             if info.is_dir():

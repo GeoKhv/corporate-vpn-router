@@ -86,3 +86,39 @@ For the return to beta.5, macOS applied the saved original profile. Its effectiv
 The signed beta.6 distribution was installed on the Mac, the published signed beta.5 bundle was restored using its installer, and the same beta.6 distribution was installed again. Each pass compared every installed bundle file with its source and verified the deep code signature, version and actual disconnected --login menu process. A separate fixture using the installed beta.6 engine kept a Work and a Life CONNECT stream exchanging bytes for 75 seconds; applying changed rules then revoked both. A 4 MiB transfer matched by SHA-256.
 
 On the final installed bundle, resubmitting setup after an expired macOS prompt produced a new downloaded profile. Once approved, the forced Chrome dictionary contained only fixed_servers and http://127.0.0.1:1091. The installed application recorded the fresh ordinary Chrome challenge after its automatic restart. Both production Aqua jobs were unloaded, observed absent and reloaded from their installed plists. The menu started with --login and no corporate listener, and a second browser challenge reached the production router. Fresh main Chrome tabs showed ERR_TUNNEL_CONNECTION_FAILED for Work and rendered a personal HTTPS page. This exercised both login entries in the current Aqua session; the account was not logged out or the Mac rebooted. No separate Ethernet or second Wi-Fi network was available.
+## DMG addition · 11 November 2026
+
+The DMG is a distribution addition to published beta.6, not a new VPN build.
+Its SHA-256 is `075fa3fc7700c43cf418d09181341f2b54ac3763c2c18ecd2b7572e7daf79547`.
+The original Mac ZIP remains SHA-256
+`83aa9bfbeb3a8441d9963e1c1fc32cf8d32b3eb97ee0055cd3684217e8ef293c`.
+All 572 files and 54 directory modes in the embedded app match that ZIP;
+its original CDHash is `06684ffbb00baba39f611a7d20c9c643791e893d`.
+
+On an Apple Silicon Mac running macOS 27.0.1, local acceptance checked:
+
+- `hdiutil verify`, read-only mounting/unmounting, and deep strict signature
+  verification of both new shells and the original nested/installed app.
+- Native macOS resolution of the background bookmark after mounting at another
+  path; Finder displayed the background, custom volume icon and two app icons.
+- Real non-root installation and actual `--login` GUI startup of the published
+  app in a disposable Foundation home, disconnected and without credentials.
+- A second app instance exited; the installer refused while the actual menu
+  process held its lock, with no file changes. A damaged payload and a foreign
+  login agent also refused before replacement.
+- Updating the existing beta.6 produced one canonical app and an exact rollback
+  backup. Synthetic site/account/profile data and the existing menu agent stayed
+  byte-identical. Restoring that backup to the same path launched successfully.
+- On the owner's real home, the distribution installer refused while Router was
+  connected. The existing app, persistent VPN settings and LaunchAgent files
+  matched their preflight hashes; the menu, SSL and HTTP worker PIDs remained
+  unchanged and the tunnel still reported connected. No live update or restart
+  was attempted. Private-denylist and public-content audits passed.
+
+Both shells and the unchanged payload are ad hoc signed. The DMG is unsigned;
+`spctl --assess` rejected the launcher, as expected without Developer ID and
+notarization. A downloaded/quarantined first install with individual Gatekeeper
+approval, a fresh physical user login, and another Mac/macOS version were not
+tested. No security protection was disabled. See [DMG.md](DMG.md) for the local
+build, install layout and remaining limitations; beta.5 profile rollback remains
+the existing, separately confirmed app workflow.
