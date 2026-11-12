@@ -18,7 +18,13 @@ final class SitesPanel {
 
 extension BetaMenu {
     static func routeCommand(_ op: String, _ args: [String] = []) -> CommandResult {
-        guard let res = Bundle.main.resourceURL else { return CommandResult(code:1,output:"Нет встроенного runtime.") }
+        let res = ProductPaths().app.appendingPathComponent("Contents/Resources")
+#if CVR_SELECTIVE_TUN
+        if op == "save" || op == "validate" {
+            return command(res.appendingPathComponent("Runtime/bin/python3.13").path,
+                ["-I", "-B", res.appendingPathComponent("Engine/Selective/controller.py").path, op] + args, timeout: 20)
+        }
+#endif
         let result=command(res.appendingPathComponent("Runtime/bin/python3.13").path,
                        ["-I","-B",res.appendingPathComponent("Engine/routing.py").path,op]+args,timeout:28)
         if op=="status" && result.output.hasPrefix("Chrome ·") && !BrowserRouter.effective() {
@@ -50,11 +56,17 @@ extension BetaMenu {
             let row1=NSStackView(views:[p.list,panelButton("Добавить",#selector(newSite)),panelButton("Удалить строку",#selector(removeSite))])
             let row2=NSStackView(views:[p.domain,p.scope,panelButton("В список",#selector(editSite))])
             let row3=NSStackView(views:[p.address,panelButton("Проверить маршрут",#selector(previewRoute))])
+#if CVR_SELECTIVE_TUN
+            let routeHeading = "2. Рабочие маршруты для обычных браузеров · приватная проба"
+            let row4=NSStackView(views:[panelButton("Проверить состояние",#selector(routeStatus)),panelButton("Сертификаты HTTPS…",#selector(certificates))])
+#else
+            let routeHeading = "2. Постоянный прокси Chrome"
             let row4=NSStackView(views:[panelButton("Настроить Chrome…",#selector(appRouting)),panelButton("Проверить состояние",#selector(routeStatus))])
+#endif
             let row5=NSStackView(views:[panelButton("Импорт профиля…",#selector(importSites)),panelButton("Сохранить список",#selector(savePolicy))])
             attachColumn(makeColumn([NSTextField(labelWithString:"1. Рабочие сайты · добавьте домен или импортируйте профиль"),row1,row2,
                 NSTextField(labelWithString:"Доступ до входа · точные имена шлюза и авторизации, через запятую"),p.login,
-                row5,row3,p.preview,NSTextField(labelWithString:"2. Постоянный прокси Chrome"),row4,p.status,settingsNote]),to:w)
+                row5,row3,p.preview,NSTextField(labelWithString:routeHeading),row4,p.status,settingsNote]),to:w)
             settingsWindow=w
         }
         routeStatus()
@@ -101,6 +113,9 @@ extension BetaMenu {
         p.preview.stringValue="По списку: "+(p.draft.beforeLogin.contains(h) ? "доступ до входа · системный маршрут":p.draft.work(h) ? (p.draft.ports.contains(port) ? "рабочий · SOCKS5 внутри SSL":"рабочий · порт запрещён в SOCKS5"):"обычный · системный маршрут")
     }
     @objc func routeStatus(){
+#if CVR_SELECTIVE_TUN
+        sitesPanel.status.stringValue = selective.message
+#else
         let r=Self.routeCommand("status")
         let state=r.output.trimmingCharacters(in:.whitespacesAndNewlines)
         if r.code==0 && state.hasPrefix("Chrome ·") {
@@ -108,10 +123,15 @@ extension BetaMenu {
               ? (activated ? "Chrome · постоянный прокси подтверждён, маршрутизатор готов." : "Профиль установлен. Ожидается проверка из Chrome.")
               : "Профиль установлен, но маршрутизатор пока не отвечает."
         }else{sitesPanel.status.stringValue=state}
+#endif
     }
     func confirmAction(_ title:String,_ msg:String,_ yes:String)->Bool{let a=NSAlert();a.messageText=title;a.informativeText=msg;a.addButton(withTitle:yes);a.addButton(withTitle:"Отмена");return a.runModal() == .alertFirstButtonReturn}
     @objc func savePolicy(){
+#if CVR_SELECTIVE_TUN
+        guard engine == nil && !selective.busy else { settingsNote.stringValue = "Сначала отключите туннель и остановите рабочие маршруты. Список пока не изменён."; return }
+#else
         if BrowserRouter.effective() && !activated {settingsNote.stringValue="Сначала нажмите «Настроить Chrome…» для проверки маршрута в браузере.";return}
+#endif
         if !sitesPanel.domain.stringValue.isEmpty && !editSite(){return}
         readLogin()
         let temp=paths.data.appendingPathComponent("draft-"+UUID().uuidString)
@@ -161,13 +181,19 @@ extension BetaMenu {
                 guard let self=self else{t.invalidate();return}
                 if Self.routeCommand("observed").code==0 && BrowserRouter.effective(){
                     t.invalidate()
-                    do{try JSONFile.write(true,to:self.paths.data.appendingPathComponent("chrome-fixed-verified"));self.settingsNote.stringValue="Маршрут подтверждён запросом из Chrome. Можно подключить рабочий туннель и менять список."}
+                    do{try JSONFile.write(true,to:self.paths.data.appendingPathComponent("chrome-fixed-verified"));self.settingsNote.stringValue="Маршрут подтверждён запросом из Chrome. Можно подключить рабочий туннель и менять список.";self.note="Chrome настроен. Выберите способ входа и нажмите «Подключить».";self.refresh()}
                     catch{self.settingsNote.stringValue="Не удалось сохранить результат проверки."}
                 }else if Date()>until {t.invalidate();self.settingsNote.stringValue="Запрос Chrome не пришёл через Router. Рабочий режим не подтверждён; доступен откат."}
             }
         }catch{settingsNote.stringValue=error.localizedDescription}
     }
     @objc func appRouting(){
+#if CVR_SELECTIVE_TUN
+        guard engine == nil else { settingsNote.stringValue = "Сначала отключите рабочий туннель."; return }
+        if selective.process != nil { selective.stop() }
+        else if selective.helperAvailability != .ready { installRouteHelper() }
+        else { connect() }
+#else
         if BrowserRouter.effective() && activated {
             do{try BrowserRouter.startAgent(paths);routeStatus()}catch{settingsNote.stringValue=error.localizedDescription};return
         }
@@ -182,10 +208,13 @@ extension BetaMenu {
                 guard path==paths.data.appendingPathComponent("Chrome Local Router.mobileconfig").path,
                       NSWorkspace.shared.open(URL(fileURLWithPath:path)) else{throw ProxyFailure("Не удалось открыть профиль Chrome.")}
                 settingsNote.stringValue="Подтвердите профиль Router в настройках macOS. Приложение дождётся подтверждения."
+                note=settingsNote.stringValue;refresh()
                 waitForProfile()
             }
         } catch {settingsNote.stringValue=error.localizedDescription}
+        note=settingsNote.stringValue;refresh()
         routeStatus()
+#endif
     }
 
 }

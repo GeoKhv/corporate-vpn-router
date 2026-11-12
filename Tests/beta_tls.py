@@ -86,7 +86,7 @@ class Fixture:
         self.thread.join(timeout=3)
 
 
-def main():
+def main(resilient=False):
     from cpyvpn import auth, ssl_ctx, utils
     logging.disable(logging.CRITICAL)
     results = []
@@ -118,7 +118,7 @@ def main():
             fixture = Fixture(base, ('valid' if label == 'untrusted' else label) + '.pem')
             test_context = ssl.create_default_context() if label == 'untrusted' else context
             test_context.minimum_version = ssl.TLSVersion.TLSv1_2
-            install(ssl_ctx, utils, '127.0.0.1', test_context)
+            install(ssl_ctx, utils, '127.0.0.1', test_context, resilient=resilient)
             def redirect_socket(address, *args, **kwargs):
                 assert address == ('127.0.0.1', 443)
                 return real_create(('127.0.0.1', fixture.port), *args, **kwargs)
@@ -146,15 +146,16 @@ def main():
                     errors.append(error.verify_code)
             finally:
                 fixture.close()
-            assert fixture.accepts == 3, (label, fixture.accepts)
+            assert fixture.accepts == (2 if resilient else 3), (label, fixture.accepts)
             if label == 'valid':
                 assert errors == [None] * 3 and len(fixture.application_data) == 1
             else:
-                assert all(e is not None for e in errors) and not fixture.application_data
+                assert all(e is not None for e in (errors[1:] if resilient else errors)) and not fixture.application_data
+                if resilient:assert errors[0] is None # mode validation adds no network probe
             assert test_context.check_hostname and test_context.verify_mode == ssl.CERT_REQUIRED
             results.append({'case': label, 'verify_codes': errors,
                 'connections': fixture.accepts, 'application_requests': len(fixture.application_data)})
-        install(ssl_ctx, utils, '127.0.0.1', context)
+        install(ssl_ctx, utils, '127.0.0.1', context, resilient=resilient)
         # All these refusals must happen before any network connection.
         blocked = [lambda: pinned_context(base / 'ca.pem', '0' * 64),
                    lambda: ssl_ctx.set_ssl_strict_mode(False),

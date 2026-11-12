@@ -6,6 +6,13 @@ import socket
 import ssl
 from urllib.parse import urlsplit
 
+_control_channel = None
+
+
+def close_control():
+    if _control_channel is not None:
+        _control_channel.close()
+
 
 def pinned_context(ca_file, expected_sha256):
     der = ssl.PEM_cert_to_DER_cert(Path(ca_file).read_text())
@@ -28,9 +35,17 @@ def require_strict(context):
     return context
 
 
-def install(ssl_ctx, utils, address, context):
+def install(ssl_ctx, utils, address, context, resilient=False):
+    global _control_channel
+    close_control()
+    _control_channel = None
     def strict_context():
         return require_strict(context)
+
+    if resilient:
+        from connection_resilience import ControlChannel
+        _control_channel = ControlChannel(address, strict_context)
+    channel = _control_channel
 
     def strict_mode(value):
         if value is not True:
@@ -39,6 +54,12 @@ def install(ssl_ctx, utils, address, context):
     def strict_check(host, port, nocert):
         if host != address or port != 443 or nocert:
             raise RuntimeError('UNEXPECTED_TLS_DESTINATION')
+        if resilient:
+            # This upstream hook chooses strict/permissive mode. The caller
+            # already anchored the gateway; actual requests still perform
+            # strict TLS. A throwaway TCP/TLS probe adds no trust guarantee.
+            strict_context()
+            return
         with socket.create_connection((address, 443), timeout=12) as raw:
             with strict_context().wrap_socket(raw, server_hostname=address):
                 pass
@@ -52,6 +73,8 @@ def install(ssl_ctx, utils, address, context):
                 or parsed.query or parsed.fragment or parsed.username is not None
                 or parsed.password is not None or with_cookies):
             raise RuntimeError('UNEXPECTED_CONTROL_REQUEST')
+        if channel is not None:
+            return channel.request(parsed.path,data,rawval)
         connection = http.client.HTTPSConnection(address, 443,
             context=strict_context(), timeout=45)
         try:

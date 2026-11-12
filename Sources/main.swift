@@ -6,15 +6,25 @@ let paths=ProductPaths(), mode=CommandLine.arguments.dropFirst().first ?? "--ui"
 do{
     switch mode {
     case "--version":print(productVersion)
+    case "--installation-home":print(paths.home.path)
     case "--install":try BetaInstall.install(paths);print("Installed: "+paths.app.path)
     case "--diagnose":
         if let data=try? Data(contentsOf:paths.data.appendingPathComponent("ssl-status.json")){print(String(decoding:data,as:UTF8.self))}
         else{print("Menu app has not started.")}
     case "--ui","--login":
-        if try !BetaInstall.isInstalledCopy(Lifecycle.sourceApp(), paths) {
+        let wasInstalled = try BetaInstall.isInstalledCopy(Lifecycle.sourceApp(), paths)
+        if !wasInstalled {
             try BetaInstall.install(paths)
+#if !CVR_DEMO_SINGLE
             _ = try AppInstallation.run("/usr/bin/open", ["-n", paths.app.path], step: "Приложение установлено, но macOS не разрешила запуск. Откройте его из ~/Applications; при запросе используйте «Конфиденциальность и безопасность → Всё равно открыть».")
-        }else{
+#endif
+        }
+#if CVR_DEMO_SINGLE
+        let runMenu = true
+#else
+        let runMenu = wasInstalled
+#endif
+        if runMenu {
             let lockURL=paths.data.appendingPathComponent("menu.lock")
             try paths.createData()
             let lockFD=open(lockURL.path,O_CREAT|O_RDWR|O_NOFOLLOW|O_CLOEXEC,0o600)
@@ -22,6 +32,13 @@ do{
                 throw InstallationError(step: "Не удалось запустить меню Router", detail: "\(lockURL.path): \(String(cString: strerror(errno))) (errno \(errno)). Проверьте доступ к папке данных.")
             }
             if flock(lockFD,LOCK_EX|LOCK_NB) != 0 {exit(0)}
+#if CVR_DEMO_SINGLE && !CVR_SELECTIVE_TUN
+            try BetaInstall.registerLogin(paths)
+#endif
+            try BetaInstall.seedWorkSites(paths)
+#if CVR_SELECTIVE_TUN && CVR_UPDATES
+            try Provisioning.migrate(paths, resources: Bundle.main.resourceURL!)
+#endif
             let app=NSApplication.shared, delegate=BetaMenu()
             app.setActivationPolicy(.accessory);app.delegate=delegate;app.run()
             withExtendedLifetime(delegate){};close(lockFD)

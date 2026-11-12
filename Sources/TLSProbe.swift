@@ -15,7 +15,7 @@ private final class ProbeBox {
 }
 
 enum HTTPSCertificates {
-    static func inspect(host: String, configuration: Configuration, controlPlane: Bool = false, platform: VPNPlatform = MacOSAdapter()) -> HTTPSCertificateResult {
+    static func inspect(host: String, configuration: Configuration, controlPlane: Bool = false, platform: VPNPlatform = MacOSAdapter(), routerSOCKS: Bool = false) -> HTTPSCertificateResult {
         let box = ProbeBox(host: host)
         if controlPlane {
             box.result.routeScope = "CHECKPOINT_CONFIGURED_SITE_HTTPS_ONLY_SYSTEM_ROUTE_NOT_IKE"
@@ -26,7 +26,10 @@ enum HTTPSCertificates {
         let session = Session(); defer { session.cancel() }
         do {
             let upstream: OwnedSocket
-            if controlPlane {
+            if routerSOCKS {
+                box.result.routeScope = "VERIFIED_WORK_SOCKS5_DOMAIN_1090_NO_DIRECT_FALLBACK"
+                upstream = try socksSocket(host: host, session: session)
+            } else if controlPlane {
                 upstream = try controlSocket(host: host, session: session)
             } else {
                 guard let link = platform.discover(dnsServers: configuration.dnsServers).link else { throw RouterError.vpnUnavailable }
@@ -74,8 +77,13 @@ enum HTTPSCertificates {
                 complete(nil)
                 box.finish("CLIENT_CERTIFICATE_REQUESTED_CONFIRM_ENROLLMENT_WITH_IT")
             }, queue)
-            sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { _, secTrust, complete in
+            sec_protocol_options_set_verify_block(tls.securityProtocolOptions, { metadata, secTrust, complete in
                 let trust = sec_trust_copy_ref(secTrust).takeRetainedValue()
+                var peerDER = [Data]()
+                sec_protocol_metadata_access_peer_certificate_chain(metadata) { cert in
+                    let publicCert = sec_certificate_copy_ref(cert).takeRetainedValue()
+                    peerDER.append(SecCertificateCopyData(publicCert) as Data)
+                }
                 SecTrustSetPolicies(trust, SecPolicyCreateSSL(true, host as CFString))
                 SecTrustSetNetworkFetchAllowed(trust, false)
                 var error: CFError?
@@ -84,6 +92,7 @@ enum HTTPSCertificates {
                 let stillActive = box.lock.locked { () -> Bool in
                     guard !box.finished else { return false }
                     box.chain = chain
+                    box.result.peerDER = peerDER
                     box.result.tlsTrusted = trusted
                     box.result.trustExplanation = trusted ? "System trust and hostname validation passed. Independently confirm corporate CA authenticity with IT."
                         : error.flatMap { SecCopyErrorMessageString(OSStatus(CFErrorGetCode($0)), nil) as String? } ?? "System TLS trust evaluation failed. Confirm the chain and hostname with IT; do not bypass verification."
@@ -122,6 +131,25 @@ enum HTTPSCertificates {
             box.lock.locked { box.result.certificates = certificates }
             return box.lock.locked { box.result }
         } catch { box.result.issue = (error as? RouterError)?.rawValue ?? "LOCAL_ERROR"; return box.result }
+    }
+
+    private static func socksSocket(host: String, session: Session) throws -> OwnedSocket {
+        let name = Array(host.utf8)
+        guard Configuration.validHost(host), name.count <= 255 else { throw RouterError.destinationDenied }
+        let socket = try OwnedSocket(Darwin.socket(AF_INET, SOCK_STREAM, 0))
+        socket.timeouts(10); try session.add(socket)
+        try MacOSAdapter().connectSocket(socket, address: "127.0.0.1", port: 1090)
+        try socket.write([5, 1, 0]); guard try socket.exact(2) == [5, 0] else { throw RouterError.vpnUnavailable }
+        try socket.write([5, 1, 0, 3, UInt8(name.count)] + name + [1, 187])
+        let response = try socket.exact(4)
+        guard response[0] == 5, response[1] == 0, response[2] == 0 else { throw RouterError.routeDenied }
+        switch response[3] {
+        case 1: _ = try socket.exact(6)
+        case 4: _ = try socket.exact(18)
+        case 3: let count = try socket.exact(1)[0]; _ = try socket.exact(Int(count) + 2)
+        default: throw RouterError.io
+        }
+        return socket
     }
 
     private static func receiveHeader(_ connection: NWConnection, box: ProbeBox, bytes: Data) {

@@ -3,12 +3,16 @@ import Darwin
 
 struct ProductPaths {
     let home: URL
-    init(root: String? = nil) {
+    let systemApplications: URL
+    private let application: URL
+    init(root: String? = nil, systemApplications: URL = AppInstallation.systemApplications) {
         home = root.map { URL(fileURLWithPath: $0, isDirectory: true) } ?? FileManager.default.homeDirectoryForCurrentUser
+        self.systemApplications = systemApplications
+        application = AppInstallation.destination(home: home, systemApplications: systemApplications)
     }
-    let label = "com.geokhv.corporate-vpn-router"
+    var label: String { AppInstallation.identifier }
     var data: URL { home.appendingPathComponent("Library/Application Support/Corporate VPN Router", isDirectory: true) }
-    var app: URL { home.appendingPathComponent("Applications/Corporate VPN Router.app", isDirectory: true) }
+    var app: URL { application }
     var config: URL { data.appendingPathComponent("config.json") }
     var state: URL { data.appendingPathComponent("state.json") }
     var plist: URL { home.appendingPathComponent("Library/LaunchAgents/\(label).plist") }

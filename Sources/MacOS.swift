@@ -50,7 +50,7 @@ func readCommand(_ path: String, _ args: [String]) -> String {
     return ""
 }
 
-#if !CVR_MENU_BETA
+#if !CVR_MENU_BETA || CVR_SELECTIVE_TUN
 final class OwnedSocket {
     let fd: Int32
     private let lock = NSLock()

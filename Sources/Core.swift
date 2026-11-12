@@ -1,6 +1,10 @@
 import Foundation
 
+#if CVR_SELECTIVE_TUN
+let productVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.3.0"
+#else
 let productVersion = "0.2.0-beta.6"
+#endif
 
 enum RouterError: String, Error {
     case unconfigured, invalidConfiguration, vpnUnavailable, dnsUnavailable
@@ -61,7 +65,7 @@ struct Configuration: Codable, Equatable {
     }
 }
 
-#if !CVR_MENU_BETA
+#if !CVR_MENU_BETA || CVR_SELECTIVE_TUN
 struct Link: Equatable {
     let interface: String
     let index: UInt32

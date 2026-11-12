@@ -10,8 +10,13 @@ struct InstallationError: LocalizedError {
 // Shared by the DMG UI and the application's explicit --install command.
 // No VPN engine is executed, no launchd job is stopped or reloaded.
 enum AppInstallation {
+#if CVR_SELECTIVE_TUN
+    static let appName = "Corporate VPN Router TUN Trial.app"
+    static let identifier = "com.geokhv.corporate-vpn-router.tun-trial"
+#else
     static let appName = "Corporate VPN Router.app"
     static let identifier = "com.geokhv.corporate-vpn-router"
+#endif
     static let label = identifier + ".menu"
     static let fm = FileManager.default
 
@@ -85,8 +90,20 @@ enum AppInstallation {
         }
     }
 
-    static func agent(_ home: URL) throws -> URL {
-        let app = home.appendingPathComponent("Applications/" + appName)
+    static let systemApplications = URL(fileURLWithPath: "/Applications", isDirectory: true)
+
+    static func destination(home: URL, systemApplications: URL = systemApplications) -> URL {
+        let userApp = home.appendingPathComponent("Applications/" + appName)
+        let sharedApp = systemApplications.appendingPathComponent(appName)
+        // Respect the location the user already chose. A system-wide app is
+        // itself an installed copy, not evidence of a second installation.
+        if fm.fileExists(atPath: userApp.path) { return userApp }
+        if fm.fileExists(atPath: sharedApp.path) { return sharedApp }
+        return userApp
+    }
+
+    static func agent(_ home: URL, systemApplications: URL = systemApplications) throws -> URL {
+        let app = destination(home: home, systemApplications: systemApplications)
         let executable = app.appendingPathComponent("Contents/MacOS/CorporateVPNRouter").path
         let agent = home.appendingPathComponent("Library/LaunchAgents/" + label + ".plist")
         try rejectLink(agent)
@@ -115,9 +132,9 @@ enum AppInstallation {
         return fd
     }
 
-    static func install(source: URL, home suppliedHome: URL, requirement: String? = nil) throws -> URL {
+    static func install(source: URL, home suppliedHome: URL, requirement: String? = nil, systemApplications: URL = systemApplications) throws -> URL {
         let home = suppliedHome.resolvingSymlinksInPath()
-        let app = home.appendingPathComponent("Applications/" + appName)
+        let app = destination(home: home, systemApplications: systemApplications)
         let data = home.appendingPathComponent("Library/Application Support/Corporate VPN Router")
         for url in [app, data] { try rejectLink(url) }
         if fm.fileExists(atPath: app.path) {
@@ -126,16 +143,19 @@ enum AppInstallation {
                 throw InstallationError(step: "В папке установки находится другое приложение", detail: app.path + "\nСохраните его в резервной папке и повторите установку.")
             }
         }
-        let agentURL = try agent(home)
+        let agentURL = try agent(home, systemApplications: systemApplications)
         try verify(source, requirement: requirement)
         try checked("Нет доступа к папке данных: \(data.path)") {
             try fm.createDirectory(at: data, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
         let menuFD = try lock(data.appendingPathComponent("menu.lock"), busy: "Router работает. Установка не начата; VPN-сеанс сохранён. Когда закончите работу, выберите «Завершить» в меню Router и повторите установку.")
         defer { close(menuFD) }
-        if fm.fileExists(atPath: "/Applications/" + appName) {
-            throw InstallationError(step: "Найдена копия в общей папке /Applications", detail: "Установка не начата. После завершения Router сохраните эту копию в резервной папке и повторите установку в ~/Applications.")
+        let userApp = home.appendingPathComponent("Applications/" + appName)
+        let sharedApp = systemApplications.appendingPathComponent(appName)
+        if fm.fileExists(atPath: userApp.path) && fm.fileExists(atPath: sharedApp.path) {
+            throw InstallationError(step: "Найдены две папки установки Router", detail: "\(userApp.path)\n\(sharedApp.path)\nОбе копии сохранены. Завершите Router и оставьте одну папку установки; настройки не удаляйте.")
         }
+        if source.resolvingSymlinksInPath() == app.resolvingSymlinksInPath() { return app }
         try checked("Нет доступа к папке установки: \(app.deletingLastPathComponent().path)") {
             try fm.createDirectory(at: app.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
@@ -156,6 +176,7 @@ enum AppInstallation {
             try checked("Не удалось поместить приложение: \(app.path)") { try fm.moveItem(at: stage, to: app) }
             placedNew = true
             try verify(app, requirement: requirement)
+#if !CVR_SELECTIVE_TUN
             if oldAgent == nil {
                 try checked("Не удалось сохранить автозапуск: \(agentURL.path)") {
                     try fm.createDirectory(at: agentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -166,7 +187,8 @@ enum AppInstallation {
                     try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: agentURL.path)
                 }
             }
-            _ = try agent(home)
+#endif
+            _ = try agent(home, systemApplications: systemApplications)
         } catch {
             let original = error
             do {

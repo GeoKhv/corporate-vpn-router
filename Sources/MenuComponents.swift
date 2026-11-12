@@ -1,5 +1,20 @@
 import AppKit
 
+func gatewaySetupMessage(_ code: String) -> String? {
+    ["HELPER_UNAVAILABLE": "Помощник маршрутов не отвечает. Нажмите «Восстановить помощник маршрутов…» в этом окне и подтвердите запрос macOS.",
+     "APPROVED_GATEWAY_MISMATCH": "Шлюз или его сертификат отличается от заранее проверенной конфигурации. Вход заблокирован; подтвердите изменение у владельца конфигурации.",
+     "APPROVED_GATEWAY_INVALID": "Проверенная конфигурация шлюза повреждена. Вход заблокирован; восстановите приложение из проверенного архива.",
+     "HELPER_UPDATE_REQUIRED": "Нажмите «Обновить помощник маршрутов…» в этом окне и подтвердите запрос macOS.",
+     "HELPER_POLICY_APPROVAL_REQUIRED": "Список выходит за область, разрешённую при установке помощника. Эта приватная сборка допускает только утверждённые домены и порты; расширение требует новой сборки и подтверждения администратора.",
+     "OFFICIAL_INFO_TIMEOUT": "Служба Check Point не ответила за отведённое время. Выполните проверку службы из меню Router.",
+     "OFFICIAL_SERVICE_NOT_STARTED": "Check Point сообщил, что его служба недоступна. Это не означает, что VPN должен быть подключён. Выполните «Проверить службу Check Point» в меню Router; простой перезапуск окна может не восстановить службу.",
+     "OFFICIAL_INFO_FAILED": "Check Point не вернул состояние рабочего подключения. Проверьте готовность штатного клиента и повторите вход.",
+     "OFFICIAL_SITE_MISSING": "Check Point не сообщил рабочее подключение. Проверьте его настройку в штатном клиенте.",
+     "OFFICIAL_SITE_FORMAT_UNSUPPORTED": "Не удалось прочитать формат рабочего подключения Check Point. Сохраните код из «Диагностики» для проверки совместимости.",
+     "OFFICIAL_SITE_AMBIGUOUS": "Check Point сообщил несколько подключений. Однозначно выбрать рабочий шлюз не удалось; вход остановлен.",
+     "OFFICIAL_STATE_UNKNOWN": "Check Point не сообщил однозначное состояние рабочего VPN. Вход остановлен до проверки клиента."][code]
+}
+
 enum Health: String {
     case idle, waiting, ready, error
     var color: NSColor {
@@ -143,15 +158,23 @@ func makeColumn(_ views: [NSView], spacing: CGFloat = 10) -> NSStackView {
     return column
 }
 
-func attachColumn(_ column: NSStackView, to window: NSWindow) {
+func attachColumn(_ column: NSStackView, to window: NSWindow, footer: NSView? = nil) {
     let content = NSView()
     window.contentView = content
     column.translatesAutoresizingMaskIntoConstraints = false
     content.addSubview(column)
-    NSLayoutConstraint.activate([
+    var constraints = [
         column.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
         column.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
-        column.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -22),
-        column.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -18)
-    ])
+        column.trailingAnchor.constraint(lessThanOrEqualTo: content.trailingAnchor, constant: -22)
+    ]
+    if let footer {
+        footer.translatesAutoresizingMaskIntoConstraints = false
+        content.addSubview(footer)
+        constraints += [footer.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 22),
+                        footer.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -22),
+                        footer.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -12),
+                        column.bottomAnchor.constraint(lessThanOrEqualTo: footer.topAnchor, constant: -12)]
+    } else { constraints.append(column.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -18)) }
+    NSLayoutConstraint.activate(constraints)
 }
