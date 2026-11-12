@@ -30,7 +30,11 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         for item in [checkItem, actionItem, cancelItem, automaticItem] { item.target = self }
         button.target = self; button.action = #selector(check); button.isBordered = false
         button.font = .systemFont(ofSize: 10); button.contentTintColor = .linkColor
-        do { try updater.start() } catch { status = "Обновления: " + error.localizedDescription }
+        do {
+            try updater.start()
+            // Explicit startup check even if a previous launch checked recently.
+            if updater.automaticallyChecksForUpdates { updater.checkForUpdatesInBackground() }
+        } catch { status = "Обновления: " + error.localizedDescription }
         refresh()
     }
     func refresh() {
@@ -132,7 +136,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     }
     func showUpdateInstalledAndRelaunched(_ relaunched: Bool, acknowledgement: @escaping () -> Void) { record("installed"); acknowledgement() }
     func dismissUpdateInstallation() {
-        cancelAction = nil; foundReply = nil; installationRequested = false; preparing = false; refresh()
+        cancelAction = nil; foundReply = nil; installationRequested = false; preparing = false; cleanupReady = false; refresh()
     }
     func showUpdateInFocus() { owner?.show() }
 }
