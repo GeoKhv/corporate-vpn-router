@@ -1,11 +1,26 @@
 import AppKit
 import Foundation
 import Darwin
+import CryptoKit
 
 struct SSLPolicy: Codable { var domains: [String]; var ports: [Int] }
 final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFieldDelegate {
     let paths: ProductPaths
-    init(paths: ProductPaths = ProductPaths()) { self.paths = paths; super.init() }
+    let runtimeIdentity: Data?
+    init(paths: ProductPaths = ProductPaths()) {
+        self.paths = paths
+        runtimeIdentity = Self.codeIdentity()
+        super.init()
+    }
+    static func codeIdentity() -> Data? {
+        guard let executable = Bundle.main.executableURL, let data = try? Data(contentsOf: executable) else { return nil }
+        return Data(SHA256.hash(data: data))
+    }
+    func verifyRuntime() -> Bool {
+        if paths.isTestRoot { return true }
+        guard let runtimeIdentity, runtimeIdentity == Self.codeIdentity() else { return false }
+        return (try? AppInstallation.verify(Bundle.main.bundleURL)) != nil
+    }
     #if CVR_UPDATES
     var updates: RouterUpdates?
     var terminationPending = false
@@ -28,7 +43,9 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var connectionAttempt = 0
     var certificateWizard: CertificateWizard?
 #endif
-    var resources: URL { paths.app.appendingPathComponent("Contents/Resources") }
+    // A running executable must never load Python from a different installed
+    // bundle (for example after launching a historical rollback copy).
+    var resources: URL { paths.isTestRoot ? paths.app.appendingPathComponent("Contents/Resources") : Bundle.main.resourceURL! }
     var promptBox: NSStackView!, secretRow: NSStackView!
     var engine: Process?, input: FileHandle?, generation = 0, stopping = false
     var health = Health.idle, stage = "Отключено", note = "Выберите способ входа."
@@ -170,7 +187,14 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         attachColumn(makeColumn([state, detail, setupBrowser, method, who, promptBox, row]), to: window, footer: footer)
     }
 #if CVR_SELECTIVE_TUN
-    @objc func installRouteHelper() { guard engine == nil else { return }; show(); selective.manageHelper(resources: resources) }
+    @objc func installRouteHelper() {
+        guard engine == nil, !selective.busy else { return }; show()
+        guard selective.helperAvailability.needsInstallation else {
+            selective.checkHelper(resources: resources); return
+        }
+        guard confirmAction(selective.setupTitle, selective.helperAvailability.explanation + "\nСейчас macOS запросит разрешение администратора. Обычное подключение этой операции не выполняет.", "Продолжить") else { return }
+        selective.manageHelper(resources: resources)
+    }
     @objc func removeRouteHelper() { guard engine == nil else { return }; show(); selective.manageHelper(resources: resources, remove: true) }
     @objc func checkpointDiagnostic() { NSWorkspace.shared.open(resources.appendingPathComponent("Check Check Point.command")) }
     @objc func certificates() {
@@ -407,9 +431,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #if CVR_SELECTIVE_TUN
         guard [.idle, .failed].contains(connectionPhase), engine == nil, (selective.process == nil || selective.ready),
               selective.state != "installing", (selective.cleanupConfirmed || selective.ready), prepareLogin() else { return }
+        guard verifyRuntime() else {
+            failConnection("Файлы запущенного Router изменились. Завершите приложение и откройте установленную копию заново.", code: "APP_CHANGED_ON_DISK"); return
+        }
         guard storedWork() != nil else { note = "Добавьте рабочие сайты."; refresh(); return }
         connectionAttempt += 1; connectionFailure = nil; connectionFailureCode = nil; connectionNotice = nil
         connectionPhase = .checkingHelper; journal("ui", "connect")
+        if !selective.ready { selective.checkHelper(resources: resources) }
         continueConnection(); presentConnection()
 #else
         guard engine == nil, prepareLogin() else { return }

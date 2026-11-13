@@ -142,6 +142,12 @@ enum AppInstallation {
             guard value?["CFBundleIdentifier"] as? String == identifier else {
                 throw InstallationError(step: "В папке установки находится другое приложение", detail: app.path + "\nСохраните его в резервной папке и повторите установку.")
             }
+            let incoming = try PropertyListSerialization.propertyList(from: Data(contentsOf: source.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any]
+            if let current = value?["CFBundleVersion"] as? String,
+               let next = incoming?["CFBundleVersion"] as? String,
+               current.compare(next, options: .numeric) == .orderedDescending {
+                throw InstallationError(step: "Запущена устаревшая копия Router", detail: "Установленная сборка \(current) новее сборки \(next). Откройте \(app.path). Для намеренного отката завершите Router и восстановите сохранённую копию вручную.")
+            }
         }
         let agentURL = try agent(home, systemApplications: systemApplications)
         try verify(source, requirement: requirement)

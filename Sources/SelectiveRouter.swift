@@ -2,7 +2,21 @@
 import Foundation
 import AppKit
 
-enum RouteHelperAvailability { case checking, missing, ready, updateRequired, unavailable }
+enum RouteHelperAvailability: String {
+    case checking, missing, ready, updateRequired, repairRequired, checkFailed, unavailable
+    var needsInstallation: Bool { [.missing, .updateRequired, .repairRequired].contains(self) }
+    var explanation: String {
+        switch self {
+        case .missing: return "Помощник не установлен: служба и исполняемый файл отсутствуют. Установка — отдельное действие с подтверждением macOS."
+        case .updateRequired: return "Помощник ответил, но его протокол несовместим. Требуется отдельное обновление помощника с подтверждением macOS."
+        case .repairRequired: return "Установка помощника неполна: отсутствует файл службы или исполняемый файл. Восстановление — отдельное действие с подтверждением macOS."
+        case .checkFailed: return "Не удалось проверить помощник: ошибка клиента, проверки файлов или некорректный ответ. Повторите проверку; переустановка автоматически не выполняется."
+        case .unavailable: return "Установленный помощник временно не отвечает. Повторите проверку: macOS самостоятельно перезапускает службу после сбоя. Права администратора для повторной проверки не нужны."
+        case .ready: return "Всё готово. Выберите способ входа и нажмите «Подключить»."
+        case .checking: return "Проверка помощника маршрутов…"
+        }
+    }
+}
 
 final class SelectiveRouter {
     // The UI-only alpha.4 update keeps the alpha.3 broker/client contract.
@@ -35,30 +49,59 @@ final class SelectiveRouter {
         case .checking: return "Проверка помощника…"
         case .missing: return "Установить помощник маршрутов…"
         case .updateRequired: return "Обновить помощник маршрутов…"
-        case .unavailable: return "Восстановить помощник маршрутов…"
+        case .repairRequired: return "Восстановить помощник маршрутов…"
+        case .unavailable, .checkFailed: return "Повторить проверку помощника"
         case .ready: return "Включить рабочие маршруты"
         }
     }
     static func helperStatus(resources: URL) -> RouteHelperAvailability {
-        guard FileManager.default.fileExists(atPath: "/Library/LaunchDaemons/com.geokhv.corporate-vpn-router.routes.plist") else { return .missing }
-        guard let result = helperReply(resources: resources) else { return .unavailable }
-        return result["version"] as? String == helperVersion ? .ready : .updateRequired
+        let paths = ["/Library/LaunchDaemons/com.geokhv.corporate-vpn-router.routes.plist",
+                     "/Library/Application Support/Corporate VPN Router Route Helper/RouteHelper"]
+        var present = [Bool]()
+        for path in paths {
+            var info = stat()
+            if lstat(path, &info) != 0 {
+                guard errno == ENOENT else { return .checkFailed }
+                present.append(false)
+            } else {
+                guard info.st_uid == 0, info.st_mode & 0o022 == 0, info.st_mode & S_IFMT == S_IFREG else { return .checkFailed }
+                present.append(true)
+            }
+        }
+        if present == [false, false] { return .missing }
+        if present.contains(false) { return .repairRequired }
+        let probe = probeHelper(resources: resources)
+        guard let result = probe.reply else { return probe.unavailable ? .unavailable : .checkFailed }
+        return classifyReply(result)
+    }
+    static func classifyReply(_ result: [String: Any]) -> RouteHelperAvailability {
+        guard result["ok"] as? Bool == true else {
+            return result["error"] as? String == "HELPER_UNAVAILABLE" ? .unavailable : .checkFailed
+        }
+        guard let version = result["version"] as? String,
+              version.range(of: "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[A-Za-z0-9.]+)?$", options: .regularExpression) != nil,
+              result["active"] is Bool, result["cleanupPending"] is Bool else { return .checkFailed }
+        return version == helperVersion ? .ready : .updateRequired
     }
     static func helperReply(resources: URL) -> [String: Any]? {
+        guard let result = probeHelper(resources: resources).reply, result["ok"] as? Bool == true else { return nil }
+        return result
+    }
+    static func probeHelper(resources: URL) -> (reply: [String: Any]?, unavailable: Bool) {
         let p = Process(), rx = Pipe(), tx = Pipe()
         p.executableURL = resources.appendingPathComponent("RouteHelper/RouteClient")
         p.standardInput = tx; p.standardOutput = rx; p.standardError = FileHandle.nullDevice
-        do { try p.run() } catch { return nil }
+        do { try p.run() } catch { return (nil, false) }
         let timeout = DispatchWorkItem { if p.isRunning { p.terminate() } }
         DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: timeout)
         defer { timeout.cancel() }
         try? tx.fileHandleForWriting.write(contentsOf: Data("{\"op\":\"status\"}\n".utf8))
         try? tx.fileHandleForWriting.close()
         let data = rx.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        if p.terminationReason == .uncaughtSignal && p.terminationStatus == SIGTERM { return (nil, true) }
         guard p.terminationStatus == 0,
-              let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-              result["ok"] as? Bool == true else { return nil }
-        return result
+              let result = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return (nil, false) }
+        return (result, false)
     }
     func checkHelper(resources: URL) {
         guard process == nil, state != "installing" else { return }
@@ -67,12 +110,7 @@ final class SelectiveRouter {
             let availability = self.inspectHelper(resources)
             DispatchQueue.main.async {
                 self.helperAvailability = availability
-                switch availability {
-                case .missing: self.message = "Первый запуск: установите помощник кнопкой ниже и подтвердите запрос macOS. Затем можно подключиться из этого окна."
-                case .ready: self.message = "Всё готово. Выберите способ входа и нажмите «Подключить»."
-                case .updateRequired: self.message = gatewaySetupMessage("HELPER_UPDATE_REQUIRED")!
-                default: self.message = gatewaySetupMessage("HELPER_UNAVAILABLE")!
-                }
+                self.message = availability.explanation
                 self.changed?()
             }
         }
@@ -143,6 +181,14 @@ final class SelectiveRouter {
     }
     func manageHelper(resources: URL, remove: Bool = false) {
         guard !busy else { message = "Сначала остановите рабочие маршруты."; changed?(); return }
+        // Even an explicit maintenance click cannot turn a failed probe into
+        // installation. Recheck evidence immediately before authorization.
+        if !remove {
+            helperAvailability = inspectHelper(resources)
+            guard helperAvailability.needsInstallation else {
+                message = helperAvailability.explanation; changed?(); return
+            }
+        }
         failureCode = nil
         #if CVR_UPDATES
         do { _ = try Provisioning.helper(resources) }
@@ -163,7 +209,7 @@ final class SelectiveRouter {
                 } else {
                     self.helperAvailability = availability ?? .unavailable
                     self.state = availability == .ready ? "stopped" : "error"
-                    self.message = availability == .ready ? "Помощник установлен и проверен. Выберите способ входа и нажмите «Подключить»." : "Установка завершилась, но помощник не отвечает. Повторите восстановление кнопкой в этом окне."
+                    self.message = availability == .ready ? "Помощник установлен и проверен. Выберите способ входа и нажмите «Подключить»." : "Установка завершилась. " + self.helperAvailability.explanation
                 }
                 self.changed?(); self.managementFinished?()
             }

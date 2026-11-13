@@ -73,26 +73,51 @@ sys.stdin.read()
         menu.toggle(); until { menu.connectionPhase == .idle && menu.engine == nil && menu.selective.process == nil }
         check(menu.selective.cleanupConfirmed, "cleanup must complete before retry")
     }
+    var authorizations = 0
+    menu.selective.authorizeHelper = { _ in authorizations += 1; return "unexpected authorization" }
+    for availability: RouteHelperAvailability in [.missing, .updateRequired, .repairRequired, .unavailable, .checkFailed] {
+        menu.selective.inspectHelper = { _ in availability }
+        try begin("repeat")
+        until { menu.connectionPhase == .failed }
+        check(authorizations == 0 && menu.engine == nil && menu.selective.process == nil,
+              "Connect must never install/repair on \(availability)")
+        check(menu.selective.cleanupConfirmed, "failed probe leaves network untouched")
+    }
+    for availability: RouteHelperAvailability in [.unavailable, .checkFailed, .ready] {
+        menu.selective.inspectHelper = { _ in availability }
+        menu.selective.helperAvailability = .missing // stale UI must not authorize an install
+        menu.selective.manageHelper(resources: res)
+        check(authorizations == 0, "maintenance rechecks evidence before elevation")
+    }
+    let healthy: [String: Any] = ["ok":true, "version":"0.3.0-alpha.3", "active":false, "cleanupPending":false]
+    check(SelectiveRouter.classifyReply(healthy) == .ready, "alpha.3 contract is current")
+    var mismatch = healthy; mismatch["version"] = "0.4.0"
+    check(SelectiveRouter.classifyReply(mismatch) == .updateRequired, "positive protocol mismatch")
+    check(SelectiveRouter.classifyReply(["ok":true]) == .checkFailed, "missing version is not an upgrade")
+    check(SelectiveRouter.classifyReply(["ok":false,"error":"CALLER_REJECTED"]) == .checkFailed, "caller rejection is not absence")
+    check(SelectiveRouter.classifyReply(["ok":false,"error":"HELPER_UNAVAILABLE"]) == .unavailable, "XPC loss is temporary")
+    menu.selective.inspectHelper = { _ in .ready }
     try begin("first")
     until { menu.requestKind == "trust" }
     menu.answer(); finishMFA()
     try begin("repeat"); finishMFA()
     try begin("gateway_failure")
-    until { menu.engine == nil && menu.selective.process == nil }
+    until { menu.connectionPhase == .failed && menu.engine == nil && menu.selective.process == nil }
     check(menu.connectionPhase == .failed && menu.health == .error, "gateway failure must remain an error after cleanup")
     check(menu.note.contains("сертификата шлюза") && !menu.note.contains("маршруты удалены"), "cleanup must not overwrite TLS failure")
     check(menu.connectionFailureCode == "SSLCertVerificationError" && menu.selective.cleanupConfirmed, "precise failure and verified cleanup")
     try begin("repeat"); finishMFA()
     try begin("route_failure")
-    until { menu.selective.process == nil }
+    until { menu.connectionPhase == .failed && menu.selective.process == nil }
     check(menu.connectionPhase == .failed && menu.connectionFailureCode == "FIXTURE_ROUTE_REJECTED", "route startup failure must survive cleanup")
     let before = try String(contentsOf: res.appendingPathComponent("Engine/starts"))
-    try begin("slow"); menu.toggle()
+    try begin("slow"); until { menu.connectionPhase == .preparingRoutes }; menu.toggle()
     until { menu.connectionPhase == .idle && menu.selective.process == nil }
     check(try! String(contentsOf: res.appendingPathComponent("Engine/starts")) == before, "cancel before readiness must not start late MFA")
     let log = try String(contentsOf: paths.data.appendingPathComponent("Selective/connection-events.jsonl"))
     check(log.contains("SSLCertVerificationError") && log.contains("FIXTURE_ROUTE_REJECTED"), "failure codes are journaled")
     check(!log.contains("fixture-user") && !log.contains("fixture-code") && !log.contains("gateway.invalid"), "journal excludes secrets and identity")
+    check(authorizations == 0, "all normal connections are independent of cached admin authorization")
     print("PASS one-click first trust/MFA and repeat; gateway failure; preserved error through cleanup; retry; route failure; cancellation race; private journal")
 }
 do { try run() } catch { fputs("FAIL \(error)\n", stderr); exit(1) }

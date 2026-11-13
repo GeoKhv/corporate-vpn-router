@@ -23,7 +23,9 @@ extension BetaMenu {
                 try? FileManager.default.removeItem(at: old); try FileManager.default.moveItem(at: url, to: old)
             }
             var row: [String: Any] = ["time": Date().timeIntervalSince1970, "attempt": connectionAttempt,
-                                      "component": component, "event": event, "phase": connectionPhase.rawValue]
+                                      "component": component, "event": event, "phase": connectionPhase.rawValue,
+                                      "pid": getpid(), "appVersion": productVersion,
+                                      "helper": selective.helperAvailability.rawValue]
             if let code, code.range(of: "^[A-Za-z_][A-Za-z_0-9]{0,79}$", options: .regularExpression) != nil { row["code"] = code }
             if let errorNumber { row["errno"] = errorNumber }
             let data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) + Data([10])
@@ -38,8 +40,9 @@ extension BetaMenu {
         guard connectionPhase == .checkingHelper else { return }
         if selective.helperAvailability == .checking { return }
         if selective.helperAvailability != .ready {
-            connectionPhase = .installingHelper; journal("ui", "install_helper")
-            selective.manageHelper(resources: resources); return
+            failConnection(selective.helperAvailability.explanation,
+                           code: "HELPER_" + selective.helperAvailability.rawValue.uppercased())
+            return
         }
         connectionPhase = .preparingRoutes; journal("ui", "prepare_routes")
         if selective.ready { startAuthentication() }

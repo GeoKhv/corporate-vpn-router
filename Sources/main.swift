@@ -14,9 +14,17 @@ do{
     case "--ui","--login":
         let wasInstalled = try BetaInstall.isInstalledCopy(Lifecycle.sourceApp(), paths)
         if !wasInstalled {
+#if CVR_SELECTIVE_TUN
+            guard !FileManager.default.fileExists(atPath: paths.app.path) else {
+                throw InstallationError(step: "Запущена другая копия Router", detail: "Откройте установленное приложение: \(paths.app.path). Резервная копия не заменяет его при обычном запуске. Для обновления используйте меню установленного Router.")
+            }
+#endif
             try BetaInstall.install(paths)
-#if !CVR_DEMO_SINGLE
+#if !CVR_DEMO_SINGLE || CVR_SELECTIVE_TUN
             _ = try AppInstallation.run("/usr/bin/open", ["-n", paths.app.path], step: "Приложение установлено, но macOS не разрешила запуск. Откройте его из ~/Applications; при запросе используйте «Конфиденциальность и безопасность → Всё равно открыть».")
+#if CVR_SELECTIVE_TUN
+            exit(0)
+#endif
 #endif
         }
 #if CVR_DEMO_SINGLE

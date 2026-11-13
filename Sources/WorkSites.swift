@@ -191,7 +191,8 @@ extension BetaMenu {
 #if CVR_SELECTIVE_TUN
         guard engine == nil else { settingsNote.stringValue = "Сначала отключите рабочий туннель."; return }
         if selective.process != nil { selective.stop() }
-        else if selective.helperAvailability != .ready { installRouteHelper() }
+        else if selective.helperAvailability.needsInstallation { installRouteHelper() }
+        else if selective.helperAvailability != .ready { selective.checkHelper(resources: resources) }
         else { connect() }
 #else
         if BrowserRouter.effective() && activated {

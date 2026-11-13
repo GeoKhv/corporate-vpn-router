@@ -16,13 +16,13 @@ for name in ['DefaultWorkSites.json','ApprovedGateway.json','DefaultDomainMap.js
  visit(v)
 # Include names allocated in the durable map, including hosts absent from root rules.
 for name in json.loads((res/'DefaultDomainMap.json').read_text())['names']:forbidden.append(name.encode())
-forbidden += [b'alfabank.ru',b'alfa-bank',b'/Users/alfa/',b'/Users/geo/',b'BEGIN PRIVATE KEY',b'BEGIN OPENSSH PRIVATE KEY',b'ghp_',b'github_pat_']
+forbidden += [b'BEGIN PRIVATE KEY',b'BEGIN OPENSSH PRIVATE KEY',b'ghp_',b'github_pat_']
 forbidden=list(set(s.lower() for s in forbidden if len(s)>4))
 bad=[];count=0
 def scan(name,data):
  global count
  count+=1;lower=data.lower()
- if any(s in lower for s in forbidden):bad.append(name)
+ if any(s in lower for s in forbidden) or re.search(rb'/Users/[A-Za-z0-9_.-]+/',data):bad.append(name)
  if zipfile.is_zipfile(io.BytesIO(data)):
   with zipfile.ZipFile(io.BytesIO(data)) as z:
    for n in z.namelist():
