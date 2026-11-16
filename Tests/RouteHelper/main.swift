@@ -26,6 +26,51 @@ func rejected(_ body:() throws->Void) { do { try body();fatalError("accepted for
         assert(!child.isRunning);done.signal()
     }
     assert(done.wait(timeout:.now()+3) == .success)
+    // Preserve a real startup exit status; do not report cleanup's SIGTERM as
+    // the reason for an adapter failure, or ECHILD as a successful exit(0).
+    let failed=try spawn("/bin/sh",["-c","exit 7"],output:devnull)
+    let until=Date().addingTimeInterval(2)
+    while failed.isRunning && Date()<until { Thread.sleep(forTimeInterval:0.01) }
+    let failure=AdapterFailureEvidence(stage:.interfaceWait,started:ProcessInfo.processInfo.systemUptime,
+        identityMilliseconds:0,interfaceIndex:0,child:failed)
+    assert(failure.childRunning == false && failure.waitStatus == 7 << 8 && failure.waitErrno == nil)
+    let sleeper=try spawn("/bin/sleep",["10"],output:devnull)
+    defer { if sleeper.isRunning { kill(sleeper.pid,SIGKILL) } }
+    kill(sleeper.pid,SIGSTOP)
+    var stopped:AdapterFailureEvidence!
+    let stoppedDeadline=Date().addingTimeInterval(2)
+    repeat {
+        stopped=AdapterFailureEvidence(stage:.interfaceWait,started:ProcessInfo.processInfo.systemUptime,
+            identityMilliseconds:123,interfaceIndex:0,child:sleeper)
+        if stopped.processState == 4 { break };Thread.sleep(forTimeInterval:0.01)
+    } while Date()<stoppedDeadline
+    assert(stopped.childRunning == true && stopped.processState == 4 && stopped.waitStatus == nil)
+    kill(sleeper.pid,SIGCONT);sleeper.terminate()
+    let exitDeadline=Date().addingTimeInterval(2)
+    while sleeper.isRunning && Date()<exitDeadline { Thread.sleep(forTimeInterval:0.01) }
+    assert(!sleeper.isRunning && sleeper.result & 0x7f == SIGTERM)
+    assert(stopped.childRunning == true && stopped.waitStatus == nil) // immutable pre-cleanup evidence
+    let unknown=Child(getpid()) // Not our child; waitpid returns ECHILD.
+    let lost=AdapterFailureEvidence(stage:.identity,started:ProcessInfo.processInfo.systemUptime,
+        identityMilliseconds:nil,interfaceIndex:0,child:unknown)
+    assert(lost.waitStatus == nil && lost.waitErrno == ECHILD)
+    let decoded=try JSONDecoder().decode(AdapterFailureEvidence.self,from:JSONEncoder().encode(stopped))
+    b.lastAdapterFailure=decoded
+    let diagnostic=(try b.request(["op":"status"],owner:owner))["lastAdapterFailure"] as! [String:Any]
+    assert(diagnostic["processState"] as? UInt32 == 4)
+    assert(diagnostic["password"] == nil && diagnostic["arguments"] == nil && diagnostic["log"] == nil)
+    for (executable,args,timeout,reason) in [
+        ("/bin/sleep",["10"],0.05,"COMMAND_TIMEOUT"),
+        ("/usr/bin/yes",["fixture"],2.0,"COMMAND_OUTPUT_LIMIT")
+    ] {
+        do { _=try command(executable,args,timeout:timeout);fatalError("command should fail") }
+        catch { assert(String(describing:error) == reason) }
+        reapCommands();assert(pendingCommandReaps.isEmpty)
+        var status:Int32=0
+        assert(waitpid(-1,&status,WNOHANG) == -1 && errno == ECHILD,"failed command left an unreaped child")
+    }
     print("PASS address/policy bounds, injection/unknown operations, per-connection ownership and idle status")
+    print("PASS real child exit, suspended startup, pre-cleanup evidence, ECHILD, schema round trip and metadata-only status")
+    print("PASS timed-out and output-limited commands are killed and reaped without zombies")
  }
 }

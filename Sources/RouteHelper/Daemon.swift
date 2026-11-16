@@ -55,18 +55,70 @@ func writeRoot(_ data: Data, _ path: String, mode: mode_t = 0o600, exclusive: Bo
 final class Child {
     let pid: pid_t
     var finished=false, result:Int32=0
+    private(set) var statusKnown=false, waitError:Int32?
     init(_ pid:pid_t) { self.pid=pid }
     var isRunning:Bool {
         if finished { return false }
         var status:Int32=0
         let r=waitpid(pid,&status,WNOHANG)
-        if r==pid { finished=true;result=status;return false }
-        if r<0 && errno==ECHILD { finished=true;return false }
+        if r==pid { finished=true;result=status;statusKnown=true;return false }
+        if r<0 && errno==ECHILD { finished=true;waitError=errno;return false }
         return true
     }
     var processIdentifier:pid_t { pid }
     func terminate() { if isRunning { kill(pid,SIGTERM) } }
 }
+
+// Capture BEFORE cleanup sends SIGTERM/SIGKILL. An empty warn-level log does
+// not distinguish an early exit, a suspended process, and a startup timeout.
+// This schema contains no arguments, configuration, domains or credentials.
+enum AdapterStartupStage: String, Codable {
+    case configuration, spawn, identity, interfaceWait, prepared
+}
+struct AdapterFailureEvidence: Codable {
+    let schema: Int
+    let time: Double
+    let stage: AdapterStartupStage
+    let elapsedMilliseconds: Double
+    let identityMilliseconds: Double?
+    let interfaceIndex: UInt32
+    let childPID: Int32?
+    let childRunning: Bool?
+    let waitStatus: Int32?
+    let waitErrno: Int32?
+    let processState: UInt32?
+    let processInfoErrno: Int32?
+    var logSHA256: String?
+
+    init(stage: AdapterStartupStage, started: TimeInterval, identityMilliseconds: Double?,
+         interfaceIndex: UInt32, child: Child?) {
+        schema=1;time=Date().timeIntervalSince1970;self.stage=stage
+        elapsedMilliseconds=max(0,(ProcessInfo.processInfo.systemUptime-started)*1000)
+        self.identityMilliseconds=identityMilliseconds;self.interfaceIndex=interfaceIndex
+        childPID=child?.pid;childRunning=child?.isRunning
+        waitStatus=child?.statusKnown == true ? child?.result : nil
+        waitErrno=child?.waitError
+        var info=proc_bsdinfo()
+        if let child,childRunning == true {
+            let size=Int32(MemoryLayout<proc_bsdinfo>.size)
+            let count=proc_pidinfo(child.pid,PROC_PIDTBSDINFO,0,&info,size)
+            processState=count == size ? info.pbi_status : nil
+            processInfoErrno=count == size ? nil : errno
+        } else { processState=nil;processInfoErrno=nil }
+    }
+    func object() throws -> [String:Any] { try jsonObject(JSONEncoder().encode(self)) }
+}
+
+// Only the serial broker queue accesses these abandoned command children.
+// A kill is not a wait: retain a slow-to-exit child until the timer can reap it.
+var pendingCommandReaps=[Child]()
+func killCommand(_ child:Child) {
+    if child.isRunning { kill(child.pid,SIGKILL) }
+    let end=ProcessInfo.processInfo.systemUptime+0.25
+    while child.isRunning && ProcessInfo.processInfo.systemUptime<end { Thread.sleep(forTimeInterval:0.01) }
+    if child.isRunning { pendingCommandReaps.append(child) }
+}
+func reapCommands() { pendingCommandReaps.removeAll { !$0.isRunning } }
 func spawn(_ executable:String,_ arguments:[String],output:Int32) throws -> Child {
     var actions:posix_spawn_file_actions_t?;var attrs:posix_spawnattr_t?
     posix_spawn_file_actions_init(&actions);posix_spawnattr_init(&attrs)
@@ -90,7 +142,7 @@ func spawn(_ executable:String,_ arguments:[String],output:Int32) throws -> Chil
     guard rc==0 else { throw HelperFailure("SPAWN_FAILED: \(rc)") }
     return Child(pid)
 }
-func command(_ executable:String,_ arguments:[String]) throws -> (Int32,String) {
+func command(_ executable:String,_ arguments:[String],timeout:TimeInterval = 8) throws -> (Int32,String) {
     var fds:[Int32]=[0,0];guard pipe(&fds)==0 else { throw HelperFailure("PIPE_FAILED") }
     let child:Child
     do { child=try spawn(executable,arguments,output:fds[1]) }
@@ -98,12 +150,12 @@ func command(_ executable:String,_ arguments:[String]) throws -> (Int32,String) 
     close(fds[1]);defer { close(fds[0]) }
     _=fcntl(fds[0],F_SETFL,O_NONBLOCK)
     var result=Data(),buffer=[UInt8](repeating:0,count:8192)
-    let end=Date().addingTimeInterval(8)
+    let end=Date().addingTimeInterval(timeout)
     while true {
         let n=read(fds[0],&buffer,buffer.count)
-        if n>0 { result.append(contentsOf:buffer.prefix(n)); if result.count>1048576 { kill(child.pid,SIGKILL);throw HelperFailure("COMMAND_OUTPUT_LIMIT") };continue }
+        if n>0 { result.append(contentsOf:buffer.prefix(n)); if result.count>1048576 { killCommand(child);throw HelperFailure("COMMAND_OUTPUT_LIMIT") };continue }
         if !child.isRunning { break }
-        if Date()>end { kill(child.pid,SIGKILL);throw HelperFailure("COMMAND_TIMEOUT") }
+        if Date()>end { killCommand(child);throw HelperFailure("COMMAND_TIMEOUT") }
         Thread.sleep(forTimeInterval:0.01)
     }
     return (child.result,String(decoding:result,as:UTF8.self))
@@ -140,11 +192,21 @@ final class Broker {
     var lease: UUID?
     var beat = Date.distantPast
     var error: String?
+    var lastAdapterFailure: AdapterFailureEvidence?
     init(home:String = routeHelperHome,state:String = routeHelperState) { self.home=home;self.state=state }
     var journalPath: String { state + "/session.json" }
     func persist() throws { try writeRoot(try jsonData(journal),journalPath) }
     func recover() throws {
         try secureDirectory(state)
+        let evidencePath=state+"/last-adapter-failure.json"
+        if fm.fileExists(atPath:evidencePath),
+           (try? checkRootPath(evidencePath,directory:false)) != nil,
+           let size=(try? fm.attributesOfItem(atPath:evidencePath)[.size]) as? NSNumber,
+           size.intValue <= 16384,
+           let data=try? Data(contentsOf:URL(fileURLWithPath:evidencePath)),
+           let evidence=try? JSONDecoder().decode(AdapterFailureEvidence.self,from:data),evidence.schema == 1 {
+            lastAdapterFailure=evidence
+        }
         if fm.fileExists(atPath:journalPath) {
             try checkRootPath(journalPath,directory:false)
             journal = try jsonObject(Data(contentsOf:URL(fileURLWithPath:journalPath)))
@@ -169,6 +231,10 @@ final class Broker {
         guard digest(try Data(contentsOf:URL(fileURLWithPath:home+"/sing-box"))) == adapterSHA256 else { throw HelperFailure("ADAPTER_HASH_MISMATCH") }
         journal=["schema":1,"id":UUID().uuidString,"domains":domains,"resolvers":[],"routes":[],"madeResolverDirectory":!fm.fileExists(atPath:resolver)]
         lease=owner;beat=Date();try persist()
+        let started=ProcessInfo.processInfo.systemUptime
+        var startupStage=AdapterStartupStage.configuration
+        var identityMilliseconds:Double?
+        var logWasReset=false
         do {
             let config:[String:Any] = ["log":["level":"warn","timestamp":true],
                 "inbounds":[["type":"tun","tag":"work-tun","interface_name":"utun73","address":["198.18.73.1/32","fdc7:7652:9a10::1/128"],"mtu":1500,"auto_route":false,"dns_mode":"disabled","stack":"gvisor"]],
@@ -176,19 +242,46 @@ final class Broker {
                 "route":["rules":[["inbound":["work-tun"],"network":"tcp","port":ports,"action":"route","outbound":"verified-work"],["action":"reject","no_drop":true]]]]
             try writeRoot(try jsonData(config),state+"/adapter.json")
             try writeRoot(Data(),state+"/adapter.log")
+            logWasReset=true
             let log=open(state+"/adapter.log",O_WRONLY|O_APPEND|O_NOFOLLOW|O_CLOEXEC)
             guard log>=0 else { throw HelperFailure("ADAPTER_LOG_FAILED") }
             let p:Child
+            startupStage = .spawn
             do { p=try spawn(home+"/sing-box",["run","-c",state+"/adapter.json"],output:log) }
             catch { close(log);throw error }
             close(log);adapter=p
+            startupStage = .identity
+            let identityStarted=ProcessInfo.processInfo.systemUptime
             journal["adapterPID"]=p.processIdentifier;journal["adapterIdentity"]=processIdentity(p.processIdentifier);try persist()
+            identityMilliseconds=(ProcessInfo.processInfo.systemUptime-identityStarted)*1000
+            startupStage = .interfaceWait
             let deadline=Date().addingTimeInterval(10)
             while liveInterface() == 0 && p.isRunning && Date()<deadline { Thread.sleep(forTimeInterval:0.05) }
             guard p.isRunning && liveInterface() != 0 else { throw HelperFailure("ADAPTER_START_FAILED") }
             journal["interfaceIndex"]=liveInterface();try persist()
+            startupStage = .prepared
             return ["ok":true,"state":"prepared"]
-        } catch { try? cleanup("start failed"); throw error }
+        } catch {
+            var evidence=AdapterFailureEvidence(stage:startupStage,started:started,
+                identityMilliseconds:identityMilliseconds,interfaceIndex:liveInterface(),child:adapter)
+            // Failure to save diagnostics must never prevent route cleanup or
+            // replace the original failure. Successful starts keep this record.
+            // Keep the failed process's bounded log even after the next begin
+            // truncates adapter.log. It stays root-only and is never in status.
+            let path=state+"/adapter.log"
+            if logWasReset,(try? checkRootPath(path,directory:false)) != nil,
+               let handle=try? FileHandle(forReadingFrom:URL(fileURLWithPath:path)) {
+                defer { try? handle.close() }
+                if let size=try? handle.seekToEnd(),
+                   (try? handle.seek(toOffset:size > 65536 ? size-65536 : 0)) != nil,
+                   let log=try? handle.read(upToCount:65536) {
+                    if (try? writeRoot(log,state+"/last-adapter-failure.log")) != nil { evidence.logSHA256=digest(log) }
+                }
+            }
+            lastAdapterFailure=evidence
+            try? writeRoot(try JSONEncoder().encode(evidence),state+"/last-adapter-failure.json")
+            try? cleanup("start failed"); throw error
+        }
     }
     func addRoutes(_ addresses:[String]) throws {
         guard addresses.count <= 16, addresses.allSatisfy(validateAddress),
@@ -263,7 +356,11 @@ final class Broker {
     }
     func request(_ input:[String:Any],owner:UUID) throws -> [String:Any] {
         guard let op=input["op"] as? String else { throw HelperFailure("INVALID_OPERATION") }
-        if op=="status" { return ["ok":true,"version":helperBuild,"active":lease != nil,"cleanupPending":!journal.isEmpty && lease==nil,"error":error ?? "", "approvedDomains":approvedDomains,"approvedPorts":approvedPorts] }
+        if op=="status" {
+            var status:[String:Any] = ["ok":true,"version":helperBuild,"active":lease != nil,"cleanupPending":!journal.isEmpty && lease==nil,"error":error ?? "", "approvedDomains":approvedDomains,"approvedPorts":approvedPorts]
+            if let evidence=lastAdapterFailure { status["lastAdapterFailure"]=try evidence.object() }
+            return status
+        }
         if op=="begin" { return try begin(input,owner:owner) }
         guard lease==owner else { throw HelperFailure("NO_SESSION") }
         beat=Date()
@@ -279,6 +376,7 @@ final class Broker {
         return ["ok":true]
     }
     func tick() {
+        reapCommands()
         if lease == nil {
             if !journal.isEmpty { do { try cleanup("retry pending cleanup") } catch { self.error=String(describing:error) } }
             return
@@ -342,7 +440,7 @@ func uninstall() throws {
     // Only fixed product-owned files; no recursive deletion, user paths, or
     // removal of the shared Router settings/domain map/official Check Point.
     for name in ["RouteHelper","sing-box"] { unlink(routeHelperHome+"/"+name) }
-    for name in ["adapter.json","adapter.log","last-cleanup.json"] { unlink(routeHelperState+"/"+name) }
+    for name in ["adapter.json","adapter.log","last-cleanup.json","last-adapter-failure.json","last-adapter-failure.log"] { unlink(routeHelperState+"/"+name) }
     _=rmdir(routeHelperHome);_=rmdir(routeHelperState)
 }
 #if !CVR_HELPER_TEST
