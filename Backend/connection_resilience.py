@@ -1,7 +1,6 @@
 """Private trial: at most two serial TCP dials, never replay application data."""
 import asyncio
 import errno
-import http.client
 import ipaddress
 import socket
 import subprocess
@@ -10,9 +9,15 @@ import time
 MAX_TCP_SECONDS = 10.0
 MAX_DIALS = 2
 RETRY_ERRNOS = {errno.ECONNREFUSED, errno.ETIMEDOUT}
+observer = None
 
 
 def event(name, **fields):
+    if observer is not None:
+        try:
+            observer(name, fields)
+        except OSError:
+            pass
     try:
         import connection_trace
         connection_trace.emit(name, **fields)
@@ -132,16 +137,18 @@ class ControlChannel:
                     (self.connection.sock is None or time.monotonic()-self.last_used>1.0)):
                 self.close()
             if self.connection is None:
-                self.connection=http.client.HTTPSConnection(self.address,443,context=context,timeout=45)
-                self.connection._create_connection=connect
+                from tls_policy import gateway_https
+                self.connection=gateway_https(self.address,context,timeout=45,dial=connect)
                 # Only explicit connect() can dial. HTTP send must never reopen.
                 self.connection.auto_open=0
                 self.connection.connect()
                 event('control_channel_opened')
             else:
                 event('control_channel_reused')
+            from tls_policy import tls_name
             self.connection.request('POST',path,body=(data or '').encode('ascii'),
-                headers={'Content-Type':'application/x-www-form-urlencoded','Connection':'keep-alive'})
+                headers={'Host':getattr(context,'gateway_http_host',tls_name(context,self.address)),
+                         'Content-Type':'application/x-www-form-urlencoded','Connection':'keep-alive'})
             response=self.connection.getresponse()
             if response.status != 200:
                 raise RuntimeError('CONTROL_HTTP_%d'%response.status)

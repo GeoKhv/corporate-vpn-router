@@ -8,26 +8,35 @@ RUNTIME_URL='https://github.com/astral-sh/python-build-standalone/releases/downl
 SHA='e5af2fde6a937a0e0c795a0c595c4efb70578d57463a2657c819992b9b9acbac'
 def check(path,expected):
     if hashlib.sha256(path.read_bytes()).hexdigest()!=expected: raise RuntimeError('Hash mismatch: '+path.name)
-def run(*cmd,cwd=None):
-    subprocess.run(cmd,cwd=cwd,check=True,stdout=subprocess.DEVNULL)
+def run(*cmd,cwd=None,env=None):
+    subprocess.run(cmd,cwd=cwd,env=env,check=True,stdout=subprocess.DEVNULL)
 def native(dest):
     files=[('ocproxy.tar.gz','a617cb9f47e36cb2d68b81f7edf5148646ee6e3374f985763afc5945101fe88c'),('libevent-2.1.12-stable.tar.gz','92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb')]
     key=hashlib.sha256((TP/'ocproxy-policy.patch').read_bytes()+Path(__file__).read_bytes()).hexdigest()
     for name,digest in files: check(TP/name,digest)
     cache=CACHE/('ocproxy-'+key)
+    # Compile libevent and the proxy for the supported OS, not the build Mac.
+    native_env=dict(os.environ, MACOSX_DEPLOYMENT_TARGET='13.0',
+                    CC='/usr/bin/clang',
+                    CFLAGS='-O2 -arch arm64 -mmacosx-version-min=13.0 -Werror=unguarded-availability-new',
+                    LDFLAGS='-arch arm64 -mmacosx-version-min=13.0',
+                    # Autoconf links against the build SDK; pipe2 exists only
+                    # since macOS 27. Use libevent's existing pipe/fcntl fallback.
+                    ac_cv_func_pipe2='no')
     if not cache.exists():
         with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
             for name,digest in files:
                 run('/usr/bin/tar','-xzf',str(TP/name),'-C',tmp)
             oc=next(Path(tmp).glob('*ocproxy*'));lib=next(Path(tmp).glob('libevent-*'))
             run('/usr/bin/patch','-p1','-i',str(TP/'ocproxy-policy.patch'),cwd=oc)
-            run('/bin/sh','./configure','--disable-shared','--enable-static','--disable-openssl','--disable-samples','--disable-libevent-regress','--disable-dependency-tracking',cwd=lib)
-            run('/usr/bin/make','-j4','include/event2/event-config.h','libevent.la',cwd=lib)
+            run('/bin/sh','./configure','--disable-shared','--enable-static','--disable-openssl','--disable-samples','--disable-libevent-regress','--disable-dependency-tracking',cwd=lib,env=native_env)
+            run('/usr/bin/make','-j4','include/event2/event-config.h','libevent.la',cwd=lib,env=native_env)
             s=(oc/'Makefile.am').read_text().split('LWIP_SOURCES',1)[1].split('APP_SOURCES',1)[0]
             inputs=re.findall(r'(?m)^\s*([a-zA-Z0-9_/.]+\.c)\s*\\?\s*$',s)+['src/ocproxy.c']
             includes=['src','lwip/src','lwip/src/include','lwip/src/include/ipv4','lwip/src/include/ipv6','contrib/ports/unix/include']
-            run('/usr/bin/cc','-std=gnu99','-O2','-Dunix','-DIPv4',*['-I'+str(oc/i) for i in includes],'-I'+str(lib/'include'),*[str(oc/i) for i in inputs],str(lib/'.libs/libevent.a'),'-lpthread','-o',str(cache))
+            run('/usr/bin/clang','-arch','arm64','-mmacosx-version-min=13.0','-std=gnu99','-O2','-Dunix','-DIPv4',*['-I'+str(oc/i) for i in includes],'-I'+str(lib/'include'),*[str(oc/i) for i in inputs],str(lib/'.libs/libevent.a'),'-lpthread','-o',str(cache),env=native_env)
     shutil.copy2(cache,dest)
+    dest.chmod(0o755)
 def main():
     resources=Path(sys.argv[1]); engine=resources/'Engine'
     CACHE.mkdir(parents=True,exist_ok=True)

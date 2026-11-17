@@ -1,3 +1,21 @@
+# Текущий статус · 0.3.19 / 3019
+
+На Mac получателя пользователь подтвердил для **0.3.18** вход с OTP, затем паролем, и одновременную работу рабочих и внешних сайтов с внешним VPN. Красная проверка HTTPS относилась к одному адресу; старый отчёт не содержал достаточных данных для установления точной причины её отказа.
+
+Для **0.3.19** перед публикацией проверены: подписи факторов и сохранение их позиций; отсутствие лишнего CCC-запроса; реальные дочерние процессы и пакетный обмен на синтетических данных; отмена MFA и завершение при потере родителя; Rust fmt/clippy и тесты IKE/ESP поставляемого workspace (два теста системного Keychain пропущены); классификация HTTP/TLS/timeout; безопасный отчёт и его экспорт встроенным Python после ZIP roundtrip; копирование URL файла в отдельный именованный буфер. TLS fixtures включают положительный контроль и отказы для неверного имени, срока, CA и pin.
+
+Проверены подписи и состав пакета, SHA-256 анонимного скачивания и обнаружение 0.3.19 через Sparkle из изолированных клиентов 0.3.17/0.3.18. Это не проверка установки на компьютере получателя. Бинарники помощника маршрутов, RouteClient и sing-box в 0.3.19 сохранены от предыдущего пакета.
+
+**Не подтверждены для 0.3.19:** свежий вход на Mac получателя, повторное подключение, сон/пробуждение и длительная работа. Результаты ниже относятся к своим датам и версиям; их нельзя автоматически переносить на текущий выпуск. [Пакет и контрольные суммы](releases/0.3.19.json).
+
+## Синхронизация исходников · 18 ноября 2026
+
+В отдельной чистой ветке перед отправкой в main повторно прошли 88 основных проверок (`scripts/test.sh`), пять тестов IPsec-процессов/пакетного обмена, тест отчёта, AppKit-проверки классификации HTTPS и файлового буфера, а также изолированные тесты обычного и переносимого помощника. Python-файлы проверены на синтаксис, внутренние ссылки документации — на существование. Sources и Backend побайтово совпали с локальными исходниками 0.3.19. Личные журналы, конфигурация и ключи не включены. Никакое реальное подключение не запускалось; установленный Router и его помощник не менялись.
+
+---
+
+# Исторический журнал проверок
+
 # Mac Beta 0.2 validation
 
 Tested on Apple Silicon. A previous experiment independently established two authenticated sessions with the official client idle, no corporate interface/routes, and an unchanged external VPN path. In the installed GUI beta, a real user completed the gateway MFA. Three corporate HTTPS endpoints returned 302, 401 and 302 with successful TLS verification; the in-tunnel DNS counter recorded three requests and three replies. External HTTPS continued via the existing system route. A 401 proves reachability and TLS, not application-level authorization.
@@ -200,3 +218,464 @@ installed app; dismissing its warning with Done produced the explicit message
 and the per-app approval action. The shell did not report successful launch or
 ask for reinstallation. Quarantine remained present on that installed app. No second physical
 Mac, separate login, or fresh OS trust database has been certified.
+
+
+## Private single-app colleague ZIP · 11 November 2026
+
+See [the local demo acceptance record](DEMO-2026-11-12.md) for exact quarantine approvals, native relaunch, installation/rollback preservation and browser results. The ZIP contains corporate sites and is not a public release. Safari.app corporate browsing and second-Mac AdGuard VPN compatibility remain unaccepted. The working beta.6 and current session were preserved.
+
+## Selective TUN laboratory checkpoint · 11 November 2026
+
+The [selective TUN trial](../Research/SelectiveTunTrial/README.ru.md) reached
+Jira, Confluence and OWA in ordinary Safari.app, Yandex and main-profile Chrome
+with Sota connected. The corrected durable-map design was retested in Chrome
+after the user removed the Router profile; CFPreferences reported forced=false.
+Chrome was actually quit and ordinarily relaunched without custom arguments.
+
+The real sing-box restart fixture exposed address reassignment after SIGKILL,
+including with store_fakeip enabled. That design was rejected. The durable map
+commits before DNS answers, never reuses an address and refuses corruption,
+exhaustion and persistence failure. Real loopback tests kill the stack and bridge
+and verify retained IPv4/IPv6 forward the original domain unchanged.
+
+A fresh root session replayed all six host routes for the three retained names
+before publishing DNS. Retained IPv4/IPv6 returned TLS-verified HTTPS without
+DNS; fresh Safari and Chrome pages then rendered. The two-hour gap does not
+prove browser DNS-cache retention. A later ordinary Safari relaunch initially
+showed a blank window despite successful SOCKS connections; reload rendered Jira.
+That first navigation is not counted as seamless success.
+
+Actual SOCKS-worker suspension preserved fresh Life through the same Sota exit.
+With the durable map Yandex waited during a 70-second pause, with eight SOCKS
+errors and zero new successful Work connections; its waiting request rendered
+after resume. Corrected Chrome showed ERR_CONNECTION_REFUSED during a roughly
+99-second pause, fresh Life within the pause, then a fresh successful Jira URL.
+These pauses did not themselves tear down SSL or repeat MFA.
+
+The independent watchdog removed scoped resolver files, exact host routes and
+all helpers after real supervisor SIGKILL. An earlier residual DNS helper was
+fixed; subsequent crash and normal-stop passes report no helpers, no utun,
+no resolver and unchanged default route. The latest lab cleanup completed at
+17:02 MSK. The user chose to leave the old Chrome profile removed while the
+separate private application is completed. Installed beta.6 is retained.
+
+During integration tests, child Python interpreters created 127 extra bytecode
+files in the old bundle. They were archived and removed; all 572 original file
+hashes matched and the original signature verifies without re-signing. Child
+tests now explicitly use -B. The integrated acceptance below supersedes this
+laboratory checkpoint; AdGuard VPN on a second Mac, arbitrary DoH and Private
+Relay are not certified.
+
+## Private selective application · 0.3.0-alpha.1 · 11 November 2026
+
+The separate TUN Trial app passed local acceptance with Sota connected on this
+Apple Silicon Mac. All three resources (Jira, Confluence, OWA) rendered in
+ordinary Safari.app, Yandex and the existing main Chrome profile. Fresh URL
+nonces were correlated with local DNS and domain-preserving bridge records.
+Chrome's old mandatory ProxySettings was absent; the user chose to leave that
+profile removed. Yandex's existing ZeroOmega remained in System proxy mode;
+system proxies were off and the observed path used TUN. An extension-free
+Yandex installation was not separately tested.
+
+Both actual authorization methods completed: browser passkey and code/password.
+TLS, gateway pin, native SOCKS identity checks and the authentication engine
+remain byte-identical to beta.6. The final footer link was confirmed by the user.
+
+At 17:36:48 MSK the real SSL session process was killed, and its proxy children
+exited. Ordinary Chrome's fresh Work navigation returned ERR_CONNECTION_REFUSED;
+a fresh Life response at 17:36:53 retained the Sota exit, HTTP/2 and TLS 1.3.
+This goes beyond the earlier worker suspension. After native authorization and
+fresh passkey MFA at 17:45:02, a fresh Jira navigation rendered and Life again
+retained the same exit at 17:46:17. No browser TLS errors were bypassed.
+
+At 17:37:38 a real SIGKILL of the integrated root supervisor exercised the
+independent watchdog: cleanup reported no helpers, no utun, no scoped resolver
+and the original default route. Process and route checks confirmed the result.
+The final recovered session was left connected for the user. App sessions have
+an eight-hour bound; the default route is never replaced.
+
+The integrated local suite passed durable-domain crash/persistence cases,
+actual sing-box/bridge SIGKILL with retained IPv4/IPv6 and original SOCKS names,
+UDP/TCP DNS backend failure, unsupported-policy refusal, editable settings and
+the active-session edit barrier. Disposable-home installation verified the
+separate destination, unchanged sibling beta.6/configuration, busy-lock refusal,
+no new autostart or networking on launch, and exact backup/rollback. Existing
+installation-location checks also passed. No new real network routes were
+needed by these isolated tests.
+
+The installed original beta.6 inventory matches all 572 baseline hashes and its
+original strict signature. All 15 baseline persistent files and the demo.2 ZIP
+also match. Private evidence is in `.private/selective-tun-build/evidence/`;
+corporate defaults and journals remain private. No Actions or publication ran.
+
+Following user feedback, the tested candidate was designated 0.3.0-alpha.1.
+Only the version, its footer display and bundle/build metadata changed after
+live acceptance; the final archive is checked against that candidate. The connected
+installed instance retains its earlier label until a normal exit and update.
+The same archive is intended for the second Mac; AdGuard VPN compatibility is
+not claimed. See [the private-build guide](SELECTIVE-TUN-PRIVATE.ru.md) for
+administrator permission, scoped DNS/host routes, rollback, TCP-only Work,
+tree-only policy, 253-name capacity, DNS bypass and startup limitations.
+
+Final artifact: `Corporate-VPN-Router-0.3.0-alpha.1-private-arm64.zip` (40,407,468
+bytes), SHA-256 `1addfaa8a70f7cee354c7a30727158366a3eff834ddef96d671b5c0a8dc671a4`.
+ZIP extraction reproduced every candidate file hash, passed deep strict
+signature verification and reported 0.3.0-alpha.1. The final candidate again
+passed disposable installation/rollback and editable-settings checks. The
+existing AppKit menu fixture passed with the version in the footer; native
+window screenshots were unavailable, so bitmap fixture previews are not claimed
+as screenshots of the installed app. The user had already confirmed the actual
+GitHub action before the version label was appended. No live network tests
+were repeated for that label-only change.
+
+## First-use correction · private 0.3.0-alpha.2 · 11 November 2026
+
+The second-Mac user reported missing login entry, a generic app icon and
+OFFICIAL_SITE_AMBIGUOUS. The official `trac info` command returned “service is
+not started”. Opening the official GUI without VPN login changed the visible
+state, but a later alpha.1 attempt still displayed its generic error. This does
+not establish successful authentication or AdGuard VPN compatibility.
+
+Alpha.2 exposes a memory-only OTP username field on the main window before
+connection. Empty entry blocks setup, typed entry is sent only on the gateway's
+verified scoped username request, and storage still requires successful MFA.
+Saved-account editing and browser-account isolation remain intact. An AppKit
+fixture compiled with `-Onone` (assertions enabled) exercised these transitions,
+no username in diagnostics, method switching and the existing menu behavior.
+
+Official-client state errors now distinguish stopped service, command failure,
+missing/unsupported/ambiguous sites and unknown state. The selective controller
+checks this signed client before creating its map, listeners, admin request or
+network changes. Tests cover refusals at that boundary and reject capturing the
+actual gateway in Work DNS even before a saved receipt exists. Saved-site/pin
+and handoff regression checks passed. The original trust functions other than
+local-state error classification match structurally; TLS, MFA and native-worker
+resources remain byte-identical. No official VPN was activated by these changes.
+
+The existing project-owned Router icon is now embedded and declared by
+CFBundleIconFile. The archive contains exactly one top-level `.app`, with no
+wrapper directory or instruction file. The system administrator prompt remains
+necessary for utun/scoped DNS; no permanent privileged service was introduced.
+
+A user-requested private domain is bundled in the defaults and a one-time
+additive update. A disposable real-app launch verifies preservation of custom
+sites, ports and exceptions, an exact old-list backup, honoring later deletion,
+and refusal to migrate while a previous route session is active. The running
+first-Mac installation and network were not changed during this correction.
+The additional site's actual browser access and successful second-Mac login
+remain untested; the prior Sota browser matrix applies to alpha.1's routing core.
+
+Final alpha.2 archive: 41,518,231 bytes, SHA-256
+`3b4efef470ae614264bb2cdc805b69d4c89a00a26696e410d5d5e57409b610ec`.
+Extraction verified one application at the root, an exact candidate inventory,
+deep strict signature, 0.3.0-alpha.2 version, the declared icon and the requested
+private domain/addition record. Original beta.6, all 15 baseline persistent
+files on the first Mac and the preserved demo.2 archive still match their
+baseline hashes. Evidence: `.private/selective-alpha2-evidence/`.
+
+## Persistent route broker · private 0.3.0-alpha.3 · 12 November 2026
+
+**Cause of repeated administration prompts.** Alpha.2 invokes `osascript` with
+`with administrator privileges` for each new selective-network session. The
+command launches staged Python 3.13 and `network.py`; it is not a Python
+installation request. That supervisor has an eight-hour limit and also ends on
+owner loss/heartbeat failure. Starting again repeats Authorization Services.
+The per-session mechanism is confirmed in code; the exact trigger of the user's
+particular overnight termination was not reconstructed from an identified log.
+
+**Supported installation boundary.** The installed Apple SDK's
+`ServiceManagement.framework/Headers/SMAppService.h` states that applications
+containing LaunchDaemons must be notarized, while existing root-installed
+`/Library/LaunchDaemons` jobs remain supported. `security find-identity -v -p
+codesigning` returned zero available identities; this app is ad hoc signed.
+Consequently this build uses a native, explicitly admin-authorized installer
+for a root-owned launchd job, without claiming SMAppService/notarization support.
+Reference: https://developer.apple.com/documentation/servicemanagement/smappservice
+No signing purchase, certificate import, Gatekeeper/quarantine/SIP change,
+Check Point installation change, or corporate policy change was made.
+
+The service exposes only begin, route, publish, heartbeat, stop and status.
+It accepts the enrolled effective UID and an exact hardened RouteClient cdhash,
+using NSXPCConnection's per-message code requirement. A session belongs to its
+particular connection. Inputs cannot specify executables, shell, file paths,
+adapter config, gateway routes or external proxy addresses. Domains and ports
+must be subsets of a build-time approved policy; route addresses are individual
+members 1–253 of fixed synthetic IPv4/IPv6 pools. `utun73`, the local adapter
+configuration and authenticated loopback SOCKS endpoint are fixed. The adapter
+binary is root-owned and checked against its pinned SHA-256 before each start.
+Python, synthetic DNS and the corporate transport run unprivileged. Root runs
+only the broker and the fixed sing-box adapter that needs utun privileges.
+
+State changes have an fsynced root-owned journal before mutation. Existing
+resolver files/exact host routes are not adopted or overwritten. Cleanup checks
+resolver contents/ownership and interface identity before deletion, kills only
+its own adapter, and preserves unrelated changed files. launchd restarts the
+broker and it reconciles its journal before accepting new work. XPC EOF,
+adapter exit and a 20-second heartbeat lease independently trigger cleanup.
+The application also stops routes on disconnect, SSL termination and sleep;
+it does not silently reauthenticate or recreate a lost session. The old
+8-hour route-supervisor limit and root Python startup have been removed.
+
+**Implementation defects found and corrected during acceptance.** Running the
+native installer directly from the protected Documents development directory
+was rejected by macOS before installation. Running the same built installer
+from the application staging directory succeeded; no privacy protection was
+changed. The normal UI invokes the copy installed under Applications.
+A second route cycle exposed Foundation `Process.waitUntilExit` stranded on a
+dispatch worker. A real process sample established that stack. Child execution
+and teardown were changed to POSIX spawn/waitpid with bounded waits. The final
+repeated-cycle and crash tests were run after this correction. Test-time
+administrative commands to sample/kill/update/uninstall the broker are separate
+from ordinary connection operations and are not counted as prompt-free use.
+
+**Executed on this Mac.** Evidence is private under
+`.private/helper-alpha3-evidence/`:
+
+- Native policy/address and malformed-operation tests; injection, subnet,
+  out-of-pool and out-of-policy values refused; unsafe root parents refused;
+  cross-worker child termination regression passed.
+- Live XPC refused a differently signed native client and the correctly signed
+  client running as `nobody`. Another connection could not alter a live session.
+- Two complete starts/stops, then SIGKILL of the unprivileged controller. Every
+  cycle resolved Work names, retained Life HTTPS 200 and returned the broker
+  to idle without utun/resolvers. No authorization subprocess was involved.
+- Suspending the controller for 24 seconds expired the lease and cleaned the
+  network. Resuming it reported the finished session.
+- SIGKILL of the actual root daemon while routes were active: launchd started
+  a new PID, the journal was reconciled, routes/resolvers disappeared, and a
+  subsequent start/stop succeeded without elevation.
+- Native helper uninstall removed the launchd job, plist, binaries and state;
+  immediate reinstall succeeded. This explicit acceptance operation happened
+  after the sleep test and caused the one admin prompt the user observed then.
+- AppKit `-Onone` checks: first-use/scoped login, post-auth storage, method
+  isolation, diagnostics, Check Point error and light/dark rendering passed.
+- Installed-app temporary-home tests preserved beta.6 and user fixtures,
+  refused replacing a running app, preserved custom settings through one-time
+  domain additions, and retained exact rollback bundles.
+- Original alpha.2 archive hash verified; alpha.3 → alpha.2 installation in an
+  isolated home preserved the durable map. Real installed beta.6 files still
+  match the initial inventory byte for byte.
+- Original TLS/pin/authentication/transport resources remain unchanged except
+  local official-state classification in `trust.official_info`; build-time
+  structural/resource comparison passed. Bundled-runtime TLS fixtures passed
+  valid, wrong-name, expired, untrusted, pin/policy and redirect rejection cases;
+  no application data was sent on rejected TLS cases. Handoff tests passed.
+- DNS frontend UDP/TCP negative responses with missing backend/outside names
+  passed. It now calls the native broker for bounded host-route operations.
+- Fresh browser authentication succeeded. Ordinary Chrome and Safari displayed
+  Jira; ordinary Yandex displayed its System Dashboard. OWA in Yandex reached
+  a server authentication challenge; no password was entered for that test.
+  The user separately confirmed OWA Widget working before and after sleep.
+- Fresh curl requests to the established Jira/Confluence/OWA hosts returned
+  401/302/302 with `ssl_verify_result=0`; Life returned 200. Initial probes of
+  shorter, unestablished hostnames were refused and are not counted as success.
+  Those two allocated synthetic names remain reserved; existing assignments
+  were not recycled or changed.
+- macOS power log: Software Sleep at 10:29:18 MSK, Wake from Deep Idle at
+  10:29:23 MSK (five seconds). Work stopped, utun73/resolvers and both families
+  of synthetic host routes were absent, and Life's default remained utun4.
+  A new Work session and fresh verified HTTPS requests succeeded after waking.
+
+**Check Point finding and limits.** On the main Mac the official
+`com.checkpoint.epc.service` LaunchDaemon was running, with signed `trac info`
+reporting `Idle`, both with Router routes off and on. Its GUI was not needed.
+This is normal disconnected VPN state. Error handling recognizes explicit
+service-not-started / VPN-Service-down / lost-service messages and separately
+classifies timeout, failed command, unknown state and absent/ambiguous sites.
+It never infers service failure merely from no active VPN.
+
+The second Mac is not reachable through this environment. The user reports the
+same official-service error with Router off, applications closed normally, and
+again after reboot. This weakens a live-route-only explanation but does not
+identify a broken daemon, unsupported installed version, management restriction
+or leftover configuration. No cause-specific repair of Check Point is justified
+yet. `checkpoint_diagnostic.py` / the standalone `Check Check Point.command`
+collect only local read-only service/version/process/network evidence and
+bounded, redacted OS error logs. The A/B/C route comparison is offered only if
+the initial service probe responds. No registry, full authentication logs,
+credentials or packets are collected or uploaded. A separate instruction file
+for Codex on that Mac requests vendor compatibility checks and crash evidence
+before any change. AdGuard VPN on that Mac remains unvalidated.
+
+The test is a private Apple Silicon build, not a notarized public release.
+Power-off boot, reboot with active routes, overnight/multiday operation and
+long sleep are not yet executed; the normal reboot below, short physical sleep
+and simulated lease loss do not substitute for those. Live code/password
+authentication was not repeated in alpha.3.
+Browser bypass modes (forced DoH/Private Relay) remain outside the earlier
+supported scope. Ending routing removes interception and returns Work names to
+the ordinary system resolver; this is not a permanent fail-closed DNS policy.
+
+Final uncontaminated UI reconnect: normal Disconnect → Connect, with no
+install/uninstall/admin testing in that interval. The app returned to Connected
+and the user explicitly confirmed that no administrator prompt appeared.
+OWA Widget after wake was also confirmed by the user. Work is left connected.
+
+**Normal reboot, 12 November 2026.** The owner restarted macOS after a normal
+Router quit. Boot time changed to 10:42:30 MSK. Before starting TUN Trial,
+the root helper was already running (PID 528, run count 1, never exited),
+inactive, with no pending cleanup. No utun73, owned resolvers or synthetic
+routes remained. Sota was connected; signed Check Point state was Idle;
+fresh Life HTTPS returned 200 with certificate verification. The checked
+beta.6/alpha.3/client/root-helper/map hashes matched the pre-reboot snapshot.
+
+The pre-existing beta.6 menu login item also launched. The owner then explicitly
+requested that earlier Router launches be removed and only the latest version
+remain. Its menu and HTTP LaunchAgents were backed up, disabled, unloaded and
+removed from the user's LaunchAgents directory. The dedicated alpha.3 menu
+LaunchAgent starts the installed TUN Trial with `--login`, RunAtLoad and no
+KeepAlive. Real launchd bootstrap in the current Aqua session started alpha.3;
+the old jobs and ports 1088/1089/1091 were absent. This is a local opt-in change,
+not an automatic behavior of the private installer. No app bundle, root helper,
+Check Point, external VPN or system proxy was changed. The new menu login item
+has not yet been exercised by a second physical reboot. Reversible migration
+and evidence are under `.private/helper-alpha3-evidence/reboot/`.
+
+After this normal reboot the owner completed fresh browser MFA/Passkey and
+explicitly confirmed no administrator password prompt and working OWA Widget.
+The helper reported an active alpha.3 session. Ordinary Chrome rendered the
+authenticated Jira/Tempo page; fresh direct curl requests returned Work
+401/302/302 and Life 200, all with successful TLS verification. Signed official
+Check Point state remained Idle. A normal UI disconnect then returned the
+helper to inactive with no pending cleanup; utun73, owned resolvers and both
+synthetic route families were absent, and Life HTTPS still returned 200.
+The owner completed another browser login after the cleanup check; the UI
+returned to Connected and Work was left enabled.
+
+Final private archive: `Corporate-VPN-Router-0.3.0-alpha.3-private-arm64.zip`,
+70,788,788 bytes, SHA-256
+`9ee19ef8ca3203d80222b5c91d185e9b8c7cea392d4c196a6f76ad71db1403df`.
+One app at ZIP root; extracted deep-strict signature and exact file inventory
+match the candidate and installed alpha.3. No public upload/release/push.
+
+## 2026-11-12 — alpha.4 first-use helper setup
+
+The second Mac reported `HELPER_UNAVAILABLE`, then AppleScript syntax error
+`-2741` from the explicit helper install action. Alpha.3 used a JSON-encoded
+shell command as AppleScript source; escaped path separators are not valid
+AppleScript string escapes. Compiling a representative command with the old
+serialization failed locally (`-2740`). Alpha.4 passes the command and prompt
+as argv to a fixed `on run` script. Shell path quoting remains separate.
+
+Main-window setup now probes the helper without elevation. Missing, outdated,
+unavailable and ready helpers expose install/update/restore/start actions in
+the same window. Connection is disabled until a helper responds successfully.
+After explicit maintenance, cancellation or failure, the main window is shown
+with the result; success also requires a fresh helper status response.
+
+Evidence in `.private/helper-alpha4-evidence/`:
+
+- AppKit tests passed fresh-install controls, cancellation/retry, installation
+  errors, failed verification, update, verified success, window visibility,
+  duplicate-action prevention, prior login handling and light/dark rendering.
+  The first test incorrectly assumed that `performClick` could not process an
+  immediate mocked async reply and raised an assertion, causing a visible macOS
+  crash dialog. A synchronized fixture fixed that assumption. Test failures now
+  exit normally instead of raising an assertion crash.
+- The exact privileged AppleScript compiled successfully. Its argv and shell
+  handoff executed against an inert fixture with the privilege clause removed,
+  including spaces, quotes, Cyrillic, backslash, dollar and backtick characters
+  in the executable path. No system helper installation was performed.
+- Disposable-home installation passed separate app placement, unchanged beta.6
+  and user settings, active-app refusal, exact rollback and no new autostart.
+  The packaged app recognized the real installed alpha.3 helper through its
+  read-only status request without elevation or route setup.
+- Package comparison against the SHA-256-pinned alpha.3 archive found exactly
+  four changed files: app executable, Info.plist, INSTALLER_REVISION and app
+  signature resources. Helper, enrolled client, routing/auth/TLS backend,
+  runtime, work-site defaults and durable map are byte-identical. Rebuilding
+  the native client changes its cdhash, so this UI-only patch explicitly reuses
+  the verified alpha.3 helper payload to preserve existing enrollment.
+- ZIP extraction, deep/strict signature verification, embedded version and
+  single-app archive root passed. No public upload/release/push.
+
+Artifact: `Corporate-VPN-Router-0.3.0-alpha.4-private-arm64.zip`, 70,795,559 bytes,
+SHA-256 `bc0c69a8084187053293161d3d90c15cf70e56de331933eee44e356828fd79e5`.
+The actual new administrator prompt/install and second-Mac connection remain
+unverified; alpha.3 live network results above are not new alpha.4 live tests.
+
+## 2026-11-12 — alpha.5 connection sequencing, trust and certificates
+
+The subsequent report from the second Mac confirms alpha.4 OTP authentication
+and coexistence with connected AdGuard VPN. It records routes ready at
+11:02:28.580 MSK, gateway approval at 11:02:33.038 and cleanup at 11:02:46.099;
+a second route session from 11:04:13.582 to cleanup at 11:04:27.444; and a third
+session ready at 11:04:48.334, authenticated at 11:05:43.649, SSL ready at
+11:05:44.864 and SOCKS ready at 11:05:45.220. There were no recorded route errors.
+The first two SSL errors and exit codes were not retained. An earlier errno 2
+has no named file or proven link to those exits. Their historical cause remains
+unknown. The current successful state cannot reconstruct it.
+
+Source inspection confirmed a separate UI defect: route cleanup could replace
+the original SSL failure with a disconnected status. Alpha.5 latches the first
+failure and records bounded, private state/code/errno/exit events. Connect now
+orders helper readiness, route preparation, gateway verification and MFA.
+Cleanup is verified before another attempt. No automatic authentication retry
+or weakening of TLS is introduced. Journal contents deliberately exclude raw
+stderr, prompts, identities, responses, tokens and passwords.
+
+The private gateway manifest comes from the owner's approved existing working
+configuration. Exact site/IP/CN/CA SHA-256 equality is required in addition to
+the signed official client, its protected stored pin, DNS/IP agreement, SAN,
+certificate validity and strict live TLS. Only the redundant first-use technical
+dialog is omitted. This provenance is not claimed as independent IT approval.
+
+Three current work HTTPS endpoints were probed through the existing SOCKS
+route without weakening TLS: one returned 200 and two returned 302. Raw peer
+chains and public CA certificates from the owner's existing Keychain identified
+two roots and two intermediates. Explicit per-root OpenSSL chain/signature
+verification succeeded, including root signatures; each chain matched one
+root. Both intermediates are supplied by the servers. The original Mac needs
+zero imports. The second Mac's required additions depend on its own trust.
+Private hostnames, CA fingerprints and gateway configuration are not published.
+
+The separate certificate wizard assesses fresh actual chains and the approved
+CA set before proposing additions. Import requires exact fingerprint matching
+and explicit consent, uses the user's login Keychain, and never imports keys.
+Rollback checks ownership, exact DER and unchanged recorded user trust.
+Corporate CA import/rollback was not performed on the already-working Mac;
+positive real import/rollback and online revocation are not certified.
+
+Evidence is local under `.private/alpha5-evidence/`:
+
+- 88 core checks, including fresh/stale/wrong-host prospective chain checks,
+  already-trusted no-import behavior and stale-import rejection.
+- Isolated one-click flow: first and repeat authentication, retained gateway
+  failure through cleanup, retry, route failure, cancellation before readiness
+  and a journal without synthetic secrets. These fixtures do not establish
+  the historical cause of the second Mac's SSL exits.
+- Controller failures after partial begin, publish and heartbeat: original
+  error precedes cleanup; pending cleanup blocks retry; no automatic begin loop.
+- Strict TLS and gateway fixtures reject wrong names, expiry, untrusted chains,
+  changed official pins, changed saved receipts, invalid manifests and redirects.
+  Tests passed against the packaged runtime as well as the source fixture.
+- Actual strict gateway first/repeat trust checks passed using temporary local
+  receipts and the packaged code, with no technical confirmation callback.
+  This did not start a new corporate MFA session or alter the live receipt.
+- Disposable-home installation preserved beta.6, settings and an exact rollback
+  copy; active-app refusal and absence of new autostart passed. The packaged
+  client recognized the existing alpha.3 helper read-only.
+- Certificate wizard light/dark rendering passed. No CA was imported.
+- Existing menu regressions passed helper maintenance/cancellation/recovery,
+  safe AppleScript argv handling, login persistence, service errors, private
+  diagnostics and light/dark rendering. One outdated fixture expectation was
+  corrected: standalone helper maintenance disables a concurrent Connect action.
+  The test exited normally on that failed check; no application crash occurred.
+- The archive round trip has one app at its root and passes deep/strict signing.
+  Compared with alpha.4, seven existing files changed: native executable,
+  Info.plist, installer revision, signature resources, trust.py, session.py and
+  the selective controller. Public approved CA/gateway resources were added.
+  Helper/client, TLS policy, SOCKS engine, runtime and work-site defaults remain
+  byte-identical. The existing helper enrollment is preserved.
+
+Icon metadata now includes the full app display name and `Router.icns`.
+Installation registers only this app URL in the actual user's Launch Services;
+disposable test homes are excluded. No global launcher/icon reset is performed.
+The reported generic launcher icon still requires confirmation on the second Mac.
+
+Candidate: `Corporate-VPN-Router-0.3.0-alpha.5-private-arm64.zip`, 70,961,674 bytes,
+SHA-256 `2c158353e7f440c968e401f9582844f34d36aa10bf63c9620d4ce8cb93e0659d`.
+Alpha.4 is preserved for rollback. The main Mac's installed app and active
+session were not replaced; no public release, upload, commit or push occurred.
+First/repeat alpha.5 MFA, AdGuard coexistence, HTTPS and launcher icon on the
+second Mac are pending. The candidate is not represented as remotely validated.

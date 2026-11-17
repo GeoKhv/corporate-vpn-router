@@ -1,0 +1,145 @@
+{
+  "date": "2026-11-10",
+  "baseline": "v0.2.0-beta.6 @ 0fe83ba",
+  "macOS": "27.0.1 arm64",
+  "stableChrome": "157.0.8103.39",
+  "testChrome": "Chrome for Testing 157.0.8103.38",
+  "mainProfileMigrated": false,
+  "freshMFA": false,
+  "tunnelFailureMode": "private relay fault before unchanged production SOCKS",
+  "launchMatrix": {
+    "cold-with-switch": "CVR-PROXY",
+    "ordinary-restart-without-switch": "CVR-ORIGIN",
+    "second-process-exit": 21,
+    "switch-on-already-running": "second process refused with profile-in-use; original direct context retained",
+    "seeded-user-pref-ordinary-launch": "CVR-PROXY",
+    "seeded-user-pref-second-restart": "CVR-PROXY",
+    "proxy-pref-persisted": true,
+    "rollback": "proxy key only; newer browser changes retained",
+    "restored-pref-ordinary-launch": "CVR-ORIGIN"
+  },
+  "routingTrial": {
+    "work-live-beta6-peer": {
+      "ok": true,
+      "error": ""
+    },
+    "life-live-sota": {
+      "ok": true,
+      "error": ""
+    },
+    "added-domain-no-restart": {
+      "ok": false,
+      "error": "net::ERR_TUNNEL_CONNECTION_FAILED"
+    },
+    "removed-domain-no-restart": {
+      "ok": true,
+      "error": ""
+    },
+    "work-isolated-fault": {
+      "ok": false,
+      "error": "net::ERR_TUNNEL_CONNECTION_FAILED"
+    },
+    "life-during-work-fault": {
+      "ok": true,
+      "error": ""
+    },
+    "work-after-fault": {
+      "ok": true,
+      "error": ""
+    },
+    "work-ordinary-restart-no-flags": {
+      "ok": true,
+      "error": ""
+    },
+    "life-ordinary-restart-no-flags": {
+      "ok": true,
+      "error": ""
+    },
+    "router-death-work": {
+      "ok": false,
+      "error": "net::ERR_PROXY_CONNECTION_FAILED"
+    },
+    "router-death-life": {
+      "ok": false,
+      "error": "net::ERR_PROXY_CONNECTION_FAILED"
+    },
+    "life-router-restored": {
+      "ok": true,
+      "error": ""
+    },
+    "work-router-restored": {
+      "ok": true,
+      "error": ""
+    },
+    "pref-persisted": true,
+    "rollback": "proxy key only; newer browser changes retained"
+  },
+  "launchServices": [
+    {
+      "case": "switch",
+      "viaProxy": true
+    },
+    {
+      "case": "ordinary",
+      "viaProxy": false
+    },
+    {
+      "case": "user-pref",
+      "viaProxy": true
+    },
+    {
+      "case": "user-pref-restart",
+      "viaProxy": true
+    }
+  ],
+  "stablePolicyControl": {
+    "work": "rendered under unchanged beta.6 policy",
+    "life": "rendered under unchanged beta.6 policy"
+  },
+  "dns": [
+    {
+      "log": "initial-netlog.json",
+      "workResolverRequests": [
+        {
+          "tasks": [
+            4,
+            9
+          ],
+          "localOnly": true,
+          "endError": -105
+        }
+      ]
+    },
+    {
+      "log": "ordinary-restart-netlog.json",
+      "workResolverRequests": [
+        {
+          "tasks": [
+            4,
+            9
+          ],
+          "localOnly": true,
+          "endError": -105
+        }
+      ]
+    }
+  ],
+  "regressions": {
+    "strictTLS": "passed",
+    "MFAcallback": "passed",
+    "rollbackReceipt": "passed"
+  },
+  "preserved": {
+    "installedBundle": true,
+    "configurationFiles": true,
+    "launchAgents": true,
+    "installedProfilesSemantically": true,
+    "systemProxy": true,
+    "backupBundleHashVerified": true,
+    "mainChromePIDUnchanged": true,
+    "networkInterfaceSnapshotUnchanged": true,
+    "originalSSLSessionStillConnected": true,
+    "chromeFixedProxyStillForced": true,
+    "beta6ReleaseArchiveChecksums": true
+  }
+}

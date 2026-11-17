@@ -4,7 +4,7 @@ from pathlib import Path
 engine=Path(sys.argv[1]);sys.path.insert(0,str(engine))
 from sites import gate
 policy={'version':1,'sites':[{'domain':'corp.test','scope':'tree'},{'domain':'single.test','scope':'exact'}],'beforeLogin':['login.corp.test'],'ports':[443]}
-domains,ports=gate(policy)
+domains,ports=gate(policy, "desk.corp.test")
 def check(host,port,allowed):
     left,right=socket.socketpair(socket.AF_UNIX,socket.SOCK_DGRAM)
     with socket.socket() as temp:
@@ -30,6 +30,6 @@ def check(host,port,allowed):
             assert dns==allowed,(host,dns,allowed)
     finally:child.terminate();child.wait(timeout=3);left.close()
 for host,port,expected in [('CORP.test',443,True),('a.b.corp.test',443,True),('single.test',443,True),
-      ('x.single.test',443,False),('logIN.corp.test',443,False),('notcorp.test',443,False),('corp.test',80,False)]:
+      ('x.single.test',443,False),('logIN.corp.test',443,False),('notcorp.test',443,False),('corp.test',80,False),('desk.corp.test',3389,True),('DESK.CORP.TEST.',3389,True),('other.corp.test',3389,False),('sub.desk.corp.test',3389,False),('desk.corp.test',3390,False)]:
     check(host,port,expected)
-print('PASS: native allow/deny and DNS emission for seven host/port cases.')
+print('PASS: native allow/deny and DNS emission for HTTPS and exact-host RDP cases.')

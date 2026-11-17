@@ -52,7 +52,7 @@ def dns_answer(packet, cfg, registry=None, is_allowed=None):
     return header + packet[12:end] + answer, dict(event='dns', name=name, type=kind, rcode=rcode, refusal=refusal)
 
 
-async def serve(cfg, directory, installed=None):
+async def serve(cfg, directory, installed=None, *, stop_event=None):
     if installed is None:
         engine = Path(__file__).resolve().parent.parent
         sys.path.insert(0, str(engine))
@@ -125,7 +125,8 @@ async def serve(cfg, directory, installed=None):
             allowed = name == cfg['host']
             if cfg.get('mode') in ('domain-pool','stable-map'):
                 allowed = installed.is_work(cfg['policy'], name)
-            if not allowed or port not in cfg.get('policy', {}).get('ports', [443]):
+            allowed_rdp = stable and port == 3389 and name == cfg.get('rdp_host')
+            if not allowed or (port not in cfg.get('policy', {}).get('ports', [443]) and not allowed_rdp):
                 raise ValueError('outside exact allowlist')
             ur, uw = await asyncio.wait_for(installed.via_socks(name, port), 12)
             upstream = uw
@@ -148,8 +149,10 @@ async def serve(cfg, directory, installed=None):
         udp, _ = await loop.create_datagram_endpoint(DNS, local_addr=('127.0.0.1', dns_port))
         tcp = await asyncio.start_server(dns_tcp, '127.0.0.1', dns_port)
     proxy = await asyncio.start_server(socks, '127.0.0.1', cfg['socks_port'])
-    stop = asyncio.Event()
-    for sig in (signal.SIGTERM, signal.SIGINT): loop.add_signal_handler(sig, stop.set)
+    stop = stop_event
+    if stop is None:
+        stop = asyncio.Event()
+        for sig in (signal.SIGTERM, signal.SIGINT): loop.add_signal_handler(sig, stop.set)
     (directory / 'services.pid').write_text(str(os.getpid()))
     record(event='ready')
     try: await stop.wait()

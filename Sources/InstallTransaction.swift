@@ -92,6 +92,10 @@ enum AppInstallation {
 
     static let systemApplications = URL(fileURLWithPath: "/Applications", isDirectory: true)
 
+    static func sameLocation(_ lhs: URL, _ rhs: URL) -> Bool {
+        lhs.resolvingSymlinksInPath().standardizedFileURL.path == rhs.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
     static func destination(home: URL, systemApplications: URL = systemApplications) -> URL {
         let userApp = home.appendingPathComponent("Applications/" + appName)
         let sharedApp = systemApplications.appendingPathComponent(appName)
@@ -102,7 +106,14 @@ enum AppInstallation {
         return userApp
     }
 
-    static func agent(_ home: URL, systemApplications: URL = systemApplications) throws -> URL {
+    static func isOwnMenuAgent(_ value: [String: Any], home: URL) -> Bool {
+        guard value["Label"] as? String == label, value["Program"] == nil,
+              let args = value["ProgramArguments"] as? [String], args.count == 2, args[1] == "--login",
+              args[0].hasSuffix("/" + appName + "/Contents/MacOS/CorporateVPNRouter") else { return false }
+        return args[0].hasPrefix(home.path + "/") || args[0].hasPrefix("/Applications/") || args[0].hasPrefix("/Volumes/") || args[0].contains("/AppTranslocation/")
+    }
+
+    static func agent(_ home: URL, systemApplications: URL = systemApplications, allowRelocation: Bool = false) throws -> URL {
         let app = destination(home: home, systemApplications: systemApplications)
         let executable = app.appendingPathComponent("Contents/MacOS/CorporateVPNRouter").path
         let agent = home.appendingPathComponent("Library/LaunchAgents/" + label + ".plist")
@@ -113,12 +124,32 @@ enum AppInstallation {
                 let value = try PropertyListSerialization.propertyList(from: Data(contentsOf: url), format: nil) as? [String: Any]
                 let args = value?["ProgramArguments"] as? [String]
                 guard value?["Label"] as? String == expectedLabel,
-                      exact ? args == [executable, "--login"] : args?.first == executable else {
+                      exact ? (args == [executable, "--login"] || (allowRelocation && value.map { isOwnMenuAgent($0, home: home) } == true)) : args?.first == executable else {
                     throw InstallationError(step: "Автозапуск содержит другой путь или команду", detail: "\(url.path)\nОжидается \(executable). Существующий файл сохранён. Проверьте его в Finder; не удаляйте настройки Router.")
                 }
             }
         }
         return agent
+    }
+
+    // Preserve whether login was enabled. Only repair a recognised existing
+    // Router menu entry; never create/load a launchd job as part of relocation.
+    static func relocateLogin(home: URL, systemApplications: URL = systemApplications) throws {
+        let url = try agent(home, systemApplications: systemApplications, allowRelocation: true)
+        guard fm.fileExists(atPath: url.path) else { return }
+        let bytes = try Data(contentsOf: url)
+        var value = try PropertyListSerialization.propertyList(from: bytes, format: nil) as! [String: Any]
+        let args = [destination(home: home, systemApplications: systemApplications).appendingPathComponent("Contents/MacOS/CorporateVPNRouter").path, "--login"]
+        guard value["ProgramArguments"] as? [String] != args else { return }
+        let data = home.appendingPathComponent("Library/Application Support/Corporate VPN Router")
+        try rejectLink(data); try fm.createDirectory(at: data, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try bytes.write(to: data.appendingPathComponent("login-location-backup-\(UUID().uuidString).plist"), options: .withoutOverwriting)
+        value["ProgramArguments"] = args
+        let replacement = try PropertyListSerialization.data(fromPropertyList: value, format: .xml, options: 0)
+        do {
+            try replacement.write(to: url, options: .atomic)
+            try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch { try? bytes.write(to: url, options: .atomic); throw error }
     }
 
     static func lock(_ url: URL, busy: String) throws -> Int32 {
@@ -132,11 +163,16 @@ enum AppInstallation {
         return fd
     }
 
-    static func install(source: URL, home suppliedHome: URL, requirement: String? = nil, systemApplications: URL = systemApplications) throws -> URL {
+    static func install(source: URL, home suppliedHome: URL, requirement: String? = nil, systemApplications: URL = systemApplications, validatePlaced: ((URL) throws -> Void)? = nil) throws -> URL {
         let home = suppliedHome.resolvingSymlinksInPath()
         let app = destination(home: home, systemApplications: systemApplications)
         let data = home.appendingPathComponent("Library/Application Support/Corporate VPN Router")
         for url in [app, data] { try rejectLink(url) }
+        let incomingInfo = try PropertyListSerialization.propertyList(from: Data(contentsOf: source.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any]
+        guard incomingInfo?["CFBundleIdentifier"] as? String == identifier,
+              incomingInfo?["CFBundleExecutable"] as? String == "CorporateVPNRouter" else {
+            throw InstallationError(step: "Неверный пакет приложения", detail: "Установка не начата.")
+        }
         if fm.fileExists(atPath: app.path) {
             let value = try PropertyListSerialization.propertyList(from: Data(contentsOf: app.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any]
             guard value?["CFBundleIdentifier"] as? String == identifier else {
@@ -149,19 +185,32 @@ enum AppInstallation {
                 throw InstallationError(step: "Запущена устаревшая копия Router", detail: "Установленная сборка \(current) новее сборки \(next). Откройте \(app.path). Для намеренного отката завершите Router и восстановите сохранённую копию вручную.")
             }
         }
-        let agentURL = try agent(home, systemApplications: systemApplications)
+        let agentURL = try agent(home, systemApplications: systemApplications, allowRelocation: true)
         try verify(source, requirement: requirement)
         try checked("Нет доступа к папке данных: \(data.path)") {
             try fm.createDirectory(at: data, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         }
         let menuFD = try lock(data.appendingPathComponent("menu.lock"), busy: "Router работает. Установка не начата; VPN-сеанс сохранён. Когда закончите работу, выберите «Завершить» в меню Router и повторите установку.")
         defer { close(menuFD) }
+        // Serialize independent installation windows as well as the running menu.
+        let installFD = try lock(data.appendingPathComponent("installation.lock"), busy: "Другая установка уже выполняется")
+        defer { close(installFD) }
+        // The destination may have changed while the source was verified.
+        if fm.fileExists(atPath: app.path) {
+            let current = try PropertyListSerialization.propertyList(from: Data(contentsOf: app.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any]
+            guard current?["CFBundleIdentifier"] as? String == identifier,
+                  let currentBuild = current?["CFBundleVersion"] as? String,
+                  let nextBuild = incomingInfo?["CFBundleVersion"] as? String,
+                  currentBuild.compare(nextBuild, options: .numeric) != .orderedDescending else {
+                throw InstallationError(step: "Установленная копия изменилась", detail: "Замена отменена; откройте установленный Router.")
+            }
+        }
         let userApp = home.appendingPathComponent("Applications/" + appName)
         let sharedApp = systemApplications.appendingPathComponent(appName)
         if fm.fileExists(atPath: userApp.path) && fm.fileExists(atPath: sharedApp.path) {
             throw InstallationError(step: "Найдены две папки установки Router", detail: "\(userApp.path)\n\(sharedApp.path)\nОбе копии сохранены. Завершите Router и оставьте одну папку установки; настройки не удаляйте.")
         }
-        if source.resolvingSymlinksInPath() == app.resolvingSymlinksInPath() { return app }
+        if sameLocation(source, app) { return app }
         try checked("Нет доступа к папке установки: \(app.deletingLastPathComponent().path)") {
             try fm.createDirectory(at: app.deletingLastPathComponent(), withIntermediateDirectories: true)
         }
@@ -178,10 +227,14 @@ enum AppInstallation {
             if hadApp {
                 try checked("Не удалось сохранить прежнее приложение: \(backup.path)") { try fm.moveItem(at: app, to: backup) }
                 movedOld = true
+#if CVR_SELECTIVE_TUN
+                StartupDiagnostics.shared.record("previous_copy_saved", backup.path)
+#endif
             }
             try checked("Не удалось поместить приложение: \(app.path)") { try fm.moveItem(at: stage, to: app) }
             placedNew = true
             try verify(app, requirement: requirement)
+            try validatePlaced?(app)
 #if !CVR_SELECTIVE_TUN
             if oldAgent == nil {
                 try checked("Не удалось сохранить автозапуск: \(agentURL.path)") {
@@ -194,11 +247,20 @@ enum AppInstallation {
                 }
             }
 #endif
+            if let oldAgent,
+               let value = try PropertyListSerialization.propertyList(from: oldAgent, format: nil) as? [String: Any],
+               value["ProgramArguments"] as? [String] != [app.appendingPathComponent("Contents/MacOS/CorporateVPNRouter").path, "--login"] {
+                wroteAgent = true
+                try relocateLogin(home: home, systemApplications: systemApplications)
+            }
             _ = try agent(home, systemApplications: systemApplications)
         } catch {
             let original = error
             do {
-                if wroteAgent { try fm.removeItem(at: agentURL) }
+                if wroteAgent {
+                    if let oldAgent { try oldAgent.write(to: agentURL, options: .atomic) }
+                    else { try fm.removeItem(at: agentURL) }
+                }
                 if placedNew { try fm.moveItem(at: app, to: stage) }
                 if movedOld { try fm.moveItem(at: backup, to: app) }
             } catch {

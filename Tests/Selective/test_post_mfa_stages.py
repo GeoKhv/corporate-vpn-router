@@ -10,6 +10,7 @@ sys.path.insert(0,str(Path(sys.argv[1]).resolve()))
 import session
 import sites
 import official_handoff
+import ipsec_session
 from cpyvpn import auth, utils
 
 with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
@@ -32,7 +33,7 @@ with tempfile.TemporaryDirectory(dir='/private/tmp') as tmp:
     original_status=session.status
     def status(stage,**values):
         session.STATE.update(stage=stage,**values);events.append(stage)
-    with patch.object(session,'DATA',root),patch.object(session,'RUN',root/'run'),patch.object(session,'ROOT',root/'engine'),patch.object(session,'RESILIENT',True),patch.object(session,'guard_parent'),patch.object(session.fcntl,'flock'),patch.object(session,'anchor',return_value=('192.0.2.1',None)),patch.object(session,'install_tls_policy'),patch.object(session,'request',return_value='fixture-user'),patch.object(session,'status',status),patch.object(session.socket,'socket',MagicMock()),patch.object(sites,'validate'),patch.object(official_handoff,'prepare'),patch.object(auth,'SNXAuth',FakeSession):
+    with patch.object(ipsec_session,'select_transport',return_value='ssl'),patch.object(session,'DATA',root),patch.object(session,'RUN',root/'run'),patch.object(session,'ROOT',root/'engine'),patch.object(session,'RESILIENT',True),patch.object(session,'guard_parent'),patch.object(session.fcntl,'flock'),patch.object(session,'anchor',return_value=('192.0.2.1',None)),patch.object(session,'install_tls_policy'),patch.object(session,'request',return_value='fixture-user'),patch.object(session,'status',status),patch.object(session.socket,'socket',MagicMock()),patch.object(sites,'validate'),patch.object(official_handoff,'prepare'),patch.object(auth,'SNXAuth',FakeSession):
         with patch.object(utils,'get_ranges',side_effect=TimeoutError('NEVER_LOG_AUTH')):
             try:session.main()
             except TimeoutError:pass

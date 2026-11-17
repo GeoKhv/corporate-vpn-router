@@ -4,16 +4,34 @@ import Darwin
 func rejected(_ body:() throws->Void) { do { try body();fatalError("accepted forbidden input") } catch {} }
 @main struct Tests {
  static func main() throws {
-    for good in ["198.18.75.1","198.18.75.253","fdc7:7652:9a10:75::1","fdc7:7652:9a10:75::fd"] { assert(validateAddress(good),good) }
-    for bad in ["127.0.0.1","0.0.0.0","1.1.1.1","198.18.75.0","198.18.75.254","198.18.75.255","198.18.75.1/24","198.18.74.2","fdc7:7652:9a10:75::fe","::","::1","--help","198.18.75.1; touch /tmp/x"] { assert(!validateAddress(bad),bad) }
+    if CommandLine.arguments.dropFirst() == ["--test-rdp-rules"] {
+        FileHandle.standardOutput.write(try jsonData(adapterRules(ports: [443], rdpSlot: 2)))
+        return
+    }
+    for good in ["198.18.75.1","198.18.75.253","198.18.75.254","fdc7:7652:9a10:75::fe","fdc7:7652:9a10:75::1","fdc7:7652:9a10:75::fd"] { assert(validateAddress(good),good) }
+    for bad in ["127.0.0.1","0.0.0.0","1.1.1.1","198.18.75.0","198.18.75.255","198.18.75.1/24","198.18.74.2","::","::1","--help","198.18.75.1; touch /tmp/x"] { assert(!validateAddress(bad),bad) }
     let input:[String:Any]=["op":"begin","domains":[approvedDomains[0]],"ports":[approvedPorts[0]],"password":String(repeating:"a",count:48)]
     _=try validateBegin(input)
+    var rdp = input
+    rdp["rdpSlot"] = 42
+    let (_, _, _, slot) = try validateBegin(rdp)
+    assert(slot == 42)
+    for invalid in [0, 1, 255, -1] { rdp["rdpSlot"] = invalid; rejected { _=try validateBegin(rdp) } }
+    rdp = input; rdp["ports"] = [443,3389]; rejected { _=try validateBegin(rdp) }
     for (key,value) in [("domains",["com"]) as (String,Any),("domains",["../../etc"]),("ports",[22]),("command","/bin/sh"),("password","bad\nvalue"),("domains",[])] {
         var changed=input;changed[key]=value;rejected { _=try validateBegin(changed) }
     }
     let b=Broker();let owner=UUID()
     for op in ["route","publish","heartbeat","stop","exec"] { rejected { _=try b.request(["op":op],owner:owner) } }
     let status=try b.request(["op":"status"],owner:owner);assert(status["active"] as? Bool == false)
+    assert(status["build"] as? String == "0.3.10" && status["cleanupPending"] as? Bool == false)
+    assert(classifyInterface(index:0, recorded:42, addresses:nil) == .absent)
+    assert(classifyInterface(index:43, recorded:42, addresses:["198.18.73.1"]) == .foreign)
+    assert(classifyInterface(index:42, recorded:42, addresses:["10.9.0.1"]) == .foreign)
+    assert(classifyInterface(index:42, recorded:42, addresses:["fdc7:7652:9a10::1"]) == .possibleOwner)
+    assert(classifyInterface(index:42, recorded:nil, addresses:["198.18.73.1"]) == .possibleOwner)
+    assert(classifyInterface(index:42, recorded:42, addresses:[]) == .unknown)
+    assert(classifyInterface(index:42, recorded:nil, addresses:nil) == .unknown)
     rejected { try checkRootPath("/private/tmp",directory:true) }
     rejected { try checkRootPath("/tmp",directory:true) }
     // Regression for a child created/stopped on different dispatch workers.
@@ -70,6 +88,7 @@ func rejected(_ body:() throws->Void) { do { try body();fatalError("accepted for
         assert(waitpid(-1,&status,WNOHANG) == -1 && errno == ECHILD,"failed command left an unreaped child")
     }
     print("PASS address/policy bounds, injection/unknown operations, per-connection ownership and idle status")
+    print("PASS reused utun name/index, missing addresses, owned IPv4/IPv6 and idle build identity")
     print("PASS real child exit, suspended startup, pre-cleanup evidence, ECHILD, schema round trip and metadata-only status")
     print("PASS timed-out and output-limited commands are killed and reaped without zombies")
  }

@@ -6,7 +6,7 @@ from trust import CP, Refused, official_info
 
 
 def prepare(request, browser=True):
-    _, _, state = official_info()
+    host, ip, state = official_info()
     if request('check_official_gui', '', check_port=browser) != 'available':
         raise Refused('BROWSER_LOCAL_UNAVAILABLE' if browser else 'OFFICIAL_GUI_HANDOFF_FAILED')
     if state != 'Idle':
@@ -15,7 +15,9 @@ def prepare(request, browser=True):
         if request('switch_official', 'Официальный VPN активен. Отключить его и подключить Router?') != 'accept':
             raise Refused('INPUT_CANCELLED')
         # Revalidate the official executable and status before its disconnect.
-        official_info()
+        again=official_info()
+        if again[:2]!=(host,ip) or again[2] not in ('Connected','Connecting','Reconnecting'):
+            raise Refused('OFFICIAL_SELECTION_CHANGED')
         result = subprocess.run([str(CP/'trac'), 'disconnect'], capture_output=True, timeout=12)
         if result.returncode:
             raise Refused('OFFICIAL_DISCONNECT_FAILED')

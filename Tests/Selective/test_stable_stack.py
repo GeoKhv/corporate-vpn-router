@@ -37,7 +37,7 @@ async def child(directory):
     await serve(cfg,directory,installed)
 
 
-async def main(binary):
+async def main(binary, rules_file=None):
     async def fixture(r,w):
         try:
             data=await r.read(64);w.write(data);await w.drain()
@@ -51,6 +51,9 @@ async def main(binary):
          'policy':{'sites':[{'domain':'work.cvr-fixture.invalid','scope':'tree'}],
                    'ports':[443],'beforeLogin':['deny.work.cvr-fixture.invalid']}}
     config=build(cfg)
+    if rules_file:
+        config['route']['rules'] = json.loads(Path(rules_file).read_text())
+        cfg['rdp_host'] = names[0]
     config['inbounds']=[{'type':'socks','tag':'work-tun','listen':'127.0.0.1','listen_port':incoming}]
     async def query(name,kind):
         r,w=await asyncio.open_connection('127.0.0.1',dns)
@@ -61,12 +64,17 @@ async def main(binary):
         _,p=decode_name(answer,12);p+=4;_,p=decode_name(answer,p)
         typ,cls,ttl,n=struct.unpack('!HHIH',answer[p:p+10])
         return str(ipaddress.ip_address(answer[p+10:p+10+n]))
-    async def connect(address,success=True):
+    async def connect(address,success=True,port=443):
         r,w=await asyncio.open_connection('127.0.0.1',incoming)
         w.write(b'\x05\x01\x00');assert await r.readexactly(2)==b'\x05\x00'
         ip=ipaddress.ip_address(address)
-        w.write(bytes([5,1,0,1 if ip.version==4 else 4])+ip.packed+struct.pack('!H',443))
-        reply=await r.readexactly(4)
+        w.write(bytes([5,1,0,1 if ip.version==4 else 4])+ip.packed+struct.pack('!H',port))
+        try:
+            reply=await r.readexactly(4)
+        except (asyncio.IncompleteReadError, ConnectionResetError):
+            w.close()
+            if success:raise
+            return
         if success:
             assert reply[:2]==b'\x05\x00',reply
             await r.readexactly((4 if reply[3]==1 else 16)+2)
@@ -101,6 +109,14 @@ async def main(binary):
             await connect('198.18.75.200',False)
             events=[json.loads(x) for x in (d/'forwarded.jsonl').read_text().splitlines()]
             assert events==[{'name':names[0],'port':443}]*2,events
+            if rules_file:
+                for addr in retained:await connect(addr,port=3389)
+                for kind in (1,28):
+                    await connect(await query(names[1],kind),False,3389)
+                await connect(retained[0],False,3390)
+                forwarded=[json.loads(x) for x in (d/'forwarded.jsonl').read_text().splitlines()]
+                assert forwarded == events + [{'name':names[0],'port':3389}]*2, forwarded
+                print("PASS production adapter rules, exact RDP hostname received upstream over IPv4/IPv6; neighbour and other port refused")
             print(json.dumps({'passed':True,'retained':retained,'domain_after_sigkill':events,
                 'unknown_and_excluded_names':'NXDOMAIN','unallocated_IP':'rejected','opaque_payload':'echoed unchanged'},indent=2))
         finally:svc.kill();stack.kill();await svc.wait();await stack.wait()
@@ -109,4 +125,4 @@ async def main(binary):
 
 if __name__=='__main__':
     if sys.argv[1]=='--child':asyncio.run(child(Path(sys.argv[2])))
-    else:asyncio.run(asyncio.wait_for(main(sys.argv[1]),30))
+    else:asyncio.run(asyncio.wait_for(main(*sys.argv[1:]),30))

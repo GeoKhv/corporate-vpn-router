@@ -1,6 +1,8 @@
 """Unprivileged application-owned selective session and native authorization."""
 import asyncio
 import json
+import ipaddress
+import re
 import os
 from pathlib import Path
 import secrets
@@ -10,7 +12,7 @@ import sys
 import tempfile
 import time
 sys.path.insert(0,str(Path(__file__).resolve().parent))
-from domain_map import DomainMap
+from domain_map import DomainMap, V4, V6
 from policy import validate_selective
 from services import serve
 
@@ -59,37 +61,125 @@ def initialize_map():
 def quote(value):return "'"+str(value).replace("'","'\\''")+"'"
 
 
+def helper_is_idle(status):
+    return status.get('active') is False and status.get('cleanupPending') is False
+
+
+def verify_dns_addresses(output):
+    """Protect macOS resolver endpoints, including scoped VPN DNS servers."""
+    nameservers = re.findall(r'^\s*nameserver\[\d+\]\s*:\s*(\S+)', output, re.M)
+    if not nameservers:
+        raise RuntimeError('SYSTEM_DNS_UNKNOWN')
+    for value in nameservers:
+        try:
+            address = ipaddress.ip_address(value.split('%', 1)[0])
+        except ValueError:
+            raise RuntimeError('SYSTEM_DNS_UNKNOWN') from None
+        if address in (ipaddress.ip_address('198.18.73.1'), ipaddress.ip_address('fdc7:7652:9a10::1')) or address in V4 or address in V6:
+            raise RuntimeError('SYSTEM_DNS_ADDRESS_CONFLICT')
+
+
+async def check_system_dns():
+    process = await asyncio.create_subprocess_exec('/usr/sbin/scutil', '--dns',
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    try:
+        output, _ = await asyncio.wait_for(process.communicate(), 3)
+    except (asyncio.TimeoutError, asyncio.CancelledError) as exc:
+        if process.returncode is None:
+            try: process.kill()
+            except ProcessLookupError: pass
+        await process.wait()
+        if isinstance(exc, asyncio.TimeoutError):
+            raise RuntimeError('SYSTEM_DNS_UNKNOWN') from exc
+        raise
+    if process.returncode:
+        raise RuntimeError('SYSTEM_DNS_UNKNOWN')
+    verify_dns_addresses(output.decode(errors='replace'))
+
+
 async def start(app_pid):
     global CLEANUP_CONFIRMED
     # Signed official IPC state is checked before listeners or route mutation.
     # An Idle VPN is normal; only explicit service errors are classified as such.
     from trust import official_info
     from helper_client import RouteHelper
+    from sites import rdp_host_for_profile
     from sparse_dns import serve as serve_front
-    gateway,_,_=official_info()
+    import trust
+    try:
+        gateway,gateway_ip,_=official_info()
+    except trust.Refused as exc:
+        if str(exc)!='OFFICIAL_SITE_AMBIGUOUS':raise
+        rows=trust.parse_sites(trust.official_output())
+        approved={p['site'] for p in (trust.approved_receipt(),trust.approved_site_pin()) if p}
+        choices=sorted(set(rows)&approved)
+        if not choices or any(row[2]!='Idle' for row in rows.values()):raise
+        selected=choices[0]
+        if len(choices)>1:
+            emit('selectingSite','Выберите рабочий сайт.',sites=choices)
+            line=sys.stdin.buffer.readline(8193)
+            if not line or len(line)>8192:raise RuntimeError('INPUT_CANCELLED')
+            value=json.loads(line)
+            if not isinstance(value,dict) or value.get('site') not in choices:raise RuntimeError('INVALID_SITE_SELECTION')
+            selected=value['site']
+        target=DATA/'preferred-site.json'
+        if target.is_symlink():raise RuntimeError('INVALID_SITE_SELECTION')
+        with tempfile.NamedTemporaryFile('w',dir=DATA,delete=False) as stream:
+            temp=Path(stream.name)
+            try:
+                json.dump({'site':selected},stream);stream.flush()
+                os.replace(temp,target)
+            finally:temp.unlink(missing_ok=True)
+        gateway,gateway_ip,_=official_info()
     cfg,_=policy()
     validate_selective(cfg,gateway)
     helper=RouteHelper(RESOURCES)
     stage=None; tasks=[]; stop=asyncio.Event(); prepared=False; reader=False
     loop=asyncio.get_running_loop()
+    activation=asyncio.Event()
+    def input_ready():
+        # The menu sends this single fixed token only after SSL and the SOCKS
+        # owner were verified. EOF, cancel, or an invalid command always stops.
+        command=os.read(sys.stdin.fileno(),4096)
+        if command == b'activate\n' and not activation.is_set():
+            activation.set()
+        else:
+            stop.set()
+            activation.set()
+    def cancel():
+        stop.set()
+        activation.set()
     try:
         status=await helper.open()
-        if status.get('version')!='0.3.0-alpha.3':raise RuntimeError('HELPER_UPDATE_REQUIRED')
+        if not helper_is_idle(status):
+            CLEANUP_CONFIRMED=False
+            raise RuntimeError('HELPER_SESSION_PENDING')
+        if status.get('version')!='0.3.0-alpha.3' or status.get('build') not in ('0.3.10','0.3.11'):raise RuntimeError('HELPER_UPDATE_REQUIRED')
         if not set(row['domain'] for row in cfg['sites']).issubset(status['approvedDomains']) or not set(cfg['ports']).issubset(status['approvedPorts']):
             raise RuntimeError('HELPER_POLICY_APPROVAL_REQUIRED')
+        loop.add_reader(sys.stdin.fileno(),input_ready);reader=True
+        for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,cancel)
+        await check_system_dns()
+        rdp_host = rdp_host_for_profile(cfg, status.get('approvedRDPHost'))
+        emit('awaitingTunnel','Сайт проверен. Ожидание корпоративного входа.',gateway=gateway+'@'+gateway_ip,rdpHost=rdp_host)
+        await activation.wait()
+        if stop.is_set():return
+        # A different VPN or an old lease can appear while MFA is on screen.
+        await check_system_dns()
+        if not helper_is_idle(await helper.call('status')):
+            CLEANUP_CONFIRMED=False
+            raise RuntimeError('HELPER_SESSION_PENDING')
+        if stop.is_set():return
         registry=initialize_map()
+        rdp_rule = {'rdpSlot': registry.allocate(rdp_host)} if rdp_host else {}
         stage=Path(tempfile.mkdtemp(prefix='cvr-selective-input-',dir='/private/tmp'))
         (STATE/'last-session.txt').write_text(str(stage))
         inp=dict(mode='stable-map',host=cfg['sites'][0]['domain'],ipv4='198.18.73.2',ipv6='fdc7:7652:9a10::2',
-                 policy=cfg,gateway=gateway,dns_port=53541,dns_backend_port=53542,socks_port=11090,
+                 policy=cfg,rdp_host=rdp_host,gateway=gateway,dns_port=53541,dns_backend_port=53542,socks_port=11090,
                  password=secrets.token_hex(24),map_path=str(STATE/'domain-map.json'),
                  retained_addresses=[registry.address(name,version) for name in registry.names for version in (4,6)])
         (stage/'trial-input.json').write_text(json.dumps(inp))
-        def input_ready():
-            os.read(sys.stdin.fileno(),4096);stop.set()
-        loop.add_reader(sys.stdin.fileno(),input_ready);reader=True
-        for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,stop.set)
-        service=asyncio.create_task(serve(inp,stage));tasks.append(service)
+        service=asyncio.create_task(serve(inp,stage,stop_event=stop));tasks.append(service)
         for _ in range(60):
             if service.done():await service
             if (stage/'services.pid').exists():break
@@ -100,8 +190,9 @@ async def start(app_pid):
         # A failed begin can still have created a journal/interface. Always
         # verify cleanup, including partial startup and lost replies.
         prepared=True;CLEANUP_CONFIRMED=False
-        await helper.call('begin',domains=[r['domain'] for r in cfg['sites']],ports=cfg['ports'],password=inp['password'])
+        await helper.call('begin',domains=[r['domain'] for r in cfg['sites']],ports=cfg['ports'],password=inp['password'],**rdp_rule)
         async def install(addresses):
+            await check_system_dns()
             await helper.call('route',addresses=[str(a) for a in addresses])
         front=asyncio.create_task(serve_front(cfg,stage,stop.is_set,route_installer=install));tasks.append(front)
         for _ in range(150):
@@ -110,12 +201,19 @@ async def start(app_pid):
             await asyncio.sleep(.1)
         else:raise RuntimeError('Локальный DNS не готов.')
         if stop.is_set():return
+        await check_system_dns()
+        if stop.is_set():return
         await helper.call('publish')
         (stage/'ready.json').write_text(json.dumps(dict(helper='launchd',started=time.time())))
-        emit('ready','Рабочие маршруты готовы. Safari, Яндекс и Chrome используют обычные настройки.',session=str(stage))
+        emit('ready','Рабочие маршруты готовы. Safari, Яндекс и Chrome используют обычные настройки.',session=str(stage),gateway=gateway+'@'+gateway_ip)
+        next_dns_check=loop.time()+10
         while not stop.is_set():
             for task in tasks:
                 if task.done():await task;raise RuntimeError('Локальный мост остановился.')
+            if loop.time() >= next_dns_check:
+                await check_system_dns()
+                next_dns_check=loop.time()+10
+            if stop.is_set():break
             await helper.call('heartbeat')
             try:await asyncio.wait_for(stop.wait(),2)
             except asyncio.TimeoutError:pass
@@ -123,6 +221,7 @@ async def start(app_pid):
         emit('error',str(exc),code=str(exc) if str(exc).replace('_','').isalnum() else type(exc).__name__,cleanupConfirmed=CLEANUP_CONFIRMED)
         raise
     finally:
+        cancelled=stop.is_set()
         stop.set()
         if reader:loop.remove_reader(sys.stdin.fileno())
         for task in tasks:task.cancel()
@@ -132,8 +231,8 @@ async def start(app_pid):
                 try:await helper.call('stop')
                 except RuntimeError as exc:
                     if str(exc)!='NO_SESSION':raise
-                    status=await helper.call('status')
-                    if status.get('active') or status.get('cleanupPending'):raise
+                status=await helper.call('status')
+                if not helper_is_idle(status):raise RuntimeError('CLEANUP_UNCONFIRMED')
                 if stage:(stage/'cleanup.json').write_text(json.dumps(dict(interface_present=False,resolver_present=False,helpers_remaining=[],helper='launchd')))
                 CLEANUP_CONFIRMED=True
                 emit('stopped','Рабочие маршруты удалены.',cleanupConfirmed=True)
@@ -145,7 +244,7 @@ async def start(app_pid):
                     await helper.close()
                     try:
                         status=await helper.open()
-                        if not status.get('active') and not status.get('cleanupPending'):
+                        if helper_is_idle(status):
                             recovered=True;break
                     except Exception:pass
                     await asyncio.sleep(.5)
@@ -154,8 +253,8 @@ async def start(app_pid):
                     CLEANUP_CONFIRMED=True
                     emit('stopped','После сбоя рабочие маршруты удалены. Можно подключиться снова.',cleanupConfirmed=True)
                 else:emit('error','Помощник проверяет завершение маршрутов: '+str(exc),code='CLEANUP_UNCONFIRMED',cleanupConfirmed=False)
-        elif stage:
-            emit('stopped','Изменений сети нет.',cleanupConfirmed=True)
+        elif CLEANUP_CONFIRMED and cancelled:
+            emit('stopped','Рабочие маршруты не включены.',cleanupConfirmed=True)
         await helper.close()  # daemon independently cleans on XPC EOF/lease expiry
         if stage:(stage/'trial-input.json').unlink(missing_ok=True)
 

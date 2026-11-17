@@ -1,5 +1,4 @@
 """Check Point external browser challenge. Keep URLs and proof in memory only."""
-import http.client
 import http.server
 import re
 import time
@@ -8,6 +7,7 @@ from urllib.parse import urljoin, urlsplit
 from cpyvpn import auth, utils
 from cpyvpn.cfg import CPRR
 from trust import Refused
+from tls_policy import gateway_https
 from chrome_peer import signed_chrome_peer
 
 
@@ -29,7 +29,7 @@ def single_tab_url(url, address, context):
     # This gateway's launcher repeatedly opens popups. Follow only the exact
     # same-origin continuation explicitly advertised for THIS session. Do not
     # follow redirects, send cookies or accept a different transaction.
-    connection = http.client.HTTPSConnection(address, 443, context=context, timeout=10)
+    connection = gateway_https(address, context, timeout=10)
     try:
         connection.request('GET', parts.path + '?' + parts.query, headers={'Host':parts.netloc})
         response = connection.getresponse()

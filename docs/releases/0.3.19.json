@@ -1,0 +1,21 @@
+{
+  "version": "0.3.19",
+  "build": 3019,
+  "release_url": "https://github.com/GeoKhv/corporate-vpn-router/releases/tag/v0.3.19-ipsec-test",
+  "artifacts": {
+    "Corporate-VPN-Router-0.3.19-IPsec-TEST-macOS-arm64.zip": {
+      "sha256": "27b0e11ee24d3cc2610632c0e9098c9f52af02b82801382c1cf44ed834b018c8",
+      "size_bytes": 48967516
+    },
+    "Corporate-VPN-Router-0.3.19-IPsec-source.zip": {
+      "sha256": "6d8b4a2ee35fc413d302e9e18ac4518d1b2665454fa228a07813c735f21dff37"
+    }
+  },
+  "recipient_acceptance": {
+    "version": "0.3.18",
+    "otp_and_password": true,
+    "corporate_and_external_sites": true,
+    "version_0_3_19_verified": false
+  },
+  "notes": "Release tag predates the later source synchronization. Follow the source commit linked in the release notes; published tags and archives are not rewritten."
+}

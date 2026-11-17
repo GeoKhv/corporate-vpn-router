@@ -20,7 +20,10 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     let button = NSButton()
     init(owner: BetaMenu) {
         self.owner = owner; super.init()
-        updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: self, delegate: self)
+        // Even if macOS translocates execution, update the verified persistent
+        // installation, never Downloads or the read-only translocation mount.
+        let installed = Bundle(url: owner.paths.app) ?? .main
+        updater = SPUUpdater(hostBundle: installed, applicationBundle: installed, userDriver: self, delegate: self)
     }
     func start(menu: NSMenu) {
         checkItem = menu.addItem(withTitle: status, action: #selector(check), keyEquivalent: "")
@@ -144,7 +147,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
 extension BetaMenu {
     func prepareForUpdate(completion: @escaping (Result<Void, Error>) -> Void) {
         // Copy only after code verification; keep the original exact bundle for rollback.
-        let source = Bundle.main.bundleURL
+        let source = paths.app
         let backup = paths.data.appendingPathComponent("UpdateBackups/" + productVersion + "-" + UUID().uuidString)
         DispatchQueue.global(qos:.userInitiated).async {
             do {

@@ -10,6 +10,12 @@ sys.path.insert(0, str(engine / 'Selective'))
 sys.path.insert(0, str(engine))
 import controller
 import trust
+import tempfile
+import atexit
+isolated=tempfile.TemporaryDirectory()
+atexit.register(isolated.cleanup)
+trust.DATA=Path(isolated.name)
+trust.APPROVED_GATEWAY=trust.DATA/'manifest'
 
 idle = b'Conn gateway.example.invalid:\n  gw: 192.0.2.1\n  status: Idle\n'
 cases = [
@@ -21,7 +27,7 @@ cases = [
     (0, b'', b'', 'OFFICIAL_SITE_MISSING'),
     (0, b'Conn Work VPN:\n  gw: 192.0.2.1\n  status: Idle\n', b'', 'OFFICIAL_SITE_FORMAT_UNSUPPORTED'),
     (0, idle + idle.replace(b'gateway.', b'other.'), b'', 'OFFICIAL_SITE_AMBIGUOUS'),
-    (0, idle + b'Conn Work VPN:\n  gw: 192.0.2.2\n', b'', 'OFFICIAL_SITE_AMBIGUOUS'),
+    (0, idle + b'Conn Work VPN:\n  gw: 192.0.2.2\n', b'', 'OFFICIAL_SITE_FORMAT_UNSUPPORTED'),
     (0, idle.replace(b'  status: Idle\n', b''), b'', 'OFFICIAL_STATE_UNKNOWN'),
 ]
 for rc, output, errors, expected in cases:

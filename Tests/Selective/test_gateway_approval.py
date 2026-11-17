@@ -47,6 +47,45 @@ with tempfile.TemporaryDirectory(prefix='cvr-gateway-approval-',dir='/private/tm
    try:trust.anchor(approvals.append)
    except trust.Refused as e:assert str(e)=='SAVED_SITE_OR_PIN_CHANGED'
    else:raise AssertionError('saved binding replaced')
+   # Other sites never inherit the original binding. Enroll only while the
+   # official client is connected to that precise host/IP, with matched pins.
+   (data/'ssl-site.json').unlink()
+   proof=data/'official-alternate-binding.json'
+   primary=dict(expected,site='primary.invalid',ip='192.0.2.1',ca_sha256='0'*64)
+   approve_config(primary)
+   prior=len(approvals)
+   with patch.object(trust,'official_info',return_value=('gateway.invalid','127.0.0.1','Idle')):
+    try:trust.anchor(approvals.append,confirm_other_ca=lambda *_:True)
+    except trust.Refused as e:assert str(e)=='OFFICIAL_CONNECT_ASSIGNED_SITE'
+    else:raise AssertionError('idle alternate enrolled')
+   registry.write_text(': (accepted_cn\n: ("Unrelated" :--Fingerprint-- ("SOME WORDS"))\n: ("Fixture Gateway" :--Fingerprint-- ("FIXTURE WORDS"))\n)')
+   with patch.object(trust,'official_info',return_value=('gateway.invalid','127.0.0.1','Connected')):
+    try:trust.anchor(approvals.append,confirm_other_ca=lambda *_:False)
+    except trust.Refused as e:assert str(e)=='ALTERNATE_CA_NOT_CONFIRMED'
+    else:raise AssertionError('different CA silently accepted')
+    assert not proof.exists() and not (data/'ssl-site.json').exists()
+    trust.anchor(approvals.append,confirm_other_ca=lambda h,p:h==expected['site'] and p==expected['ca_sha256'])
+   assert len(approvals)==prior and json.loads(proof.read_text())=={'primary':primary,'alternate':expected}
+   with patch.object(trust,'official_info',side_effect=AssertionError('repeat enrollment')):
+    trust.anchor(approvals.append)
+   approve_config(dict(primary,cn='Changed'))
+   try:trust.anchor(approvals.append)
+   except trust.Refused as e:assert str(e)=='SAVED_SITE_OR_PIN_CHANGED'
+   else:raise AssertionError('changed seed accepted')
+   (data/'ssl-site.json').unlink();proof.unlink()
+   approve_config(dict(primary,ca_sha256=expected['ca_sha256']))
+   with patch.object(trust,'official_info',return_value=('gateway.invalid','127.0.0.1','Connected')):
+    trust.anchor(approvals.append)
+   assert approvals[-1]==expected and len(approvals)==prior+1
+   registry.write_text(': (accepted_cn\n: ("Fixture Gateway" :--Fingerprint-- ("FIXTURE WORDS"))\n: ("Fixture Gateway" :--Fingerprint-- ("OTHER WORDS"))\n)')
+   try:trust.anchor(approvals.append)
+   except trust.Refused as e:assert str(e)=='OFFICIAL_PIN_MISMATCH'
+   else:raise AssertionError('ambiguous official pin accepted')
+   registry.write_text(': (accepted_cn\n: ("Fixture Gateway" :--Fingerprint-- ("FIXTURE WORDS"))\n: ("Fixture Gateway" :--Fingerprint-- ("malformed?"))\n)')
+   try:trust.anchor(approvals.append)
+   except trust.Refused as e:assert str(e)=='OFFICIAL_PIN_MISMATCH'
+   else:raise AssertionError('malformed duplicate pin accepted')
+   registry.write_text(': (accepted_cn\n: ("Fixture Gateway" :--Fingerprint-- ("FIXTURE WORDS"))\n)')
    manifest.write_text('{}')
    try:trust.anchor(approvals.append)
    except trust.Refused as e:assert str(e)=='APPROVED_GATEWAY_INVALID'

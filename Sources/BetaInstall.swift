@@ -106,7 +106,7 @@ enum BetaInstall {
 
     static func isInstalledCopy(_ source: URL, _ paths: ProductPaths) throws -> Bool {
         try AppInstallation.rejectLink(paths.app)
-        if source.resolvingSymlinksInPath() == paths.app.resolvingSymlinksInPath() { return true }
+        if AppInstallation.sameLocation(source, paths.app) { return true }
         // Gatekeeper can run the installed bundle from App Translocation.
         // Recognize the same verified code instead of installing it over itself.
         for relative in ["Contents/MacOS/CorporateVPNRouter", "Contents/Info.plist", "Contents/_CodeSignature/CodeResources"] {

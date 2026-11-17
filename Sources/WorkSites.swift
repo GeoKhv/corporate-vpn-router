@@ -48,6 +48,7 @@ extension BetaMenu {
         let p=sitesPanel
         if settingsWindow == nil {
             let w=makeWindow("Рабочие сайты",630,575)
+            w.isRestorable = false
             p.list.target=self;p.list.action=#selector(selectSite)
             p.scope.addItems(withTitles:["Только это имя","Имя и все поддомены"])
             p.domain.placeholderString="wiki.company.example"; p.address.placeholderString="Адрес сайта или URL"
@@ -106,11 +107,18 @@ extension BetaMenu {
     @objc func previewRoute(){
         let p=sitesPanel;readLogin()
         let a=p.address.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
-        guard let url=URLComponents(string:a.contains("://") ? a:"https://"+a),["http","https"].contains(url.scheme?.lowercased() ?? ""),
-              var h=url.host?.lowercased(), !h.isEmpty, url.user==nil, url.password==nil else {p.preview.stringValue="Введите домен или полный HTTP(S)-адрес.";return}
+        guard let url=URLComponents(string:a.contains("://") ? a:"https://"+a),["http","https","rdp"].contains(url.scheme?.lowercased() ?? ""),
+              var h=url.host?.lowercased(), !h.isEmpty, url.user==nil, url.password==nil else {p.preview.stringValue="Введите имя узла, HTTP(S)-адрес или rdp://имя-ПК.";return}
         while h.hasSuffix("."){h.removeLast()}
-        let port=url.port ?? (url.scheme=="http" ? 80:443)
-        p.preview.stringValue="По списку: "+(p.draft.beforeLogin.contains(h) ? "доступ до входа · системный маршрут":p.draft.work(h) ? (p.draft.ports.contains(port) ? "рабочий · SOCKS5 внутри SSL":"рабочий · порт запрещён в SOCKS5"):"обычный · системный маршрут")
+        let scheme = url.scheme?.lowercased()
+        let port=url.port ?? (scheme=="http" ? 80 : scheme=="rdp" ? 3389 : 443)
+        var permitted = p.draft.ports.contains(port)
+#if CVR_SELECTIVE_TUN
+        if port == 3389 && p.draft.work(h) {
+            permitted = permitted || (SelectiveRouter.helperReply(resources: resources)?["approvedRDPHost"] as? String == h)
+        }
+#endif
+        p.preview.stringValue="По списку: "+(p.draft.beforeLogin.contains(h) ? "доступ до входа · системный маршрут":p.draft.work(h) ? (permitted ? "рабочий · через VPN":"рабочий · порт запрещён в SOCKS5"):"обычный · системный маршрут")
     }
     @objc func routeStatus(){
 #if CVR_SELECTIVE_TUN
@@ -191,7 +199,7 @@ extension BetaMenu {
 #if CVR_SELECTIVE_TUN
         guard engine == nil else { settingsNote.stringValue = "Сначала отключите рабочий туннель."; return }
         if selective.process != nil { selective.stop() }
-        else if selective.helperAvailability.needsInstallation { installRouteHelper() }
+        else if selective.helperAvailability.needsInstallation || selective.helperAvailability == .desktopAvailable { installRouteHelper() }
         else if selective.helperAvailability != .ready { selective.checkHelper(resources: resources) }
         else { connect() }
 #else

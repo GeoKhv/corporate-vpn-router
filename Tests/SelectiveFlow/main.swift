@@ -31,7 +31,17 @@ def emit(**v):print(json.dumps(v),flush=True)
 if mode=='slow':time.sleep(.4)
 if mode=='route_failure':
  emit(state='error',message='FIXTURE_ROUTE_REJECTED',code='FIXTURE_ROUTE_REJECTED',cleanupConfirmed=True)
-else:emit(state='ready',message='fixture routes ready')
+else:
+ if mode=='site_choice':
+  emit(state='selectingSite',message='choose',sites=['gateway.invalid','other.invalid'])
+  assert json.loads(sys.stdin.readline())=={'site':'gateway.invalid'}
+ emit(state='awaitingTunnel',message='fixture waiting for tunnel',gateway='gateway.invalid@192.0.2.1')
+ if sys.stdin.readline()=='activate\n':
+  with (base/'activations').open('a') as f:f.write(mode+'\n')
+  if mode=='stopped_during_activation':
+   emit(state='stopped',message='fixture stopped',cleanupConfirmed=True);sys.exit(0)
+  elif mode=='activation_failure':emit(state='error',message='FIXTURE_PUBLISH_FAILED',code='FIXTURE_PUBLISH_FAILED',cleanupConfirmed=False)
+  else:emit(state='ready',message='fixture routes ready')
 sys.stdin.read()
 emit(state='stopped',message='Рабочие маршруты удалены.',cleanupConfirmed=True)
 """#.write(to: res.appendingPathComponent("Engine/Selective/controller.py"), atomically: true, encoding: .utf8)
@@ -40,6 +50,8 @@ import json,sys,time
 from pathlib import Path
 base=Path(__file__).resolve().parent
 mode=(base/'scenario').read_text()
+import os
+assert os.environ['CVR_ATTEMPT_GATEWAY']=='gateway.invalid@192.0.2.1'
 with (base/'starts').open('a') as f:f.write('start\n')
 def emit(**v):print(json.dumps(v),flush=True)
 def ask(kind,**fields):
@@ -47,16 +59,28 @@ def ask(kind,**fields):
  return json.loads(sys.stdin.readline())
 emit(stage='verifying_gateway')
 if mode=='first':assert ask('trust')=='accept'
+if mode=='alternate':assert ask('gateway_fingerprint')=='fixture-fingerprint'
 if mode=='gateway_failure':
  emit(stage='failed',code='SSLCertVerificationError');sys.exit(1)
+if mode=='dns_timeout':
+ emit(stage='gateway_dns_lookup');emit(stage='gateway_dns_retry',errno=8)
+ emit(stage='failed',code='GATEWAY_DNS_TIMEOUT');sys.exit(1)
 emit(stage='gateway_verified')
 assert ask('username',site='gateway.invalid',pin='fixture',realm='otp')=='fixture-user'
 assert ask('challenge')=='fixture-code'
-emit(stage='authenticated');emit(stage='connected')
+emit(stage='authenticated')
+if mode=='server_refusal':
+ emit(stage='server_disconnect',server_code=-123)
+ emit(stage='failed',code='SSL_SESSION_REFUSED',failed_phase='server_disconnect',server_code=-123)
+ sys.exit(1)
+emit(stage='connected')
 sys.stdin.read()
 """#.write(to: res.appendingPathComponent("Engine/session.py"), atomically: true, encoding: .utf8)
     app.delegate = menu; app.finishLaunching()
     if menu.window == nil { menu.applicationDidFinishLaunching(Notification(name: NSApplication.didFinishLaunchingNotification)) }
+    check(menu.logsButton.window === menu.diagnostics && menu.logsButton.isEnabled &&
+          menu.logsButton.target === menu && menu.logsButton.action == #selector(BetaMenu.exportLogs),
+          "offline diagnostics must expose the log export button")
     menu.hiddenByUser = true; menu.window.orderOut(nil)
     until { menu.selective.helperAvailability == .ready }
     try JSONFile.write(WorkProfile(sites: [WorkSite(domain: "work.example.invalid", scope: "tree")]), to: menu.workURL)
@@ -69,10 +93,17 @@ sys.stdin.read()
         until { menu.requestKind == "challenge" }
         menu.secret.stringValue = "fixture-code"; menu.answer()
         until { menu.connectionPhase == .connected }
+        check(menu.settingsWindow == nil, "connection must apply the saved profile without opening work sites")
         check(menu.health == .ready && menu.setupBrowser.isHidden, "one action must reach MFA and hide separate route control")
         menu.toggle(); until { menu.connectionPhase == .idle && menu.engine == nil && menu.selective.process == nil }
         check(menu.selective.cleanupConfirmed, "cleanup must complete before retry")
     }
+    let idle = "Conn a.invalid:\n  gw: 192.0.2.1\n  status: Idle\n"
+    let other = idle.replacingOccurrences(of:"a.invalid",with:"b.invalid")
+    check(OfficialGUI.allSitesIdle(idle+other), "all idle sites can hand off")
+    check(!OfficialGUI.allSitesIdle(idle+other.replacingOccurrences(of:"Idle",with:"Connected")), "preserve another active connection")
+    check(!OfficialGUI.allSitesIdle(idle+other.replacingOccurrences(of:"Conn ",with:"CONN\t").replacingOccurrences(of:"status: Idle",with:"STATUS: Connected")), "alternate spelling must not hide an active site")
+    check(!OfficialGUI.allSitesIdle("Conn incomplete.invalid:\n"+other), "missing status is not idle")
     var authorizations = 0
     menu.selective.authorizeHelper = { _ in authorizations += 1; return "unexpected authorization" }
     for availability: RouteHelperAvailability in [.missing, .updateRequired, .repairRequired, .unavailable, .checkFailed] {
@@ -89,8 +120,14 @@ sys.stdin.read()
         menu.selective.manageHelper(resources: res)
         check(authorizations == 0, "maintenance rechecks evidence before elevation")
     }
-    let healthy: [String: Any] = ["ok":true, "version":"0.3.0-alpha.3", "active":false, "cleanupPending":false]
-    check(SelectiveRouter.classifyReply(healthy) == .ready, "alpha.3 contract is current")
+    let healthy: [String: Any] = ["ok":true, "version":"0.3.0-alpha.3", "build":"0.3.10", "active":false, "cleanupPending":false]
+    check(SelectiveRouter.classifyReply(healthy) == .ready, "compatible broker build and protocol")
+    var legacy = healthy; legacy.removeValue(forKey:"build")
+    check(SelectiveRouter.classifyReply(legacy) == .updateRequired, "an idle legacy broker must be upgraded")
+    legacy["active"] = true
+    check(SelectiveRouter.classifyReply(legacy) == .previousSession, "an active legacy broker must be left alone")
+    var pending = healthy; pending["cleanupPending"] = true
+    check(SelectiveRouter.classifyReply(pending) == .previousSession, "pending cleanup blocks a new session")
     var mismatch = healthy; mismatch["version"] = "0.4.0"
     check(SelectiveRouter.classifyReply(mismatch) == .updateRequired, "positive protocol mismatch")
     check(SelectiveRouter.classifyReply(["ok":true]) == .checkFailed, "missing version is not an upgrade")
@@ -99,13 +136,49 @@ sys.stdin.read()
     menu.selective.inspectHelper = { _ in .ready }
     try begin("first")
     until { menu.requestKind == "trust" }
+    let activations = res.appendingPathComponent("Engine/activations")
+    check(!fm.fileExists(atPath: activations.path), "gateway verification must precede all routing")
     menu.answer(); finishMFA()
+    try begin("alternate"); until { menu.requestKind == "gateway_fingerprint" }
+    menu.secret.stringValue = "fixture-fingerprint"; menu.answer(); finishMFA()
     try begin("repeat"); finishMFA()
+    var choices = 0
+    menu.selective.chooseSite = { sites, reply in
+        check(sites == ["gateway.invalid","other.invalid"], "choice contains configured sites")
+        choices += 1; reply("gateway.invalid")
+    }
+    try begin("site_choice"); finishMFA()
+    check(choices == 1, "ambiguous selection resumes the same connection attempt")
+    let completed = try String(contentsOf: activations)
+    try begin("server_refusal")
+    until { menu.requestKind == "challenge" }
+    menu.secret.stringValue = "fixture-code"; menu.answer()
+    until { menu.connectionPhase == .failed && menu.engine == nil && menu.selective.process == nil }
+    check(menu.connectionFailure?.contains("-123") == true, "preserve the gateway refusal code through cleanup")
+    check(try! String(contentsOf: activations) == completed, "server refusal must not activate routes")
+    let events = try String(contentsOf: paths.data.appendingPathComponent("Selective/connection-events.jsonl"))
+    check(events.contains("\"server_code\":-123"), "numeric server reason must survive into the journal")
+    try begin("cancel_mfa"); until { menu.requestKind == "challenge" }; menu.toggle()
+    until { menu.connectionPhase == .idle && menu.engine == nil && menu.selective.process == nil }
+    check(try! String(contentsOf: activations) == completed, "cancelled MFA must never activate routes")
     try begin("gateway_failure")
     until { menu.connectionPhase == .failed && menu.engine == nil && menu.selective.process == nil }
     check(menu.connectionPhase == .failed && menu.health == .error, "gateway failure must remain an error after cleanup")
     check(menu.note.contains("сертификата шлюза") && !menu.note.contains("маршруты удалены"), "cleanup must not overwrite TLS failure")
     check(menu.connectionFailureCode == "SSLCertVerificationError" && menu.selective.cleanupConfirmed, "precise failure and verified cleanup")
+    check(try! String(contentsOf: activations) == completed, "failed authentication must never activate routes")
+    try begin("dns_timeout")
+    until { menu.connectionPhase == .failed && menu.engine == nil && menu.selective.process == nil }
+    check(menu.detail.stringValue.contains("ожидания DNS") && menu.primary.isEnabled, "DNS cause and retry must remain visible after cleanup")
+    check(try! String(contentsOf: activations) == completed, "DNS failure must stop before route activation")
+    try begin("activation_failure"); until { menu.requestKind == "challenge" }
+    menu.secret.stringValue = "fixture-code"; menu.answer()
+    until { menu.connectionPhase == .failed && menu.engine == nil && menu.selective.process == nil }
+    check(menu.connectionFailureCode == "FIXTURE_PUBLISH_FAILED", "post-MFA route failure must stop both processes")
+    try begin("stopped_during_activation"); until { menu.requestKind == "challenge" }
+    menu.secret.stringValue = "fixture-code"; menu.answer()
+    until { menu.connectionPhase == .failed && menu.engine == nil && menu.selective.process == nil }
+    check(menu.connectionFailureCode == "ROUTES_LOST", "unexpected controller stop during activation must close tunnel")
     try begin("repeat"); finishMFA()
     try begin("route_failure")
     until { menu.connectionPhase == .failed && menu.selective.process == nil }
@@ -116,7 +189,7 @@ sys.stdin.read()
     check(try! String(contentsOf: res.appendingPathComponent("Engine/starts")) == before, "cancel before readiness must not start late MFA")
     let log = try String(contentsOf: paths.data.appendingPathComponent("Selective/connection-events.jsonl"))
     check(log.contains("SSLCertVerificationError") && log.contains("FIXTURE_ROUTE_REJECTED"), "failure codes are journaled")
-    check(!log.contains("fixture-user") && !log.contains("fixture-code") && !log.contains("gateway.invalid"), "journal excludes secrets and identity")
+    check(!log.contains("fixture-user") && !log.contains("fixture-code") && !log.contains("fixture-fingerprint") && !log.contains("gateway.invalid"), "journal excludes secrets and identity")
     check(authorizations == 0, "all normal connections are independent of cached admin authorization")
     print("PASS one-click first trust/MFA and repeat; gateway failure; preserved error through cleanup; retry; route failure; cancellation race; private journal")
 }

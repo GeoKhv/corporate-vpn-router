@@ -21,7 +21,7 @@ with tempfile.TemporaryDirectory() as d:
     ctx=Discovery()
     def never(*_):raise AssertionError('unexpected confirmation of changed binding')
     data=root/'data';data.mkdir()
-    with patch.object(trust,'DATA',data),patch.object(trust,'site',return_value=('fixture.invalid','127.0.0.1')),patch.object(trust.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout=pem)),patch.object(trust,'accepted'),patch.object(trust,'pinned_context',return_value=ctx),patch.object(trust.socket,'create_connection',return_value=ctx):
+    with patch.object(trust,'DATA',data),patch.object(trust,'APPROVED_GATEWAY',root/'absent'),patch.object(trust,'site',return_value=('fixture.invalid','127.0.0.1')),patch.object(trust.subprocess,'run',return_value=subprocess.CompletedProcess([],0,stdout=pem)),patch.object(trust,'accepted'),patch.object(trust,'pinned_context',return_value=ctx),patch.object(trust.socket,'create_connection',return_value=ctx):
         calls=[];trust.anchor(calls.append);assert len(calls)==1
         trust.anchor(never)
         for field in ('site','ip','cn','ca_sha256'):

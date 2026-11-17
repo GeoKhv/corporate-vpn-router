@@ -1,3 +1,5 @@
+> Исторический документ. Описывает прежний пакет/эксперимент; текущий выпуск 0.3.19 распространяется через ZIP и Sparkle. См. [README](../README.md) и [текущую инструкцию](COLLEAGUES.ru.md).
+
 # macOS DMG · beta.6 installer-fix.1
 
 The corrected asset is `Corporate-VPN-Router-0.2.0-beta.6-macOS-arm64-installer-fix.1.dmg`.

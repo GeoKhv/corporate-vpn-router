@@ -6,6 +6,33 @@ func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(forma
 let fm = FileManager.default
 let ioQueue = DispatchQueue(label: routeHelperLabel + ".serial")
 
+#if CVR_PORTABLE_HELPER
+// Private rules exist only on the enrolled Mac. Installation requires an
+// administrator and passes the exact policy that was displayed for approval.
+struct LocalRoutePolicy: Codable {
+    let domains: [String]
+    let desktop: String
+    static func decode(_ data: Data) throws -> Self {
+        guard data.count <= 65536 else { throw HelperFailure("INVALID_LOCAL_POLICY") }
+        let value = try JSONDecoder().decode(Self.self, from:data)
+        func valid(_ name: String) -> Bool {
+            guard name.utf8.count <= 253, name.range(of:"^[a-z0-9-]+(\\.[a-z0-9-]+)+$",options:.regularExpression) != nil,
+                  name.utf8.allSatisfy({ ($0 >= 97 && $0 <= 122) || ($0 >= 48 && $0 <= 57) || $0 == 45 || $0 == 46 }),
+                  name.split(separator:".").last?.contains(where:{ $0.isLetter }) == true else { return false }
+            return name.split(separator:".").allSatisfy { $0.count <= 63 && !$0.hasPrefix("-") && !$0.hasSuffix("-") }
+        }
+        guard (1...256).contains(value.domains.count), Set(value.domains).count == value.domains.count,
+              value.domains.allSatisfy(valid), value.desktop.isEmpty || (valid(value.desktop) &&
+              value.domains.contains { value.desktop == $0 || value.desktop.hasSuffix("." + $0) })
+        else { throw HelperFailure("INVALID_LOCAL_POLICY") }
+        return value
+    }
+}
+var localPolicy: LocalRoutePolicy?
+var approvedDomains: [String] { localPolicy?.domains ?? [] }
+var approvedRDPHost: String { localPolicy?.desktop ?? "" }
+#endif
+
 func checkRootPath(_ path: String, directory: Bool) throws {
     var info = stat()
     guard lstat(path, &info) == 0, info.st_uid == 0, info.st_mode & 0o022 == 0,
@@ -167,22 +194,74 @@ func validateAddress(_ address: String) -> Bool {
     var a4 = in_addr(); var a6 = in6_addr()
     if inet_pton(AF_INET,address,&a4) == 1 {
         let n = UInt32(bigEndian:a4.s_addr)
-        return n >> 8 == 0xc6124b && (1...253).contains(n & 255)
+        return n >> 8 == 0xc6124b && (1...254).contains(n & 255)
     }
     if inet_pton(AF_INET6,address,&a6) == 1 {
         let bytes = withUnsafeBytes(of:&a6) { Array($0) }
-        return Array(bytes.prefix(15)) == [0xfd,0xc7,0x76,0x52,0x9a,0x10,0,0x75,0,0,0,0,0,0,0] && (1...253).contains(bytes[15])
+        return Array(bytes.prefix(15)) == [0xfd,0xc7,0x76,0x52,0x9a,0x10,0,0x75,0,0,0,0,0,0,0] && (1...254).contains(bytes[15])
     }
     return false
 }
-func validateBegin(_ input: [String:Any]) throws -> ([String],[Int],String) {
-    guard Set(input.keys) == Set(["op","domains","ports","password"]),
+func validateBegin(_ input: [String:Any]) throws -> ([String],[Int],String,Int?) {
+    guard Set(input.keys).subtracting(["rdpSlot"]) == Set(["op","domains","ports","password"]),
           let domains=input["domains"] as? [String], !domains.isEmpty,
           Set(domains).count == domains.count, Set(domains).isSubset(of:Set(approvedDomains)),
           let ports=input["ports"] as? [Int], !ports.isEmpty, Set(ports).isSubset(of:Set(approvedPorts)),
           let password=input["password"] as? String, password.count == 48,
           password.allSatisfy({ "0123456789abcdef".contains($0) }) else { throw HelperFailure("OUTSIDE_APPROVED_POLICY") }
-    return (domains,ports,password)
+    let slot = input["rdpSlot"] as? Int
+    if input["rdpSlot"] != nil {
+        guard let slot, (2...254).contains(slot), !approvedRDPHost.isEmpty,
+              domains.contains(where: { approvedRDPHost == $0 || approvedRDPHost.hasSuffix("." + $0) })
+        else { throw HelperFailure("OUTSIDE_APPROVED_POLICY") }
+    }
+    return (domains,ports,password,slot)
+}
+
+// A utun name and even its numeric index can be reused after the owner exits.
+// A missing address during attach/detach is inconclusive, so retain the journal.
+enum AdapterInterface { case absent, foreign, possibleOwner, unknown }
+
+func classifyInterface(index: UInt32, recorded: UInt32?, addresses: Set<String>?) -> AdapterInterface {
+    if index == 0 { return .absent }
+    if let recorded, recorded != index { return .foreign }
+    guard let addresses, !addresses.isEmpty else { return .unknown }
+    if addresses.contains("198.18.73.1") || addresses.contains("fdc7:7652:9a10::1") { return .possibleOwner }
+    return .foreign
+}
+
+func adapterInterface(recorded: UInt32?) -> AdapterInterface {
+    let index = if_nametoindex("utun73")
+    if index == 0 { return .absent }
+    var list: UnsafeMutablePointer<ifaddrs>?
+    guard getifaddrs(&list) == 0, let first = list else { return .unknown }
+    defer { freeifaddrs(first) }
+    var addresses = Set<String>()
+    for cursor in sequence(first: first, next: { $0.pointee.ifa_next }) {
+        let item = cursor.pointee
+        guard String(cString:item.ifa_name) == "utun73", let address = item.ifa_addr,
+              [AF_INET,AF_INET6].contains(Int32(address.pointee.sa_family)) else { continue }
+        var buffer = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        guard getnameinfo(address,socklen_t(address.pointee.sa_len),&buffer,socklen_t(buffer.count),nil,0,NI_NUMERICHOST)==0 else { return .unknown }
+        let host = String(cString:buffer).split(separator:"%").first.map(String.init) ?? ""
+        // An IPv6 link-local address alone does not establish another owner.
+        if !host.hasPrefix("fe80:") { addresses.insert(host) }
+    }
+    guard index == if_nametoindex("utun73") else { return .unknown }
+    return classifyInterface(index:index, recorded:recorded, addresses:addresses)
+}
+
+func adapterRules(ports: [Int], rdpSlot: Int?) -> [[String:Any]] {
+    var rules: [[String:Any]] = [
+        ["inbound":["work-tun"],"network":"tcp","port":ports,"action":"route","outbound":"verified-work"]
+    ]
+    if let slot = rdpSlot {
+        let ips = ["198.18.75.\(slot)/32", "fdc7:7652:9a10:75::\(String(slot,radix:16))/128"]
+        rules.append(["inbound":["work-tun"], "network":"tcp", "ip_cidr":ips, "port":[3389],
+                      "action":"route", "outbound":"verified-work", "override_address":approvedRDPHost])
+    }
+    rules.append(["action":"reject","no_drop":true])
+    return rules
 }
 
 final class Broker {
@@ -210,7 +289,9 @@ final class Broker {
         if fm.fileExists(atPath:journalPath) {
             try checkRootPath(journalPath,directory:false)
             journal = try jsonObject(Data(contentsOf:URL(fileURLWithPath:journalPath)))
-            try cleanup("daemon restart")
+            // Keep serving status and retry a transient detach, rather than
+            // crashing in a launchd loop without an observable cleanup state.
+            do { try cleanup("daemon restart") } catch { self.error=String(describing:error) }
         }
     }
     func liveInterface() -> UInt32 { if_nametoindex("utun73") }
@@ -219,7 +300,7 @@ final class Broker {
     }
     func begin(_ input:[String:Any],owner:UUID) throws -> [String:Any] {
         guard journal.isEmpty, lease == nil else { throw HelperFailure("SESSION_BUSY_OR_CLEANUP_REQUIRED") }
-        let (domains,ports,password)=try validateBegin(input)
+        let (domains,ports,password,rdpSlot)=try validateBegin(input)
         guard liveInterface() == 0 else { throw HelperFailure("UTUN73_IN_USE") }
         let resolver="/private/etc/resolver"
         try checkParents(resolver)
@@ -239,7 +320,7 @@ final class Broker {
             let config:[String:Any] = ["log":["level":"warn","timestamp":true],
                 "inbounds":[["type":"tun","tag":"work-tun","interface_name":"utun73","address":["198.18.73.1/32","fdc7:7652:9a10::1/128"],"mtu":1500,"auto_route":false,"dns_mode":"disabled","stack":"gvisor"]],
                 "outbounds":[["type":"socks","tag":"verified-work","server":"127.0.0.1","server_port":11090,"version":"5","username":"trial","password":password]],
-                "route":["rules":[["inbound":["work-tun"],"network":"tcp","port":ports,"action":"route","outbound":"verified-work"],["action":"reject","no_drop":true]]]]
+                "route":["rules":adapterRules(ports: ports, rdpSlot: rdpSlot)]]
             try writeRoot(try jsonData(config),state+"/adapter.json")
             try writeRoot(Data(),state+"/adapter.log")
             logWasReset=true
@@ -256,8 +337,8 @@ final class Broker {
             identityMilliseconds=(ProcessInfo.processInfo.systemUptime-identityStarted)*1000
             startupStage = .interfaceWait
             let deadline=Date().addingTimeInterval(10)
-            while liveInterface() == 0 && p.isRunning && Date()<deadline { Thread.sleep(forTimeInterval:0.05) }
-            guard p.isRunning && liveInterface() != 0 else { throw HelperFailure("ADAPTER_START_FAILED") }
+            while adapterInterface(recorded:nil) != .possibleOwner && p.isRunning && Date()<deadline { Thread.sleep(forTimeInterval:0.05) }
+            guard p.isRunning && adapterInterface(recorded:nil) == .possibleOwner else { throw HelperFailure("ADAPTER_START_FAILED") }
             journal["interfaceIndex"]=liveInterface();try persist()
             startupStage = .prepared
             return ["ok":true,"state":"prepared"]
@@ -285,19 +366,23 @@ final class Broker {
     }
     func addRoutes(_ addresses:[String]) throws {
         guard addresses.count <= 16, addresses.allSatisfy(validateAddress),
-              let index=journal["interfaceIndex"] as? UInt32, index == liveInterface(), adapter?.isRunning == true else { throw HelperFailure("INVALID_ROUTE_OR_INTERFACE") }
+              let index=journal["interfaceIndex"] as? UInt32, index == liveInterface(), adapterInterface(recorded:index) == .possibleOwner, adapter?.isRunning == true else { throw HelperFailure("INVALID_ROUTE_OR_INTERFACE") }
         var routes=journal["routes"] as! [String]
-        for address in Set(addresses).sorted() where !routes.contains(address) {
+        for address in Set(addresses).sorted() {
             let family=address.contains(":") ? "-inet6":"-inet"
             let actual=try command("/sbin/route",["-n","get",family,address]).1
+            if routes.contains(address) {
+                guard actual.contains("interface: utun73"), actual.contains("HOST") else { throw HelperFailure("ROUTE_OWNERSHIP_CHANGED") }
+                continue
+            }
             // An exact pre-existing host route is someone else's, even if it
             // happens to use our interface. Do not adopt or overwrite it.
             if actual.contains("HOST") { throw HelperFailure("EXISTING_HOST_ROUTE_PRESERVED") }
-            routes.append(address);journal["routes"]=routes;try persist()
             let result=try command("/sbin/route",["-n","add",family,"-host",address,"-interface","utun73"])
             guard result.0 == 0 else { throw HelperFailure("ROUTE_ADD_FAILED") }
             let check=try command("/sbin/route",["-n","get",family,address]).1
             guard check.contains("interface: utun73"),check.contains("HOST") else { throw HelperFailure("ROUTE_VERIFY_FAILED") }
+            routes.append(address);journal["routes"]=routes;try persist()
         }
     }
     func publish() throws {
@@ -325,7 +410,12 @@ final class Broker {
         } else if let pid=journal["adapterPID"] as? Int32,let identity=journal["adapterIdentity"] as? String,
                   !identity.isEmpty, identity.hasSuffix(home+"/sing-box"), processIdentity(pid)==identity {
             kill(pid,SIGTERM);Thread.sleep(forTimeInterval:0.2)
-            if processIdentity(pid)==identity { kill(pid,SIGKILL) }
+            if processIdentity(pid)==identity {
+                kill(pid,SIGKILL)
+                let deadline=Date().addingTimeInterval(3)
+                while processIdentity(pid)==identity && Date()<deadline { Thread.sleep(forTimeInterval:0.05) }
+                guard processIdentity(pid) != identity else { throw HelperFailure("ADAPTER_STOP_TIMEOUT") }
+            }
         }
         adapter=nil
         var conflicts=[String]()
@@ -336,20 +426,17 @@ final class Broker {
             if lstat(path,&st)==0 {
                 if st.st_uid==0,st.st_mode&S_IFMT==S_IFREG,st.st_mode&0o022==0,try Data(contentsOf:URL(fileURLWithPath:path))==resolverData(domain) { guard unlink(path)==0 else { throw HelperFailure("RESOLVER_REMOVE_FAILED") } }
                 else { conflicts.append(domain) }
-            }
+            } else if errno != ENOENT { throw HelperFailure("RESOLVER_CHECK_FAILED") }
         }
-        for address in journal["routes"] as? [String] ?? [] {
-            guard validateAddress(address) else { throw HelperFailure("INVALID_JOURNAL_ROUTE") }
-            let family=address.contains(":") ? "-inet6":"-inet"
-            let actual=try command("/sbin/route",["-n","get",family,address]).1
-            if actual.contains("interface: utun73"),actual.contains("HOST") {
-                guard let index=journal["interfaceIndex"] as? UInt32,index==liveInterface() else { throw HelperFailure("ROUTE_OWNERSHIP_CHANGED") }
-                guard try command("/sbin/route",["-n","delete",family,"-host",address,"-interface","utun73"]).0==0 else { throw HelperFailure("ROUTE_REMOVE_FAILED") }
-            }
-        }
+        // The IPv4/IPv6 host routes are interface routes, tied to the
+        // kernel interface the adapter opened. Closing that interface retires
+        // them. A route now found under the same name can belong to another VPN.
+        let remaining = adapterInterface(recorded:journal["interfaceIndex"] as? UInt32)
+        guard remaining == .absent || remaining == .foreign else { throw HelperFailure("INTERFACE_REMAINS") }
         if journal["madeResolverDirectory"] as? Bool == true { _=rmdir("/private/etc/resolver") }
-        guard liveInterface()==0 else { throw HelperFailure("INTERFACE_REMAINS") }
-        let result:[String:Any] = ["ok":true,"reason":reason,"interface_present":false,"resolver_conflicts_preserved":conflicts,"at":Date().timeIntervalSince1970]
+        let result:[String:Any] = ["ok":true,"reason":reason,"interface_present":false,
+                                   "foreign_interface_preserved":remaining == .foreign,
+                                   "resolver_conflicts_preserved":conflicts,"at":Date().timeIntervalSince1970]
         try writeRoot(try jsonData(result),state+"/last-cleanup.json")
         guard unlink(journalPath)==0 else { throw HelperFailure("JOURNAL_REMOVE_FAILED") };syncDirectory(state)
         unlink(state+"/adapter.json");journal=[:];lease=nil;error=nil
@@ -357,7 +444,13 @@ final class Broker {
     func request(_ input:[String:Any],owner:UUID) throws -> [String:Any] {
         guard let op=input["op"] as? String else { throw HelperFailure("INVALID_OPERATION") }
         if op=="status" {
-            var status:[String:Any] = ["ok":true,"version":helperBuild,"active":lease != nil,"cleanupPending":!journal.isEmpty && lease==nil,"error":error ?? "", "approvedDomains":approvedDomains,"approvedPorts":approvedPorts]
+            var status:[String:Any] = ["ok":true,"version":helperBuild,"build":"0.3.10","active":lease != nil,"cleanupPending":!journal.isEmpty && lease==nil,"error":error ?? "", "approvedPorts":approvedPorts]
+#if CVR_PORTABLE_HELPER
+            guard localPolicy != nil else { throw HelperFailure("LOCAL_POLICY_MISSING") }
+            status["build"] = "0.3.11"
+#endif
+            status["approvedDomains"] = approvedDomains
+            if !approvedRDPHost.isEmpty { status["approvedRDPHost"] = approvedRDPHost }
             if let evidence=lastAdapterFailure { status["lastAdapterFailure"]=try evidence.object() }
             return status
         }
@@ -408,10 +501,14 @@ final class Listener: NSObject,NSXPCListenerDelegate {
     }
 }
 
-func install(_ uid:uid_t) throws {
+func install(_ uid:uid_t, enrollment: Data? = nil) throws {
     guard uid>=501,getpwuid(uid) != nil else { throw HelperFailure("INVALID_OWNER") }
     let exe=URL(fileURLWithPath:CommandLine.arguments[0]).resolvingSymlinksInPath()
     let payload=exe.deletingLastPathComponent().appendingPathComponent("sing-box")
+#if CVR_PORTABLE_HELPER
+    guard let enrollment else { throw HelperFailure("LOCAL_POLICY_MISSING") }
+    _ = try LocalRoutePolicy.decode(enrollment)
+#endif
     let binary=try Data(contentsOf:payload)
     guard digest(binary)==adapterSHA256 else { throw HelperFailure("ADAPTER_HASH_MISMATCH") }
     // An authorized update may replace only an idle instance. No forced
@@ -425,6 +522,9 @@ func install(_ uid:uid_t) throws {
         guard let args=old?["ProgramArguments"] as? [String],args==[routeHelperHome+"/RouteHelper","--daemon",String(uid)] else { throw HelperFailure("EXISTING_INSTALLATION_PRESERVED") }
         _=try command("/bin/launchctl",["bootout","system/"+routeHelperLabel])
     }
+#if CVR_PORTABLE_HELPER
+    try writeRoot(enrollment, routeHelperHome+"/LocalPolicy.json")
+#endif
     try writeRoot(binary,routeHelperHome+"/sing-box",mode:0o755)
     try writeRoot(try Data(contentsOf:exe),routeHelperHome+"/RouteHelper",mode:0o755)
     let plist:[String:Any] = ["Label":routeHelperLabel,"ProgramArguments":[routeHelperHome+"/RouteHelper","--daemon",String(uid)],"MachServices":[routeHelperLabel:true],"RunAtLoad":true,"KeepAlive":true,"ThrottleInterval":3,"ExitTimeOut":15,"AbandonProcessGroup":false,"ProcessType":"Background","Umask":63]
@@ -439,7 +539,7 @@ func uninstall() throws {
     unlink(routeHelperPlist)
     // Only fixed product-owned files; no recursive deletion, user paths, or
     // removal of the shared Router settings/domain map/official Check Point.
-    for name in ["RouteHelper","sing-box"] { unlink(routeHelperHome+"/"+name) }
+    for name in ["RouteHelper","sing-box","LocalPolicy.json"] { unlink(routeHelperHome+"/"+name) }
     for name in ["adapter.json","adapter.log","last-cleanup.json","last-adapter-failure.json","last-adapter-failure.log"] { unlink(routeHelperState+"/"+name) }
     _=rmdir(routeHelperHome);_=rmdir(routeHelperState)
 }
@@ -450,10 +550,21 @@ func uninstall() throws {
         do {
             guard geteuid()==0 else { throw HelperFailure("ADMIN_INSTALLATION_REQUIRED") }
             let args=Array(CommandLine.arguments.dropFirst())
+#if CVR_PORTABLE_HELPER
+            if args.count==3,args[0]=="--install",let uid=uid_t(args[1]),let data=Data(base64Encoded:args[2]) {
+                try install(uid,enrollment:data);return
+            }
+#else
             if args.count==2,args[0]=="--install",let uid=uid_t(args[1]) { try install(uid);return }
+#endif
             if args==["--uninstall"] { try uninstall();return }
             guard args.count==2,args[0]=="--daemon",let uid=uid_t(args[1]),uid>=501 else { throw HelperFailure("INVALID_OPERATION") }
             try checkParents(routeHelperHome+"/RouteHelper");try checkRootPath(routeHelperHome+"/RouteHelper",directory:false)
+#if CVR_PORTABLE_HELPER
+            let policyPath = routeHelperHome+"/LocalPolicy.json"
+            try checkRootPath(policyPath,directory:false)
+            localPolicy = try LocalRoutePolicy.decode(Data(contentsOf:URL(fileURLWithPath:policyPath)))
+#endif
             let broker=Broker();try broker.recover()
             let delegate=Listener(uid,broker),listener=NSXPCListener(machServiceName:routeHelperLabel);listener.delegate=delegate;listener.resume()
             let timer=DispatchSource.makeTimerSource(queue:ioQueue);timer.schedule(deadline:.now()+1,repeating:1);timer.setEventHandler { broker.tick() };timer.resume()

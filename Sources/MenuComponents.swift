@@ -1,7 +1,17 @@
 import AppKit
 
 func gatewaySetupMessage(_ code: String) -> String? {
-    ["HELPER_UNAVAILABLE": "Установленный помощник маршрутов временно не отвечает. Повторите проверку без прав администратора; macOS перезапускает службу после сбоя.",
+    ["SITE_SAN_MISMATCH": "Сертификат шлюза не подтверждает имя сайта Check Point или его текущий IP. Для входа через Router уточните у ИТ DNS-имя для TLS или попросите добавить имя сайта в сертификат. Вход остановлен до отправки учётных данных.",
+     "OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED": "Check Point не подтвердил, что сертификат принадлежит активному шлюзу выбранного сайта. Используйте штатный Check Point.",
+     "GATEWAY_CN_UNSUPPORTED": "Не удалось сопоставить имя в сертификате шлюза с записью доверия Check Point. Уточните у ИТ сертификат для этого сайта.",
+     "DNS_SAN_VERIFIER_UNAVAILABLE": "Среда TLS не поддерживает обязательную проверку DNS-имени в сертификате. Откройте приложение со штатным встроенным рантаймом.",
+     "SYSTEM_DNS_ADDRESS_CONFLICT": "DNS другого подключения использует адрес рабочего адаптера Router. Рабочее подключение остановлено.",
+     "SYSTEM_DNS_UNKNOWN": "Не удалось проверить DNS macOS. Проверьте сеть и повторите подключение.",
+     "GATEWAY_DNS_TIMEOUT": "Истекло время ожидания DNS. Mac не получил IPv4-адрес шлюза Check Point. Проверьте сеть. Если включён другой VPN, переподключите его и повторите вход.",
+     "GATEWAY_DNS_UNRESOLVED": "DNS macOS не смог определить IPv4-адрес шлюза Check Point. Проверьте сеть и имя сайта в Check Point. Если включён другой VPN, проверьте его подключение.",
+     "SITE_ADDRESS_MISMATCH": "Адрес шлюза из Check Point отсутствует в ответе DNS. Проверьте выбранный сайт и его адрес в штатном клиенте.",
+     "HELPER_SESSION_PENDING": "Помощник ещё завершает предыдущий сеанс. Дождитесь подтверждения очистки.",
+     "HELPER_UNAVAILABLE": "Установленный помощник маршрутов временно не отвечает. Повторите проверку без прав администратора; macOS перезапускает службу после сбоя.",
      "APPROVED_GATEWAY_MISMATCH": "Шлюз или его сертификат отличается от заранее проверенной конфигурации. Вход заблокирован; подтвердите изменение у владельца конфигурации.",
      "APPROVED_GATEWAY_INVALID": "Проверенная конфигурация шлюза повреждена. Вход заблокирован; восстановите приложение из проверенного архива.",
      "HELPER_UPDATE_REQUIRED": "Нажмите «Обновить помощник маршрутов…» в этом окне и подтвердите запрос macOS.",
@@ -11,7 +21,13 @@ func gatewaySetupMessage(_ code: String) -> String? {
      "OFFICIAL_INFO_FAILED": "Check Point не вернул состояние рабочего подключения. Проверьте готовность штатного клиента и повторите вход.",
      "OFFICIAL_SITE_MISSING": "Check Point не сообщил рабочее подключение. Проверьте его настройку в штатном клиенте.",
      "OFFICIAL_SITE_FORMAT_UNSUPPORTED": "Не удалось прочитать формат рабочего подключения Check Point. Сохраните код из «Диагностики» для проверки совместимости.",
-     "OFFICIAL_SITE_AMBIGUOUS": "Check Point сообщил несколько подключений. Однозначно выбрать рабочий шлюз не удалось; вход остановлен.",
+     "OFFICIAL_SITE_AMBIGUOUS": "В Check Point несколько сайтов. Для первого входа нужен выбор сайта и его подтверждённая привязка. Сохраните отчёт в «Диагностике» для подготовки профиля.",
+     "SELECTED_SITE_MISSING": "Выбранный сайт отсутствует в настройках Check Point. Повторите подключение и выберите настроенный адрес из инструкции ИТ.",
+     "INVALID_SITE_SELECTION": "Не удалось прочитать выбор сайта. Повторите подключение и выберите сайт заново.",
+     "OFFICIAL_CONNECT_ASSIGNED_SITE": "Для первой привязки подключитесь в штатном Check Point к сайту из инструкции ИТ, затем повторите вход здесь.",
+     "OFFICIAL_OTHER_SITE_ACTIVE": "В Check Point активен другой сайт. Его подключение сохранено. Для входа в Router используйте ранее привязанный сайт.",
+     "OFFICIAL_SELECTION_CHANGED": "Сайт или его состояние изменились во время подключения. Вход остановлен; проверьте выбранный сайт Check Point.",
+     "ALTERNATE_CA_NOT_CONFIRMED": "Отпечаток CA другого шлюза не подтверждён. Сверьте SHA-256 с ИТ. Привязка не сохранена.",
      "OFFICIAL_STATE_UNKNOWN": "Check Point не сообщил однозначное состояние рабочего VPN. Вход остановлен до проверки клиента."][code]
 }
 
@@ -177,4 +193,45 @@ func attachColumn(_ column: NSStackView, to window: NSWindow, footer: NSView? = 
                         column.bottomAnchor.constraint(lessThanOrEqualTo: footer.topAnchor, constant: -12)]
     } else { constraints.append(column.bottomAnchor.constraint(lessThanOrEqualTo: content.bottomAnchor, constant: -18)) }
     NSLayoutConstraint.activate(constraints)
+}
+
+// A probe describes one endpoint, not the health of every corporate website.
+struct HTTPSProbeResult {
+    let exitCode: Int32
+    let httpStatus: Int?
+    let tlsVerify: Int?
+    init(exitCode: Int32, output: String) {
+        self.exitCode = exitCode
+        let fields = output.split(whereSeparator: { $0.isWhitespace })
+        httpStatus = fields.count == 2 ? Int(fields[0]) : nil
+        tlsVerify = fields.count == 2 ? Int(fields[1]) : nil
+    }
+    var reachable: Bool {
+        // curl 63: the configured response-body limit was reached after headers.
+        (exitCode == 0 || exitCode == 63) && tlsVerify == 0 &&
+            httpStatus.map { (100...599).contains($0) } == true
+    }
+    var reason: String {
+        if reachable { return "TLS проверен, ответ HTTP \(httpStatus!)" }
+        if let tlsVerify, tlsVerify != 0 { return "сертификат TLS не прошёл проверку (\(tlsVerify))" }
+        switch exitCode {
+        case 5, 6: return "имя адреса не разрешилось"
+        case 7: return "не удалось установить соединение"
+        case 28, -2: return "истекло время ожидания ответа"
+        case 35, 51, 58, 59, 60, 77: return "ошибка проверки или согласования TLS"
+        case 97: return "SOCKS не смог подключить этот адрес"
+        default: return "проверка не завершилась (код \(exitCode))"
+        }
+    }
+    var metrics: [String:Any] {
+        var result: [String:Any] = ["curlExit": Int(exitCode), "reachable": reachable, "method": "GET"]
+        if let httpStatus { result["httpStatus"] = httpStatus }
+        if let tlsVerify { result["tlsVerify"] = tlsVerify }
+        return result
+    }
+}
+func copyReportFile(_ url: URL, to pasteboard: NSPasteboard = .general) -> Bool {
+    guard url.isFileURL, (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true else { return false }
+    pasteboard.clearContents()
+    return pasteboard.writeObjects([url as NSURL])
 }
