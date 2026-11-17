@@ -1,0 +1,193 @@
+{
+  "date": "2026-11-10",
+  "os": "macOS 27.0.1 arm64",
+  "baselineTag": "v0.2.0-beta.6",
+  "mechanism": "explicit per-client HTTP CONNECT, no NE provider activated",
+  "results": [
+    {
+      "engine": "curl",
+      "phase": "up",
+      "side": "life",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "curl",
+      "phase": "up",
+      "side": "work",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "curl",
+      "phase": "down",
+      "side": "work",
+      "clientCode": 22,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "curl",
+      "phase": "down",
+      "side": "life",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "curl",
+      "phase": "restored",
+      "side": "work",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "yandex",
+      "phase": "up",
+      "side": "life",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "yandex",
+      "phase": "up",
+      "side": "work",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "yandex",
+      "phase": "down",
+      "side": "work",
+      "clientCode": 1,
+      "detail": "browser navigation failed",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "yandex",
+      "phase": "down",
+      "side": "life",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "yandex",
+      "phase": "restored",
+      "side": "work",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "webkit",
+      "phase": "up",
+      "side": "life",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "webkit",
+      "phase": "up",
+      "side": "work",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "webkit",
+      "phase": "down",
+      "side": "work",
+      "clientCode": 1,
+      "detail": "navigation NSURLErrorDomain -1005",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "webkit",
+      "phase": "down",
+      "side": "life",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "webkit",
+      "phase": "restored",
+      "side": "work",
+      "clientCode": 0,
+      "detail": "",
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "egress",
+      "phase": "up",
+      "sameObservedIP": true,
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "egress",
+      "phase": "down",
+      "sameObservedIP": true,
+      "witnessed": true,
+      "passed": true
+    },
+    {
+      "engine": "egress",
+      "phase": "restored",
+      "sameObservedIP": true,
+      "witnessed": true,
+      "passed": true
+    }
+  ],
+  "externalLocalProxyControl": {
+    "mechanism": "Xray SOCKS5 hostname and HTTP CONNECT on loopback",
+    "destinations": [
+      "example.com",
+      "www.apple.com"
+    ],
+    "directSystemHTTPS": [
+      200,
+      200
+    ],
+    "socks5HTTPS": [
+      "timeout",
+      "timeout"
+    ],
+    "httpCONNECT": [
+      200,
+      200
+    ],
+    "httpProxyHTTPS": [
+      "timeout",
+      "timeout"
+    ],
+    "boundSecondsForPairedControls": 8
+  },
+  "unsignedManagerRead": {
+    "returnedCount": 1,
+    "activationAttempted": false
+  },
+  "availableSigningIdentities": 0
+}

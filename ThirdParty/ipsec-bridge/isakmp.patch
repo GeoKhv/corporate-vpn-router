@@ -1,0 +1,196 @@
+--- a/src/certs.rs
++++ b/src/certs.rs
+@@ -123,6 +123,34 @@
+         }
+     }
+ 
++    /// Bind the signing (first) certificate to an identity from pinned CCC.
++    /// An unrelated appended certificate must never authenticate the first one.
++    pub fn verify_gateway_fingerprints(&self, trusted: &[String]) -> anyhow::Result<()> {
++        anyhow::ensure!(
++            !trusted.is_empty() && !self.0.is_empty(),
++            "Missing authenticated IKE identity"
++        );
++        let now = openssl::asn1::Asn1Time::days_from_now(0)?;
++        let leaf = &self.0[0];
++        anyhow::ensure!(
++            leaf.not_before() <= now && leaf.not_after() >= now,
++            "IKE certificate expired or not yet valid"
++        );
++        let mut anchors = Vec::new();
++        for (index, cert) in self.0.iter().enumerate() {
++            let digest = cert.digest(MessageDigest::sha1())?;
++            let fingerprint = crate::rfc1751::key_to_english(digest[..16].try_into()?).join(" ");
++            if trusted.contains(&fingerprint) {
++                if index == 0 {
++                    return Ok(());
++                }
++                anchors.push(Bytes::from(cert.to_der()?));
++            }
++        }
++        anyhow::ensure!(!anchors.is_empty(), "Untrusted IKE gateway certificate");
++        self.verify(&anchors)
++    }
++
+     pub fn issuer(&self) -> Bytes {
+         self.0
+             .first()
+@@ -643,3 +671,93 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++mod router_pin_tests {
++    use super::*;
++    use openssl::{
++        asn1::Asn1Time,
++        bn::BigNum,
++        rsa::Rsa,
++        x509::{
++            X509Builder, X509NameBuilder,
++            extension::{BasicConstraints, KeyUsage},
++        },
++    };
++    fn cert(name: &str, issuer: Option<(&X509, &PKey<Private>)>, ca: bool, expired: bool) -> (X509, PKey<Private>) {
++        let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
++        let mut n = X509NameBuilder::new().unwrap();
++        n.append_entry_by_text("CN", name).unwrap();
++        let n = n.build();
++        let mut c = X509Builder::new().unwrap();
++        c.set_version(2).unwrap();
++        c.set_serial_number(
++            &BigNum::from_u32(if ca { 1 } else { 2 })
++                .unwrap()
++                .to_asn1_integer()
++                .unwrap(),
++        )
++        .unwrap();
++        c.set_subject_name(&n).unwrap();
++        c.set_issuer_name(issuer.map(|(c, _)| c.subject_name()).unwrap_or(&n))
++            .unwrap();
++        c.set_pubkey(&key).unwrap();
++        c.set_not_before(&Asn1Time::from_unix(1).unwrap()).unwrap();
++        let expiry = if expired {
++            Asn1Time::from_unix(2).unwrap()
++        } else {
++            Asn1Time::days_from_now(1).unwrap()
++        };
++        c.set_not_after(&expiry).unwrap();
++        if ca {
++            c.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
++                .unwrap();
++            c.append_extension(KeyUsage::new().key_cert_sign().crl_sign().build().unwrap())
++                .unwrap();
++        }
++        c.sign(issuer.map(|(_, k)| k).unwrap_or(&key), MessageDigest::sha256())
++            .unwrap();
++        (c.build(), key)
++    }
++    fn fp(c: &X509) -> String {
++        let d = c.digest(MessageDigest::sha1()).unwrap();
++        crate::rfc1751::key_to_english(d[..16].try_into().unwrap()).join(" ")
++    }
++    #[test]
++    fn router_signing_certificate_is_bound_to_trusted_identity() {
++        let (ca, ca_key) = cert("Test CA", None, true, false);
++        let (leaf, _) = cert("Test gateway", Some((&ca, &ca_key)), false, false);
++        let (bad, _) = cert("Untrusted gateway", None, false, false);
++        let (expired, _) = cert("Expired gateway", Some((&ca, &ca_key)), false, true);
++        assert!(
++            CertList(vec![leaf.clone(), ca.clone()])
++                .verify_gateway_fingerprints(&[fp(&ca)])
++                .is_ok()
++        );
++        assert!(
++            CertList(vec![leaf.clone()])
++                .verify_gateway_fingerprints(&[fp(&leaf)])
++                .is_ok()
++        );
++        assert!(
++            CertList(vec![bad, ca.clone()])
++                .verify_gateway_fingerprints(&[fp(&ca)])
++                .is_err()
++        );
++        assert!(
++            CertList(vec![leaf.clone(), ca.clone()])
++                .verify_gateway_fingerprints(&[])
++                .is_err()
++        );
++        assert!(
++            CertList(vec![leaf, ca])
++                .verify_gateway_fingerprints(&["wrong identity".into()])
++                .is_err()
++        );
++        assert!(
++            CertList(vec![expired.clone()])
++                .verify_gateway_fingerprints(&[fp(&expired)])
++                .is_err()
++        );
++    }
++}
+--- a/src/ikev1/service.rs
++++ b/src/ikev1/service.rs
+@@ -4,7 +4,7 @@
+ use byteorder::{BigEndian, ReadBytesExt};
+ use bytes::{Buf, BufMut, Bytes, BytesMut};
+ use ipnet::Ipv4Net;
+-use itertools::{Itertools, iproduct};
++use itertools::iproduct;
+ use rand::random;
+ use tracing::{debug, trace};
+ 
+@@ -14,7 +14,6 @@
+     message::IKEV1_VERSION,
+     model::DataAttribute,
+     payload::{BasicPayload, PayloadLike},
+-    rfc1751::key_to_english,
+     session::IsakmpSession,
+     transport::IsakmpTransport,
+ };
+@@ -724,33 +723,8 @@
+             anyhow::bail!("Incomplete ID payload received!");
+         };
+ 
+-        for fp in &identity_request.internal_ca_fingerprints {
+-            debug!("Trusted server fingerprint: {}", fp);
+-        }
+-
+-        if identity_request.internal_ca_fingerprints.is_empty() {
+-            debug!("No internal CA fingerprints specified, skipping validation");
+-        } else {
+-            let mut validation_result = false;
+-
+-            for cert in &certs {
+-                let cert_list = CertList::from_ipsec(&[cert])?;
+-                let fingerprint = key_to_english(cert_list.fingerprint()[0..16].try_into()?).join(" ");
+-
+-                debug!("Fingerprint for: {}: {}", cert_list.subject_name(), fingerprint);
+-
+-                if identity_request.internal_ca_fingerprints.iter().contains(&fingerprint) {
+-                    validation_result = true;
+-                    break;
+-                }
+-            }
+-
+-            if validation_result {
+-                debug!("Internal IPSec certificate validation succeeded");
+-            } else {
+-                anyhow::bail!("Internal IPSec certificate validation failed!");
+-            }
+-        }
++        let chain = CertList::from_ipsec(&certs.iter().collect::<Vec<_>>())?;
++        chain.verify_gateway_fingerprints(&identity_request.internal_ca_fingerprints)?;
+ 
+         let id_type = IdentityType::from(id.id_type);
+         if id_type == IdentityType::Ipv4Address {
+--- a/src/transport/tcpt.rs
++++ b/src/transport/tcpt.rs
+@@ -103,6 +103,7 @@
+ 
+         let size = u32::from_be_bytes(src[0..4].try_into()?);
+         let cmd = u32::from_be_bytes(src[4..8].try_into()?);
++        anyhow::ensure!(size <= 65536, "TCPT record exceeds limit");
+ 
+         if src.remaining() < size as usize + 8 {
+             return Ok(None);

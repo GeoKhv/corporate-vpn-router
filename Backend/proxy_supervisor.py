@@ -43,7 +43,7 @@ def main():
     def reload_policy():
         nonlocal child, current
         try:
-            new = gate(json.loads(policy.read_bytes()))
+            new = gate(json.loads(policy.read_bytes()), os.environ.get('CVR_RDP_HOST'))
         except (KeyError, ValueError, TypeError, OSError):
             stop_child()
             current = None

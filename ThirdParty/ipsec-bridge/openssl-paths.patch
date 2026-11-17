@@ -1,0 +1,20 @@
+--- a/openssl/crypto/defaults.c
++++ b/openssl/crypto/defaults.c
+@@ -171,7 +171,7 @@
+         return NULL;
+     return (const char *)enginesdirptr;
+ #else
+-    return ENGINESDIR;
++    return "/nonexistent/cvr-static-openssl";
+ #endif
+ }
+ 
+@@ -187,7 +187,7 @@
+         return NULL;
+     return (const char *)modulesdirptr;
+ #else
+-    return MODULESDIR;
++    return "/nonexistent/cvr-static-openssl";
+ #endif
+ }
+ 

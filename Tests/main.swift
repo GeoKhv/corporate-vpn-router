@@ -7,14 +7,16 @@ if CommandLine.arguments.contains("--command-io-fixture") {
     exit(0)
 }
 
+func testFail(_ message: String) -> Never { fputs(message + "\n", stderr); exit(1) }
+
 setbuf(stdout, nil)
 var passed = 0
 func expect(_ condition: @autoclosure () throws -> Bool, _ name: String) {
-    do { guard try condition() else { fatalError("FAIL: \(name)") } }
-    catch { fatalError("FAIL: \(name): \(error)") }
+    do { guard try condition() else { testFail("FAIL: \(name)") } }
+    catch { testFail("FAIL: \(name): \(error)") }
     passed += 1; print("PASS \(name)")
 }
-func rejects(_ name: String, _ body: () throws -> Void) { do { try body(); fatalError("FAIL: \(name)") } catch { passed += 1; print("PASS \(name)") } }
+func rejects(_ name: String, _ body: () throws -> Void) { do { try body(); testFail("FAIL: \(name)") } catch { passed += 1; print("PASS \(name)") } }
 
 var config = Configuration()
 config.domains = ["corp.example.com"]; config.dnsServers = ["192.0.2.53"]
@@ -204,5 +206,15 @@ let untrusted = HTTPSCertificates.inspect(host: host, configuration: config, pla
 expect(!untrusted.tlsTrusted && untrusted.httpStatus == nil, "untrusted TLS never sends HTTPS")
 expect(untrusted.issue.hasPrefix("TLS_TRUST_FAILED_"), "system trust failure is explicit: \(untrusted.issue)")
 expect(untrusted.certificates.contains { $0.sha256 == caInfo.sha256 }, "untrusted peer chain can be reviewed without trusting it")
+let candidateEvidence = CertificateImportEvidence(result: untrusted, candidates: [ca])
+let candidatePlan = CertificatePlan.assess(candidateEvidence)
+expect(candidatePlan.valid && candidatePlan.needed == Set([caInfo.sha256]), "fresh peer chain needs the exact candidate root")
+var staleEvidence = candidateEvidence; staleEvidence.captured = Date.distantPast
+expect(!CertificatePlan.assess(staleEvidence).valid, "stale chain evidence cannot authorize import")
+var wrongHostEvidence = candidateEvidence; wrongHostEvidence.result.host = "wrong.corp.example.com"
+expect(!CertificatePlan.assess(wrongHostEvidence).valid, "candidate CA cannot override hostname validation")
+var trustedEvidence = candidateEvidence; trustedEvidence.result.tlsTrusted = true
+expect(CertificatePlan.assess(trustedEvidence).needed.isEmpty, "already trusted sites require no CA import")
+rejects("stale evidence cannot import even an approved fingerprint") { try Certificates.importConfirmed(ca, expectedSHA256: caInfo.sha256, sourceURL: "owner-approved-keychain:" + Certificates.canonicalFingerprint(caInfo.sha256), consent: true, paths: certPaths, evidence: staleEvidence) }
 
 print("\(passed) checks passed. Fault simulations do not certify real sleep, reboot or network switching.")

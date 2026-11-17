@@ -10,13 +10,27 @@ enum OfficialGUI {
         guard !checkPort || owners.allSatisfy({pid in guis.contains{$0.processIdentifier == pid}}) else { return false }
         return guis.isEmpty || command("/usr/bin/codesign",["--verify","--strict","-R="+vendor+" and identifier \"com.checkpoint.eps_vpn.ui\"",url.path]).code == 0
     }
+    static func allSitesIdle(_ output: String) -> Bool {
+        var inSite = false, seenIdle = false
+        for line in output.components(separatedBy: .newlines) {
+            let field = line.trimmingCharacters(in: .whitespaces)
+            let key = field.lowercased()
+            if key.hasPrefix("conn ") || key.hasPrefix("conn\t") {
+                guard (!inSite || seenIdle), field.hasSuffix(":") else { return false }
+                inSite = true; seenIdle = false
+            } else if key.hasPrefix("status:") {
+                guard inSite, !seenIdle, field.dropFirst(7).trimmingCharacters(in: .whitespaces) == "Idle" else { return false }
+                seenIdle = true
+            }
+        }
+        return inSite && seenIdle
+    }
     static func closeIfIdle(checkPort: Bool = true) -> Bool {
         let trac = "/Library/Application Support/Checkpoint/Endpoint Connect/trac"
         guard command("/usr/bin/codesign", ["--verify","--strict","-R="+vendor+" and identifier \"trac\"",trac]).code == 0 else { return false }
         func idle() -> Bool {
             let r = command(trac, ["info"], timeout:12)
-            let states = r.output.components(separatedBy:.newlines).map{$0.trimmingCharacters(in:.whitespaces)}.filter{$0.hasPrefix("status:")}
-            return r.code == 0 && states == ["status: Idle"]
+            return r.code == 0 && allSitesIdle(r.output)
         }
         guard idle() else { return false }
         guard compatible(checkPort:checkPort), idle() else { return false }

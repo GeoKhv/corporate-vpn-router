@@ -8,13 +8,16 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0,str(ROOT))
 from trust import DATA, anchor, Refused
-from tls_policy import install as install_tls_policy, require_strict
+from tls_policy import install as install_tls_policy, require_strict, close_control, tls_name
+RESILIENT = (ROOT.parent/'ConnectionResilience.json').exists()
 RUN=DATA/'SSL'
 STATE={}
 def status(stage, **values):
     STATE.update(stage=stage, **values)
     print(json.dumps({'stage':stage,**values}),flush=True)
 def request(kind,prompt, **fields):
+    # No idle persistent control socket waits alongside a human MFA prompt.
+    close_control()
     print(json.dumps({'request':kind,'prompt':str(prompt)[:300], **fields}),flush=True)
     line=sys.stdin.buffer.readline(8193)
     if not line or len(line)>8192: raise Refused('INPUT_CANCELLED')
@@ -31,6 +34,11 @@ class PrivateUI:
 def approve(receipt):
     if request('trust', receipt['site']+' ('+receipt['ip']+')\nSHA-256 CA: '+receipt['ca_sha256'])!='accept':
         raise Refused('TRUST_CANCELLED')
+def confirm_other_ca(host,digest):
+    # The independently obtained SHA-256 is never logged or suggested by the app.
+    value=request('gateway_fingerprint', 'Для '+host+' нужен другой удостоверяющий центр. Введите SHA-256 сертификата CA шлюза из доверенного канала ИТ. Если его нет, отмените вход.')
+    return value.strip().replace(':','').replace(' ','').lower()==digest
+
 def guard_parent():
     parent=os.getppid()
     if parent==1: os._exit(2)
@@ -168,6 +176,8 @@ class PacketVNA:
         packet_fd = self.dev.peer.fileno()
         env = {'VPNFD': str(packet_fd), 'INTERNAL_IP4_ADDRESS': self.addr,
                'INTERNAL_IP4_DNS': ' '.join(self.dns), 'INTERNAL_IP4_MTU': '1400'}
+        if 'CVR_RDP_HOST' in os.environ:
+            env['CVR_RDP_HOST'] = os.environ['CVR_RDP_HOST']
         self.proc = subprocess.Popen([sys.executable, '-I', '-B', str(ROOT / 'proxy_supervisor.py'), str(lifetime_read)],
             pass_fds=(packet_fd, lifetime_read), env=env, start_new_session=True,
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -215,18 +225,32 @@ async def dataplane(session, address, context, client, ranges):
             super().on_connection_lost(error)
 
         def disconnect(self, reply):
-            code = str(reply.find('code'))
-            status('server_disconnect', close_reason='server_disconnect', server_code=code if code.isdigit() else 'unknown')
+            from gateway_disconnect import disconnect_details
+            status('server_disconnect', close_reason='server_disconnect', **disconnect_details(reply))
             self.reconnect = False
             self.evt.set()
 
     try:
-        transport, protocol = await asyncio.wait_for(loop.create_connection(
-            lambda: Handler(adapter, session.cookie, 2, ranges, stop),
-            host=address, port=443, ssl=require_strict(context), server_hostname=address), timeout=15)
+        status('dataplane_opening')
+        async def open_transport():
+            if not RESILIENT:
+                return await loop.create_connection(
+                    lambda: Handler(adapter, session.cookie, 2, ranges, stop),
+                    host=address, port=443, ssl=require_strict(context), server_hostname=tls_name(context,address))
+            from connection_resilience import connect_async
+            raw=await connect_async((address,443))
+            try:
+                return await loop.create_connection(
+                    lambda: Handler(adapter, session.cookie, 2, ranges, stop),
+                    sock=raw, ssl=require_strict(context), server_hostname=tls_name(context,address))
+            except BaseException:
+                raw.close()
+                raise
+        transport, protocol = await asyncio.wait_for(open_transport(), timeout=15)
         status('ssl_dataplane_connected')
         adapter.dev.transport = transport
         protocol.send_client_hello()
+        status('ssl_hello_waiting')
         start = time.monotonic()
         ready = False
         next_stats=0
@@ -265,6 +289,9 @@ async def dataplane(session, address, context, client, ranges):
                 pass
         if STATE.get('close_reason') != 'local_signal':
             raise Refused('TRANSPORT_LOST' if ready else 'SSL_SESSION_REFUSED')
+    except BaseException:
+        STATE.setdefault('failure_stage', STATE.get('stage'))
+        raise
     finally:
         closing = True
         if transport:
@@ -277,10 +304,36 @@ async def dataplane(session, address, context, client, ranges):
 
 def main():
     os.umask(0o077)
+    # Only a separately signed private diagnostic candidate contains this marker.
+    # Normal builds retain their existing network behavior and logging policy.
+    if (ROOT.parent/'ConnectionDiagnostic.json').exists():
+        import connection_trace, trust
+        connection_trace.install(DATA/'Selective'/'ConnectionDiagnostics')
+        global anchor, status
+        anchor = trust.anchor
+        original_status = status
+        def traced_status(stage, **values):
+            connection_trace.set_phase(stage)
+            if stage in ('server_disconnect', 'ipsec_error'):
+                connection_trace.emit(stage, server_code=values.get('server_code'),
+                    server_words=values.get('server_words'))
+            if stage == 'failed':
+                connection_trace.emit('session_failure', code=values.get('code'),
+                    errno=values.get('errno'), failed_phase=values.get('failed_phase'),
+                    server_code=values.get('server_code'), server_words=values.get('server_words'))
+            return original_status(stage, **values)
+        status = traced_status
     guard_parent()
     RUN.mkdir(parents=True,mode=0o700,exist_ok=True)
     lock=(RUN/'instance.lock').open('a')
     fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    if RESILIENT:
+        import connection_resilience
+        def report_transport(name, fields):
+            metrics = {k:fields[k] for k in ('attempt','errno','http_status','allowance_ms','budget_ms','reusable')
+                       if type(fields.get(k)) in (int,float,bool)}
+            print(json.dumps(dict(transport_event=name,**metrics)),flush=True)
+        connection_resilience.observer = report_transport
     from sites import validate
     try:
         validate(json.loads((DATA/'work-sites.json').read_bytes()))
@@ -295,12 +348,14 @@ def main():
     status('verifying_gateway')
     # Check real gateway capabilities over the existing pinned TLS policy while
     # an official session can still be active. No credential or disconnect yet.
-    address,context=anchor(approve, require_idle=False)
-    from cpyvpn import auth,client,utils,ssl_ctx
-    install_tls_policy(ssl_ctx,utils,address,context)
+    address,context=anchor(approve, confirm_other_ca=confirm_other_ca, require_idle=False, report_dns=status, resilient=RESILIENT)
+    status('gateway_anchor_verified')
+    from cpyvpn import auth,client,utils,ssl_ctx,cfg
+    install_tls_policy(ssl_ctx,utils,address,context,resilient=RESILIENT)
     options=SimpleNamespace(server=address,nocert=False,mode='a',realm='',user='',
         os='Darwin',ct='TRAC',force_logout=False,cookies=None,support_saml=browser)
     try:
+        status('gateway_capabilities')
         session=auth.SNXAuth(options,PrivateUI())
     except Exception as error:
         if browser:
@@ -312,12 +367,22 @@ def main():
     if len(realms) != 1:
         raise Refused(('BROWSER_NOT_ADVERTISED' if not realms else 'BROWSER_REALM_AMBIGUOUS') if browser else 'EXPECTED_TWO_FACTOR_REALM_NOT_FOUND')
     realm = realms[0]
+    from ipsec_session import select_transport, gateway_snapshot, run_ipsec
+    status('transport_preflight')
+    transport = select_transport(address, context, cfg, utils)
+    if transport == 'ipsec' and browser:
+        raise Refused('IPSEC_BROWSER_UNSUPPORTED')
     from official_handoff import prepare
+    status('official_handoff')
     prepare(request, browser=browser)
     # Recheck Idle and the same pinned identity following an accepted switch.
-    checked_address,context=anchor(approve)
-    if checked_address != address: raise Refused('SAVED_SITE_OR_PIN_CHANGED')
-    install_tls_policy(ssl_ctx,utils,address,context)
+    status('gateway_recheck')
+    close_control()
+    first_identity=tls_name(context,address)
+    checked_address,context=anchor(approve, confirm_other_ca=confirm_other_ca, report_dns=status, resilient=RESILIENT)
+    if checked_address != address or tls_name(context,address) != first_identity:
+        raise Refused('SAVED_SITE_OR_PIN_CHANGED')
+    install_tls_policy(ssl_ctx,utils,address,context,resilient=RESILIENT)
     options.realm = realm['id']
     receipt = json.loads((DATA/'ssl-site.json').read_text())
     status('gateway_verified')
@@ -341,19 +406,33 @@ def main():
                                    pin=receipt['ca_sha256'], realm=realm['id'])
             if not options.user.strip():
                 raise Refused('USERNAME_REQUIRED')
+            if transport == 'ipsec':
+                snapshot = gateway_snapshot(utils, cfg, address)
+                run_ipsec(address, snapshot, options.user, realm['id'], utils, cfg,
+                          PacketVNA(), request, status, STATE)
+                return
             session.init()
         status('authenticated')
         session.auth_obj.login=session.auth_obj.pwd=None
+        status('ranges_request')
         ranges=utils.get_ranges(session.auth_obj.url,session.auth_obj.sid)
+        status('ranges_received')
+        close_control()
         asyncio.run(dataplane(session,address,context,client,ranges))
+    except BaseException:
+        STATE.setdefault('failure_stage', STATE.get('stage'))
+        raise
     finally:
         if session.auth_obj and session.auth_obj.sid:
             try: session.close()
             except Exception: pass
+        close_control()
 if __name__=='__main__':
     try:
         main()
         status('disconnected')
     except BaseException as error:
-        status('failed',code=str(error) if isinstance(error,Refused) else type(error).__name__,errno=getattr(error,'errno',None))
+        cause = error.__cause__ if isinstance(error.__cause__, socket.gaierror) else error
+        status('failed',code=str(error) if isinstance(error,Refused) else type(error).__name__,errno=getattr(cause,'errno',None),failed_phase=STATE.get('failure_stage',STATE.get('stage')),
+               server_code=STATE.get('server_code'), server_words=STATE.get('server_words'))
         sys.exit(1)

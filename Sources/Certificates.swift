@@ -28,6 +28,11 @@ struct HTTPSCertificateResult: Codable {
     var revocation = "OFFLINE_EVALUATION_ONLY"
     var routeScope = "CORPORATE_BOUND_SOCKET"
     var trustExplanation = "Not evaluated. Local system trust does not independently confirm corporate authenticity."
+    var peerDER: [Data] = []
+    enum CodingKeys: String, CodingKey {
+        case host, tlsTrusted, httpStatus, clientCertificateRequested, certificates, issue,
+             sourceAuthenticity, revocation, routeScope, trustExplanation
+    }
 }
 
 struct CertificatePreferences: Codable { var hosts: [String] = [] }
@@ -40,6 +45,7 @@ struct CertificateReceipt: Codable {
     var der: Data
     var undone = false
     var completed = false
+    var userTrustAfter: String?
 }
 
 struct DERNode {
@@ -171,11 +177,14 @@ enum Certificates {
 
     // No download, enrollment, PFX, identity or private key path exists here.
     // The caller must display exact metadata and obtain a fresh explicit consent.
-    static func importConfirmed(_ certificate: SecCertificate, expectedSHA256: String, sourceURL: String, consent: Bool, paths: ProductPaths) throws {
+    static func importConfirmed(_ certificate: SecCertificate, expectedSHA256: String, sourceURL: String, consent: Bool, paths: ProductPaths, evidence: CertificateImportEvidence? = nil) throws {
         let sha = fingerprint(certificate), canonical = canonicalFingerprint(expectedSHA256)
         guard consent, canonical.count == 64, canonical.allSatisfy({ $0.isHexDigit }), canonical == canonicalFingerprint(sha),
-              let source = URLComponents(string: sourceURL), source.scheme == "https", let host = source.host, Configuration.validHost(host),
-              source.user == nil, source.password == nil, source.query == nil, source.fragment == nil else { throw RouterError.destinationDenied }
+              let evidence, CertificatePlan.assess(evidence).needed.contains(sha) else { throw RouterError.destinationDenied }
+        let ownerSource = sourceURL == "owner-approved-keychain:" + canonical && evidence.sourceKind == "OWNER_APPROVED_EXISTING_KEYCHAIN_AND_VERIFIED_CHAIN"
+        let source = URLComponents(string: sourceURL)
+        let itSource = source?.scheme == "https" && source?.host.map(Configuration.validHost) == true && source?.user == nil && source?.password == nil && source?.query == nil && source?.fragment == nil
+        guard ownerSource || itSource, userTrustFingerprint(certificate) == "NONE" else { throw RouterError.destinationDenied }
         let info = describe(certificate)
         let inventory = inventorySnapshot()
         guard inventory.complete, info.isCA, info.currentlyValid, !inventory.certificates.contains(where: { fingerprint($0) == sha }) else { throw RouterError.destinationDenied }
@@ -184,6 +193,7 @@ enum Certificates {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let der = SecCertificateCopyData(certificate) as Data
         var receipt = CertificateReceipt(sha256: sha, sourceURL: sourceURL, role: info.selfIssued ? "ROOT_SSL_USER_TRUST" : "INTERMEDIATE_NO_TRUST_OVERRIDE", der: der)
+        receipt.sourceConfirmation = ownerSource ? evidence.sourceKind : receipt.sourceConfirmation
         // Persist before mutation, so a crash cannot erase the rollback material.
         try JSONFile.write(receipt, to: receiptURL(sha, paths: paths))
         let certFile = dir.appendingPathComponent("\(canonical).cer")
@@ -195,7 +205,26 @@ enum Certificates {
         let result = command("/usr/bin/security", args, timeout: 120)
         guard result.code == 0, Self.inventory().contains(where: { fingerprint($0) == sha }) else { throw RouterError.io }
         receipt.completed = true
+        receipt.userTrustAfter = userTrustFingerprint(certificate)
         try JSONFile.write(receipt, to: receiptURL(sha, paths: paths))
+    }
+
+    static func userTrustFingerprint(_ certificate: SecCertificate) -> String? {
+        var settings: CFArray?
+        let status = SecTrustSettingsCopyTrustSettings(certificate, .user, &settings)
+        if status == errSecItemNotFound || status == errSecNoTrustSettings { return "NONE" }
+        guard status == errSecSuccess, let rows = settings as? [[String: Any]] else { return nil }
+        var normalized = [[String: Any]]()
+        for var row in rows {
+            if let policy = row[kSecTrustSettingsPolicy as String] {
+                guard CFGetTypeID(policy as CFTypeRef) == SecPolicyGetTypeID() else { return nil }
+                row[kSecTrustSettingsPolicy as String] = SecPolicyCopyProperties(policy as! SecPolicy)
+            }
+            guard JSONSerialization.isValidJSONObject(row) else { return nil }
+            normalized.append(row)
+        }
+        guard let data = try? JSONSerialization.data(withJSONObject: normalized, options: [.sortedKeys]) else { return nil }
+        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
     static func undoConfirmed(_ sha: String, consent: Bool, paths: ProductPaths) throws {
@@ -210,6 +239,8 @@ enum Certificates {
         if !receipt.completed && !inventory.certificates.contains(where: { fingerprint($0) == receipt.sha256 }) {
             receipt.undone = true; try JSONFile.write(receipt, to: url); return
         }
+        guard let expectedTrust = receipt.userTrustAfter,
+              userTrustFingerprint(try parse(receipt.der)) == expectedTrust else { throw RouterError.destinationDenied }
         let login = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Library/Keychains/login.keychain-db").path
         // Exact hash, exact user keychain, user trust only. Never touch system/admin stores.
         guard command("/usr/bin/security", ["delete-certificate", "-Z", canonical, "-t", login], timeout: 120).code == 0 else { throw RouterError.io }

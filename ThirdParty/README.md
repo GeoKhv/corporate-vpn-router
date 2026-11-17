@@ -1,3 +1,5 @@
+> Current release: 0.3.19 / 3019. IPsec source, patches, license obligations and reproduction: [ipsec-bridge/README.md](ipsec-bridge/README.md). Full source archive and hashes are linked in the [release manifest](../docs/releases/0.3.19.json).
+
 # Components and corresponding source
 The original Swift UI is MIT. The SSL worker importing cpyvpn is distributed under GPL-3.0-or-later. The included components retain their own licenses. The tagged source and the source archive beside the installer provide the worker, modifications, native source trees and build scripts. No external Check Point binaries, keys or certificates are redistributed.
 
@@ -8,5 +10,6 @@ The original Swift UI is MIT. The SSL worker importing cpyvpn is distributed und
 | [libevent 2.1.12-stable](https://github.com/libevent/libevent/releases/tag/release-2.1.12-stable) | Included upstream tarball linked statically into ocproxy, without its OpenSSL transport. BSD and component notices included. |
 | [Python Build Standalone](https://github.com/astral-sh/python-build-standalone/releases/tag/20261026) | Relocatable arm64 CPython 3.13.18. The release URL and SHA-256 are pinned in scripts/bundle.py. All upstream build license texts are in licenses/python; the app carries them. The corresponding build recipe and CPython/dependency versions are in the upstream tag. |
 | RFC 1751 word list | Public domain word list from PyCryptodome 3.23.0, attribution in licenses/RFC1751.txt. No isakmp engine or code required. |
+| Optional IPsec test bridge | `ipsec-bridge/README.md` documents the isolated AGPL-3.0 snx-rs/isakmp derivative, pinned revisions, validation and source delivery. Only explicitly opted-in builds package it. Full modified source and vendored dependencies accompany the test release. |
 
 Build on an Apple Silicon Mac with Apple's command-line developer tools: run bash scripts/build.sh, then bash scripts/package.sh. Only the build machine needs these tools and network access to fetch the pinned runtime. Test the resulting bundle using its own interpreter: Runtime/bin/python3.13 -I -B Tests/beta_tls.py /absolute/path/to/Contents/Resources/Engine, from the source tree. The loopback fixtures use temporary keys only.

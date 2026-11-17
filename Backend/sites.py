@@ -15,7 +15,20 @@ def validate(cfg):
     if not isinstance(ports,list) or not 1 <= len(ports) <= 32 or not all(type(p) is int and 1<=p<=65535 for p in ports): raise ValueError('ports')
     return cfg
 
-def gate(cfg):
+def rdp_host_for_profile(cfg, host):
+    """RDP is an extra port for one approved name inside the active work profile."""
+    if not hostname(host) or host in cfg['beforeLogin']:
+        return None
+    if any(row['domain'] == host or (row['scope'] == 'tree' and host.endswith('.' + row['domain']))
+           for row in cfg['sites']):
+        return host
+    return None
+
+
+def gate(cfg, rdp_host=None):
     validate(cfg)
     tokens = ['!' + x for x in cfg['beforeLogin']] + [('=' if r['scope']=='exact' else '')+r['domain'] for r in cfg['sites']]
-    return '|'+ '|'.join(tokens)+'|', '|'+ '|'.join(map(str,cfg['ports']))+'|'
+    ports = [str(port) for port in cfg['ports'] if not (rdp_host and port == 3389)]
+    if rdp_host_for_profile(cfg, rdp_host):
+        ports.append(rdp_host + ':3389')
+    return '|'+ '|'.join(tokens)+'|', '|'+ '|'.join(ports)+'|'

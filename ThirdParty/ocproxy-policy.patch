@@ -1,6 +1,6 @@
 --- a/src/ocproxy.c
 +++ b/src/ocproxy.c
-@@ -400,6 +400,38 @@
+@@ -400,6 +400,42 @@
  		ocp_sock_del(s);
  }
  
@@ -14,7 +14,6 @@
 +    if (n && name[n-1] == '.') --n;
 +    if (!domains || !ports || n == 0 || n > 253) return 0;
 +    snprintf(portkey, sizeof(portkey), "|%u|", port);
-+    if (!strstr(ports, portkey)) return 0;
 +    for (i = 0; i < n; ++i) {
 +        unsigned char c = name[i];
 +        if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
@@ -24,6 +23,11 @@
 +        hostname[i] = c;
 +    }
 +    hostname[n] = 0;
++    if (!strstr(ports, portkey)) {
++        char endpoint[264];
++        snprintf(endpoint, sizeof(endpoint), "|%s:%u|", hostname, port);
++        if (!strstr(ports, endpoint)) return 0;
++    }
 +    snprintf(key, sizeof(key), "|!%s|", hostname);
 +    if (strstr(domains, key)) return 0;
 +    snprintf(key, sizeof(key), "|=%s|", hostname);
@@ -39,7 +43,7 @@
  static void socks_cmd_cb(evutil_socket_t fd, short what, void *ctx)
  {
  	struct ocp_sock *s = ctx;
-@@ -445,24 +477,22 @@
+@@ -445,24 +481,22 @@
  			return;
  		}
  		if (req->atyp == SOCKS_ATYP_IPV4) {
@@ -72,7 +76,7 @@
  			start_resolution(s, (char *)name);
  			return;
  		} else {
-@@ -1009,6 +1039,7 @@
+@@ -1009,6 +1043,7 @@
  	lwip_init();
  	dns_init();
  

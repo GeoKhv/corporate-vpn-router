@@ -1,11 +1,31 @@
 import AppKit
 import Foundation
 import Darwin
+import CryptoKit
 
 struct SSLPolicy: Codable { var domains: [String]; var ports: [Int] }
 final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextFieldDelegate {
     let paths: ProductPaths
-    init(paths: ProductPaths = ProductPaths()) { self.paths = paths; super.init() }
+    let runtimeIdentity: Data?
+    init(paths: ProductPaths = ProductPaths()) {
+        self.paths = paths
+        runtimeIdentity = Self.codeIdentity()
+        super.init()
+    }
+    static func codeIdentity() -> Data? {
+        guard let executable = Bundle.main.executableURL, let data = try? Data(contentsOf: executable) else { return nil }
+        return Data(SHA256.hash(data: data))
+    }
+    func verifyRuntime() -> Bool {
+        if paths.isTestRoot { return true }
+        guard let runtimeIdentity, runtimeIdentity == Self.codeIdentity() else { return false }
+        guard let installed = try? Data(contentsOf: paths.executable), Data(SHA256.hash(data: installed)) == runtimeIdentity else { return false }
+        return (try? AppInstallation.verify(paths.app)) != nil
+    }
+    #if CVR_UPDATES
+    var updates: RouterUpdates?
+    var terminationPending = false
+#endif
     var item: NSStatusItem!, window: RouterWindow!, diagnostics: RouterWindow!
     let label = NSTextField(labelWithString: ""), detail = NSTextField(wrappingLabelWithString: "")
     let account = NSTextField(labelWithString: ""), statusIcon = NSImageView()
@@ -13,13 +33,25 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let promptTitle = NSTextField(wrappingLabelWithString:"")
     var leaveOfficial = NSButton(), useCode = NSButton()
     let promptLabel = NSTextField(wrappingLabelWithString: "")
-    let username = NSTextField(), secret = InlineSecureField()
+    let username = NSTextField(), loginDraft = NSTextField(), secret = InlineSecureField()
     let echo = NSButton(checkboxWithTitle: "Показывать последний символ на секунду", target: nil, action: nil)
     var primary = NSButton(), edit = NSButton(), submit = NSButton(), menuConnect = NSMenuItem()
+    var setupBrowser = NSButton()
+#if CVR_SELECTIVE_TUN
+    let selective = SelectiveRouter()
+    var connectionPhase = ConnectionPhase.idle
+    var connectionFailure: String?, connectionFailureCode: String?, connectionNotice: String?
+    var connectionAttempt = 0
+    var certificateWizard: CertificateWizard?
+#endif
+    // A running executable must never load Python from a different installed
+    // bundle (for example after launching a historical rollback copy).
+    var resources: URL { paths.app.appendingPathComponent("Contents/Resources") }
     var promptBox: NSStackView!, secretRow: NSStackView!
     var engine: Process?, input: FileHandle?, generation = 0, stopping = false
     var health = Health.idle, stage = "Отключено", note = "Выберите способ входа."
     var counters = [String:Int](), findings = [String:Finding]()
+    var httpsProbe = [String:Any]()
     var sleepTokens = [NSObjectProtocol](), requestKind: String?
     var activeScope: LoginScope?, pendingLogin: String?
     var settingsWindow: RouterWindow?, hiddenByUser = false
@@ -27,9 +59,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let sitesPanel=SitesPanel()
     var enrollmentTimer: Timer?
     var activated: Bool { FileManager.default.fileExists(atPath: paths.data.appendingPathComponent("chrome-fixed-verified").path) }
-    var editScope: LoginScope?
+    var editingLogin = false, attemptLogin: String?
     var checkButton = NSButton(), diagRows = [String:(NSImageView,NSTextField)]()
-    let checks = ["Шлюз и pin", "Авторизация", "SSL-туннель", "SOCKS5 · 1090", "DNS в туннеле", "Корпоративный HTTPS"]
+    #if CVR_SELECTIVE_TUN
+    var logsButton = NSButton()
+    let exportStatus = NSTextField(wrappingLabelWithString: "")
+    #endif
+    let checks = ["Шлюз и pin", "Авторизация", "VPN-туннель", "SOCKS5 · 1090", "DNS в туннеле", "HTTPS одного сайта"]
     var browserMode: Bool { method.selectedSegment == 1 }
     var book: AccountBook { AccountBook(url: paths.data.appendingPathComponent("ssl-logins.json")) }
     var policyURL: URL { paths.data.appendingPathComponent("ssl-policy.json") }
@@ -41,17 +77,41 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         installMainMenu()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
-        for (title, action) in [("Открыть Corporate VPN Router", #selector(show)), ("Подключить", #selector(toggle)),
-                               ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Обновления…", #selector(updateLink)), ("Вернуться к beta.5…", #selector(rollbackMenu)), ("Удалить Router…", #selector(uninstallMenu)), ("Завершить", #selector(quit))] {
+#if CVR_SELECTIVE_TUN
+        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router · TUN Trial", #selector(show)), ("Подключить", #selector(toggle)),
+            ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)),
+            ("Сохранить отчёт о запуске…", #selector(saveStartupReport)),
+            ("Настроить помощник и рабочий ПК…", #selector(editRouteHelper)), ("Удалить помощник маршрутов…", #selector(removeRouteHelper)),
+            ("Проверить службу Check Point…", #selector(checkpointDiagnostic)), ("Завершить", #selector(quit))]
+#else
+        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router", #selector(show)), ("Подключить", #selector(toggle)),
+            ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Обновления…", #selector(updateLink)), ("Вернуться к beta.5…", #selector(rollbackMenu)), ("Удалить Router…", #selector(uninstallMenu)), ("Завершить", #selector(quit))]
+#endif
+        for (title, action) in entries {
             let entry = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             entry.target = self
             if action == #selector(toggle) { menuConnect = entry }
         }
         item.menu = menu
+#if CVR_UPDATES
+        menu.autoenablesItems = false
+        let updates = RouterUpdates(owner:self); self.updates = updates
+        updates.start(menu:menu)
+#endif
         window = makeWindow("Corporate VPN Router", 510, 362)
         diagnostics = makeWindow("Диагностика Corporate VPN Router", 520, 306)
         setupMain()
         setupDiagnostics()
+#if CVR_SELECTIVE_TUN
+        window.title = "Corporate VPN Router · TUN Trial"
+        selective.changed = { [weak self] in self?.selectiveChanged() }
+        selective.chooseSite = { [weak self] sites, completion in
+            guard let self else { completion(nil); return }
+            self.chooseGatewaySite(sites, completion: completion)
+        }
+        selective.managementFinished = { [weak self] in self?.show() }
+        selective.checkHelper(resources: resources)
+#endif
         let center = NSWorkspace.shared.notificationCenter
         for notification in [NSWorkspace.willSleepNotification, NSWorkspace.didWakeNotification] {
             sleepTokens.append(center.addObserver(forName: notification, object: nil, queue: .main) { [weak self] _ in
@@ -61,9 +121,15 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         refresh()
         if !CommandLine.arguments.contains("--login") {
             show()
-            if !paths.isTestRoot && !FileManager.default.fileExists(atPath:paths.data.appendingPathComponent("routing-mode.json").path) && !FileManager.default.fileExists(atPath:paths.data.appendingPathComponent("router-profile-receipt.json").path){settings()}
         }
+#if CVR_SELECTIVE_TUN
+        StartupDiagnostics.shared.record("main_window_ready", paths.app.path)
+        StartupHandoff.acknowledge(paths)
+#endif
     }
+#if CVR_SELECTIVE_TUN
+    @objc func saveStartupReport() { StartupDiagnostics.shared.save(window: window) }
+#endif
     func installMainMenu() {
         let bar = NSMenu()
         for (title, items) in [
@@ -97,7 +163,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let state = NSStackView(views: [statusIcon, label])
         method.selectedSegment = UserDefaults.standard.string(forKey:"lastSuccessfulAuthMethod") == "browser" ? 1 : 0; method.target = self; method.action = #selector(changeMethod)
         edit = NSButton(title: "Изменить", target: self, action: #selector(changeLogin))
-        let who = NSStackView(views: [account, edit])
+        loginDraft.placeholderString = "Рабочий логин"
+        loginDraft.widthAnchor.constraint(equalToConstant: 250).isActive = true
+        loginDraft.target = self; loginDraft.action = #selector(toggle)
+        let who = NSStackView(views: [account, loginDraft, edit])
         echo.target = self; echo.action = #selector(changeEcho)
         echo.state = UserDefaults.standard.bool(forKey: "disableCharacterEcho") ? .off : .on
         for field in [username, secret] {
@@ -114,9 +183,126 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         useCode = NSButton(title:"Войти с кодом и паролем",target:self,action:#selector(fallbackToCode))
         promptBox = makeColumn([promptTitle, promptLabel, username, secretRow, submit, leaveOfficial], spacing:12)
         primary = NSButton(title: "Подключить", target: self, action: #selector(toggle))
-        let row = NSStackView(views: [primary, NSButton(title: "Рабочие сайты…", target: self, action: #selector(settings)),
+        setupBrowser = NSButton(title: "Настроить Chrome…", target: self, action: #selector(appRouting))
+        let row = NSStackView(views: [primary,
                                       NSButton(title: "Диагностика…", target: self, action: #selector(diagnose))])
-        attachColumn(makeColumn([state, detail, method, who, echo, promptBox, useCode, row]), to: window)
+        let motto = NSTextField(labelWithString: "Trust me, I'm an engineer.")
+        let author = NSTextField(labelWithString: "Made by @geokhv ·")
+        let version = NSTextField(labelWithString: "· v\(productVersion)")
+        for text in [motto, author, version] { text.font = .systemFont(ofSize: 10); text.textColor = .secondaryLabelColor }
+        let github = NSButton(title: "GitHub", target: self, action: #selector(openProject))
+        github.isBordered = false; github.bezelStyle = .inline; github.font = .systemFont(ofSize: 10)
+        github.contentTintColor = .linkColor
+        github.toolTip = "https://github.com/GeoKhv/corporate-vpn-router"
+        let byline = NSStackView(views: [author, github, version]); byline.spacing = 3
+        #if CVR_UPDATES
+        let footer = makeColumn([motto, byline, updates!.button], spacing: 1)
+#else
+        let footer = makeColumn([motto, byline], spacing: 1)
+#endif
+        footer.alignment = .centerX
+        footer.setContentHuggingPriority(.required, for: .vertical)
+        attachColumn(makeColumn([state, detail, setupBrowser, method, who, promptBox, row]), to: window, footer: footer)
+    }
+#if CVR_SELECTIVE_TUN
+    func chooseGatewaySite(_ sites: [String], completion: @escaping (String?) -> Void) {
+        guard sites.count > 1, sites.count <= 20, sites.allSatisfy(Configuration.validHost) else { completion(nil); return }
+        let chooser = NSPopUpButton(frame: NSRect(x:0,y:0,width:350,height:28))
+        chooser.addItems(withTitles: sites)
+        let alert = NSAlert()
+        alert.messageText = "Выберите сайт Check Point"
+        alert.informativeText = "В Check Point настроено несколько сайтов без выбранного подключения. Укажите адрес из инструкции ИТ. Router запомнит его."
+        alert.accessoryView = chooser
+        alert.addButton(withTitle: "Продолжить")
+        alert.addButton(withTitle: "Отмена")
+        alert.beginSheetModal(for: window) { response in
+            completion(response == .alertFirstButtonReturn ? chooser.titleOfSelectedItem : nil)
+        }
+    }
+    @objc func installRouteHelper() { setupRouteHelper(edit: false) }
+    @objc func editRouteHelper() { setupRouteHelper(edit: true) }
+    private func setupRouteHelper(edit: Bool) {
+        guard engine == nil, !selective.busy else { return }; show()
+        #if CVR_UPDATES
+        if Bundle.main.object(forInfoDictionaryKey:"CVRRouteHelperBuild") as? String == "0.3.11",
+           selective.helperAvailability.needsInstallation || selective.helperAvailability.canConnect {
+            configureLocalHelper(edit: edit)
+            return
+        }
+        #endif
+        guard selective.helperAvailability.needsInstallation else {
+            selective.checkHelper(resources: resources); return
+        }
+        guard confirmAction(selective.setupTitle, selective.helperAvailability.explanation + "\nСейчас macOS запросит разрешение администратора. Обычное подключение этой операции не выполняет.", "Продолжить") else { return }
+        selective.manageHelper(resources: resources)
+    }
+    #if CVR_UPDATES
+    private func configureLocalHelper(edit: Bool) {
+        guard let profile = storedWork(), !profile.sites.isEmpty else {
+            note = "Сначала откройте «Рабочие сайты» и проверьте сохранённый профиль."; refresh(); return
+        }
+        let previous = SelectiveRouter.helperReply(resources:resources)
+        let domains = (previous?["approvedDomains"] as? [String] ?? profile.sites.map { $0.domain }).sorted()
+        guard !domains.isEmpty, domains.count <= 256, domains.allSatisfy(Configuration.validHost),
+              Set(profile.sites.map { $0.domain }).isSubset(of:Set(domains)) else {
+            note = "Список рабочих сайтов выходит за разрешения прежнего помощника. Проверьте рабочие сайты."; refresh(); return
+        }
+        let current = previous?["approvedRDPHost"] as? String
+        let preset = Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile)
+        let selected = [current, preset].compactMap { $0 }.first { host in
+            Configuration.validHost(host) && profile.work(host) && domains.contains { host == $0 || host.hasSuffix("." + $0) }
+        }
+        func enroll(_ desktop: String) {
+            guard let data = try? JSONSerialization.data(withJSONObject:["domains":domains,"desktop":desktop]) else { return }
+            selective.manageHelper(resources:resources,enrollment:data,reconfigure:selective.helperAvailability.canConnect)
+        }
+        if let selected, !edit || selective.helperAvailability != .ready { enroll(selected); return }
+        let dialog = NSAlert()
+        dialog.messageText = "Разрешения помощника маршрутов"
+        dialog.informativeText = "Рабочие домены для HTTPS (443)\n" + domains.joined(separator:", ") +
+            "\n\nЕсли используете Windows App, проверьте или вставьте полное имя рабочего ПК из карточки подключения. Только этот ПК получит TCP 3389. Оставьте поле пустым для работы только через HTTPS."
+        let field = NSTextField(frame:NSRect(x:0,y:0,width:420,height:24))
+        field.placeholderString = "Имя рабочего ПК из Windows App"
+        let mapURL = paths.data.appendingPathComponent("Selective/domain-map.json")
+        if let selected { field.stringValue = selected }
+        else if let data = try? Data(contentsOf:mapURL),
+                let map = try? JSONSerialization.jsonObject(with:data) as? [String:Any],
+                let names = map["names"] as? [String:Int] {
+            let aliases = Set(profile.beforeLogin.compactMap { $0.split(separator:".").first })
+            let seen = names.keys.filter { name in profile.work(name) && name.split(separator:".").first.map(aliases.contains) == true }
+            if seen.count == 1 { field.stringValue = seen[0] }
+        }
+        dialog.accessoryView = field; dialog.window.initialFirstResponder = field
+        dialog.addButton(withTitle:"Подтвердить в macOS…"); dialog.addButton(withTitle:"Отмена")
+        while dialog.runModal() == .alertFirstButtonReturn {
+            let desktop = field.stringValue.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()
+            guard desktop.isEmpty || (Configuration.validHost(desktop) && profile.work(desktop)) else {
+                dialog.messageText = "Укажите полное имя ПК внутри разрешённого рабочего домена"; continue
+            }
+            enroll(desktop); return
+        }
+    }
+    #endif
+    @objc func removeRouteHelper() { guard engine == nil else { return }; show(); selective.manageHelper(resources: resources, remove: true) }
+    @objc func checkpointDiagnostic() { NSWorkspace.shared.open(resources.appendingPathComponent("Check Check Point.command")) }
+    @objc func certificates() {
+        if certificateWizard == nil {
+            let wizard = CertificateWizard(paths: paths)
+            wizard.permitsHost = { [weak self] host in self?.storedWork().map { $0.work(host) && $0.ports.contains(443) } ?? false }
+            wizard.inspectHost = { [weak self] host in
+                guard let self, self.health == .ready, let profile = self.storedWork(), profile.work(host), profile.ports.contains(443) else {
+                    var result = HTTPSCertificateResult(host: host); result.issue = "Сначала подключите рабочий VPN"; return result
+                }
+                var config = Configuration(); config.domains = [host]
+                return HTTPSCertificates.inspect(host: host, configuration: config, routerSOCKS: true)
+            }
+            certificateWizard = wizard
+        }
+        certificateWizard?.show()
+    }
+#endif
+    @objc func openProject() {
+        NSWorkspace.shared.open(URL(string: "https://github.com/GeoKhv/corporate-vpn-router")!)
     }
     func setupDiagnostics() {
         let title = NSTextField(labelWithString: "Проверки текущего сеанса")
@@ -128,7 +314,18 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             views.append(NSStackView(views: [icon, text]))
         }
         checkButton = NSButton(title: "Проверить HTTPS", target: self, action: #selector(probeHTTPS))
-        views.append(NSStackView(views: [checkButton, NSTextField(labelWithString: productVersion)]))
+        var actions: [NSView] = [checkButton]
+        #if CVR_SELECTIVE_TUN
+        logsButton = NSButton(title: "Сохранить и открыть логи…", target: self, action: #selector(exportLogs))
+        actions.append(logsButton)
+        #endif
+        actions.append(NSTextField(labelWithString: productVersion))
+        views.append(NSStackView(views: actions))
+        #if CVR_SELECTIVE_TUN
+        exportStatus.font = .systemFont(ofSize: 12)
+        exportStatus.textColor = .secondaryLabelColor
+        views.append(exportStatus)
+        #endif
         attachColumn(makeColumn(views, spacing: 12), to: diagnostics)
     }
     @objc func show() { hiddenByUser = false; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil) }
@@ -141,8 +338,15 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func windowDidResignKey(_ n: Notification) { secret.hideEcho() }
     @objc func quit() { NSApp.terminate(nil) }
-    func applicationWillTerminate(_ n: Notification) { stop("Приложение завершено.") }
-    @objc func changeMethod() { activeScope=nil; refresh() }
+    func applicationWillTerminate(_ n: Notification) {
+        stop("Приложение завершено.")
+#if CVR_SELECTIVE_TUN
+        selective.terminateWithApp()
+#endif
+    }
+    @objc func changeMethod() {
+        activeScope=nil; attemptLogin=nil; editingLogin=false; loginDraft.stringValue=""; refresh()
+    }
     func displayedAccount() -> LocalAccount? {
         if let activeScope { return book.accounts.first { $0.scope == activeScope } }
         guard let data = try? Data(contentsOf: paths.data.appendingPathComponent("ssl-site.json")),
@@ -150,14 +354,28 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return book.accounts.last { ($0.scope.method == "browser") == browserMode && $0.scope.site == receipt["site"] && $0.scope.pin == receipt["ca_sha256"] }
     }
     @objc func changeLogin() {
-        guard let current = displayedAccount() else { return }
         if browserMode {
             note = "При следующем входе выберите другой ключ или аккаунт на странице провайдера."
         } else {
-            editScope = current.scope
-            note = "При следующем подключении можно изменить логин."
+            editingLogin = true
+            loginDraft.stringValue = displayedAccount()?.username ?? ""
+            note = "Введите логин для следующего подключения."
         }
         refresh()
+        if !browserMode && engine == nil { window.makeFirstResponder(loginDraft) }
+    }
+    func prepareLogin() -> Bool {
+        attemptLogin = nil
+        guard !browserMode, displayedAccount() == nil || editingLogin else { return true }
+        let value = loginDraft.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else {
+            note = "Введите рабочий логин. Пароль и код будут запрошены после проверки шлюза."
+            refresh(); show(); window.makeFirstResponder(loginDraft); return false
+        }
+        // Memory-only draft. Send only after the verified gateway requests its
+        // scoped username; persist only after the gateway accepts authentication.
+        attemptLogin = value
+        return true
     }
     @objc func changeEcho() {
         UserDefaults.standard.set(echo.state == .off, forKey: "disableCharacterEcho"); secret.hideEcho()
@@ -176,12 +394,29 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func refresh() {
         label.stringValue = stage; detail.stringValue = note; statusIcon.image = health.dot()
         let who = displayedAccount()
-        account.stringValue = "Пользователь · " + (pendingLogin ?? who?.username ?? (browserMode ? "выбирается в браузере" : "не указан"))
-        edit.isHidden = who == nil; edit.isEnabled = engine == nil || health == .ready
+        let enterLogin = !browserMode && engine == nil && (who == nil || editingLogin)
+        loginDraft.isHidden = !enterLogin
+        account.stringValue = enterLogin ? "Пользователь" : "Пользователь · " + (pendingLogin ?? who?.username ?? (browserMode ? "выбирается в браузере" : "ожидает проверки шлюза"))
+        edit.isHidden = who == nil || enterLogin; edit.isEnabled = engine == nil || health == .ready
         method.isEnabled = engine == nil; primary.isEnabled = !stopping
         primary.isHidden = requestKind == "switch_official"
         echo.isHidden = requestKind == "switch_official"
+#if CVR_SELECTIVE_TUN
+        setupBrowser.isHidden = selective.helperAvailability == .ready || connectionPhase.pending || connectionPhase == .stopping
+        setupBrowser.title = selective.setupTitle
+        setupBrowser.isEnabled = engine == nil && selective.state != "stopping" && selective.state != "installing" && selective.helperAvailability != .checking
+        primary.isEnabled = connectionPhase.pending || connectionPhase == .connected ||
+            (!stopping && engine == nil && selective.process == nil && selective.state != "installing" && selective.cleanupConfirmed)
+        method.isEnabled = !connectionPhase.pending && engine == nil
+#else
+        setupBrowser.isHidden = activated && BrowserRouter.effective()
+        setupBrowser.isEnabled = engine == nil
+#endif
+#if CVR_SELECTIVE_TUN
+        primary.title = connectionPhase == .connected ? "Отключить" : connectionPhase.pending ? "Отменить подключение" : connectionPhase == .stopping ? "Отключение…" : "Подключить"
+#else
         primary.title = engine == nil ? "Подключить" : (health == .ready ? "Отключить рабочий туннель" : "Отменить вход")
+#endif
         useCode.isHidden = !browserMode || engine != nil || health == .ready
         leaveOfficial.isHidden = requestKind != "switch_official"
         menuConnect.title = primary.title; promptBox.isHidden = requestKind == nil
@@ -201,7 +436,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         let results = findings.mapValues { ["status": $0.health.rawValue, "checked": $0.checked.timeIntervalSince1970,
                                            "result": $0.text] as [String:Any] }
         let state: [String:Any] = ["checks":results, "activeAttempt":engine != nil && !stopping, "state":stage, "message":note, "connected":health == .ready,
-                                   "port":1090, "counters":counters, "updated":Date().timeIntervalSince1970]
+                                   "port":1090, "counters":counters, "httpsProbe":httpsProbe, "updated":Date().timeIntervalSince1970]
         if let data = try? JSONSerialization.data(withJSONObject: state) { try? data.write(to: runtimeState, options:.atomic) }
     }
     func mark(_ index: Int, _ health: Health, _ text: String) {
@@ -210,24 +445,61 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func diagnose() {
         NSApp.activate(ignoringOtherApps: true); diagnostics.makeKeyAndOrderFront(nil)
     }
+    #if CVR_SELECTIVE_TUN
+    @objc func exportLogs() {
+        guard logsButton.isEnabled else { return }
+        let panel = NSSavePanel()
+        panel.title = "Сохранить журналы Router"
+        panel.message = "Отчёт откроется после сохранения. Сам файл будет скопирован в буфер для вставки через Cmd+V."
+        panel.nameFieldStringValue = "Router-Logs-" + ISO8601DateFormatter().string(from: Date()).replacingOccurrences(of: ":", with: "-") + ".txt"
+        panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
+        panel.canCreateDirectories = true
+        panel.beginSheetModal(for: diagnostics) { [weak self] response in
+            guard let self, response == .OK, let url = panel.url else { return }
+            self.logsButton.isEnabled = false
+            self.logsButton.title = "Собираю логи…"
+            self.exportStatus.stringValue = ""
+            let resources = self.resources
+            DispatchQueue.global(qos: .userInitiated).async {
+                let result = command(resources.appendingPathComponent("Runtime/bin/python3.13").path,
+                    ["-I", "-B", resources.appendingPathComponent("Engine/support_report.py").path, url.path], timeout: 90)
+                DispatchQueue.main.async {
+                    self.logsButton.isEnabled = true
+                    self.logsButton.title = "Сохранить и открыть логи…"
+                    if result.code == 0 {
+                        let copied = copyReportFile(url)
+                        self.exportStatus.stringValue = copied ? "Отчёт сохранён. Файл в буфере — можно вставить через Cmd+V." : "Отчёт сохранён, но скопировать файл в буфер не удалось."
+                        if !NSWorkspace.shared.open(url) { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+                    } else {
+                        let alert = NSAlert()
+                        alert.messageText = "Не удалось сохранить отчёт"
+                        alert.informativeText = "Сбор или запись отчёта завершились с ошибкой (код \(result.code)). Журналы подключения сохранены в приложении. Попробуйте экспортировать в другую папку; если ошибка повторяется, сообщите этот код и версию приложения."
+                        alert.beginSheetModal(for: self.diagnostics, completionHandler: nil)
+                    }
+                }
+            }
+        }
+    }
+    #endif
     @objc func probeHTTPS() {
         guard health == .ready, let policy = storedWork(), policy.ports.contains(443) else { return }
         let endpointURL = paths.data.appendingPathComponent("certificate-endpoints.json")
         let configured = (try? JSONDecoder().decode([String:[String]].self, from: Data(contentsOf: endpointURL)))?["hosts"] ?? []
         guard let host = (configured + policy.sites.map({$0.domain})).first(where: { name in
             Configuration.validHost(name) && policy.work(name)
-        }) else { return }
+        }) else { mark(5,.idle,"в профиле нет адреса для проверки"); refresh(); return }
         let attempt = generation
-        mark(5,.waiting,"проверяется"); refresh()
+        httpsProbe = [:]
+        mark(5,.waiting,host + " — проверяется"); refresh()
         DispatchQueue.global().async {
             let r = command("/usr/bin/curl", ["-q","--noproxy","","--proxy","socks5h://127.0.0.1:1090",
-                "--head","--silent","--max-time","12","--output","/dev/null","--write-out","%{http_code} %{ssl_verify_result}","https://"+host+"/"], timeout: 14)
+                "--request","GET","--range","0-0","--max-filesize","65536","--silent","--max-time","12","--output","/dev/null","--write-out","%{http_code} %{ssl_verify_result}","https://"+host+"/"], timeout: 14)
             DispatchQueue.main.async {
                 guard attempt == self.generation, self.health == .ready else { return }
-                let parts = r.output.split(separator: " ")
-                if r.code == 0, parts.count == 2, parts[1] == "0", let code = Int(parts[0]), (100...599).contains(code) {
-                    self.mark(5,.ready,"TLS проверен, HTTP "+String(code))
-                } else { self.mark(5,.error,"ошибка DNS, TLS или соединения") }
+                let result = HTTPSProbeResult(exitCode: r.code, output: r.output)
+                self.httpsProbe = result.metrics
+                self.httpsProbe["checked"] = Date().timeIntervalSince1970
+                self.mark(5, result.reachable ? .ready : .error, host + " — " + result.reason)
                 self.refresh()
             }
         }
@@ -238,8 +510,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         };return nil
     }
     @objc func toggle() {
+#if CVR_SELECTIVE_TUN
+        if connectionPhase.pending || connectionPhase == .connected { stop("Подключение отменено пользователем.") }
+        else { connect() }
+#else
         if engine == nil { connect() }
         else { stop(health == .ready ? "Сеанс завершён." : "Вход отменён.") }
+#endif
     }
     func clearPrompt() {
         secret.hideEcho(); _ = secret.abortEditing(); _ = username.abortEditing(); requestKind = nil; username.stringValue = ""; secret.stringValue = ""
@@ -247,7 +524,14 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         promptLabel.stringValue = ""; promptBox?.isHidden = true
     }
     func stop(_ reason: String) {
-        clearPrompt(); pendingLogin = nil; health = .idle; stage = "Отключено"; note = reason
+#if CVR_SELECTIVE_TUN
+        if connectionPhase != .failed { connectionPhase = .stopping; connectionNotice = reason }
+        journal("ui", "cancel")
+        shutdownConnection()
+        if connectionPhase == .stopping && engine == nil && selective.process == nil && selective.cleanupConfirmed { connectionPhase = .idle }
+        presentConnection()
+#else
+        clearPrompt(); pendingLogin = nil; attemptLogin = nil; health = .idle; stage = "Отключено"; note = reason
         if let p = engine {
             stopping = true
             if p.isRunning {
@@ -256,6 +540,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             }
         }
         try? input?.close(); input = nil; refresh()
+#endif
     }
     func reply(_ value: String) {
         guard let input, let data = try? JSONEncoder().encode(value) else { return }
@@ -276,17 +561,59 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         clearPrompt(); refresh(); reply(value)
     }
     func connect(){
+#if CVR_UPDATES
+        guard updates?.preparing != true, !terminationPending else { return }
+#endif
+#if CVR_SELECTIVE_TUN
+        guard [.idle, .failed].contains(connectionPhase), engine == nil, selective.process == nil,
+              selective.state != "installing", selective.cleanupConfirmed, prepareLogin() else { return }
+        guard verifyRuntime() else {
+            failConnection("Файлы запущенного Router изменились. Завершите приложение и откройте установленную копию заново.", code: "APP_CHANGED_ON_DISK"); return
+        }
+        guard storedWork() != nil else { note = "Добавьте рабочие сайты."; refresh(); return }
+        connectionAttempt += 1; connectionFailure = nil; connectionFailureCode = nil; connectionNotice = nil
+        connectionPhase = .checkingHelper; journal("ui", "connect")
+        selective.checkHelper(resources: resources)
+        continueConnection(); presentConnection()
+#else
+        guard engine == nil, prepareLogin() else { return }
         let route=Self.routeCommand("status")
-        guard route.code==0 && route.output.hasPrefix("Chrome ·") && BrowserRouter.effective(), activated, storedWork() != nil else {settings();return}
-        generation+=1; stopping=false; findings=[:]; pendingLogin=nil; activeScope=nil; clearPrompt();let g=generation;let p=Process(),rx=Pipe(),tx=Pipe()
-        let resources=Bundle.main.resourceURL!
+        guard route.code==0 && route.output.hasPrefix("Chrome ·") && BrowserRouter.effective(), activated, storedWork() != nil else {
+            note = storedWork() == nil ? "Откройте «Рабочие сайты…» и добавьте список." : "Нажмите «Настроить Chrome…», подтвердите профиль в macOS, затем подключитесь."
+            refresh(); return
+        }
+        startAuthentication()
+#endif
+    }
+    func startAuthentication() {
+#if CVR_SELECTIVE_TUN
+        guard connectionPhase == .preparingRoutes, selective.awaitingTunnel, engine == nil else { return }
+        connectionPhase = .authenticating; journal("ssl", "start")
+#endif
+        generation+=1; stopping=false; findings=[:]; httpsProbe=[:]; pendingLogin=nil; activeScope=nil; clearPrompt();let g=generation;let p=Process(),rx=Pipe(),tx=Pipe()
+        let resources=self.resources
         p.executableURL=resources.appendingPathComponent("Runtime/bin/python3.13")
         p.arguments=["-I","-B","-u",resources.appendingPathComponent("Engine/session.py").path]
         if browserMode {p.arguments?.append("--browser")}
         p.environment=["HOME":NSHomeDirectory(),"PATH":"/usr/bin:/bin","LANG":"en_US.UTF-8"]
+        #if CVR_SELECTIVE_TUN
+        guard let target = selective.attemptGateway else {
+            failConnection("Не удалось подтвердить выбранный сайт Check Point.", code: "OFFICIAL_SELECTION_CHANGED"); return
+        }
+        p.environment?["CVR_ATTEMPT_GATEWAY"] = target
+        p.environment?["CVR_RDP_HOST"] = selective.attemptRDPHost
+#endif
         p.standardInput=tx;p.standardOutput=rx;p.standardError=FileHandle.nullDevice
         engine=p;input=tx.fileHandleForWriting;counters=[:];health = .waiting; stage="Подключение";note="Проверка шлюза и ранее принятого pin Check Point.";refresh()
-        do{try p.run()}catch{engine=nil;input=nil;health = .error; stage="Ошибка запуска";note="Не удалось запустить встроенный runtime.";refresh();return}
+        do{try p.run()}catch{
+            engine=nil;input=nil
+#if CVR_SELECTIVE_TUN
+            failConnection("Не удалось запустить встроенный runtime.", code: "ENGINE_START_FAILED")
+#else
+            health = .error; stage="Ошибка запуска";note="Не удалось запустить встроенный runtime.";refresh()
+#endif
+            return
+        }
         DispatchQueue.global(qos:.userInitiated).async { [weak self] in
             var buf=Data()
             while true {
@@ -300,14 +627,33 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             p.waitUntilExit()
             DispatchQueue.main.async{[weak self] in guard let self=self,self.generation==g else{return}
                 self.engine=nil;try? self.input?.close();self.input=nil
-                self.clearPrompt(); self.pendingLogin=nil; self.stopping=false
+                self.clearPrompt(); self.pendingLogin=nil; self.attemptLogin=nil; self.stopping=false
+#if CVR_SELECTIVE_TUN
+                self.journal("ssl", "exit", code: "EXIT_" + String(p.terminationStatus))
+                if self.connectionPhase != .failed && self.connectionPhase != .stopping && self.connectionPhase != .idle {
+                    self.failConnection("Сеанс неожиданно завершился (код \(p.terminationStatus)).", code: "ENGINE_EXIT")
+                } else { self.selective.stop() }
+                if self.connectionPhase == .stopping && self.selective.process == nil && self.selective.cleanupConfirmed { self.connectionPhase = .idle }
+                self.presentConnection()
+#else
                 if self.health != .error && self.health != .idle {
                     self.health = .error; self.stage="Ошибка"; self.note="Сеанс неожиданно завершился."
                 }
+#endif
                 self.refresh()}
         }
     }
     func event(_ msg: [String:Any], _ p: Process) {
+#if CVR_SELECTIVE_TUN
+        if let name = msg["transport_event"] as? String {
+            journal("transport", name, transport: msg)
+            return
+        }
+        if let event = msg["stage"] as? String ?? msg["request"] as? String {
+            journal("ssl", event, code: msg["code"] as? String, errorNumber: msg["errno"] as? Int,
+                    failedPhase: msg["failed_phase"] as? String, transport: msg)
+        }
+#endif
         if browserMode, msg.keys.contains("identity"), let site = msg["site"] as? String,
            let pin = msg["pin"] as? String, let realm = msg["realm"] as? String {
             let scope = LoginScope(site: site, pin: pin, realm: realm, method: "browser")
@@ -344,15 +690,17 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 let handler = ws.urlForApplication(toOpen: url)
                 refresh(); reply(ws.open(url) ? (handler?.path ?? "failed") : "failed"); return
             }
-            guard ["trust","username","challenge","secret","switch_official"].contains(kind) else { stop("Неизвестный запрос шлюза."); return }
+            guard ["trust","username","challenge","secret","switch_official","gateway_fingerprint"].contains(kind) else { stop("Неизвестный запрос шлюза."); return }
             if kind == "username" {
                 guard !browserMode, let site = msg["site"] as? String, let pin = msg["pin"] as? String,
                       let realm = msg["realm"] as? String else { stop("Не указан профиль входа."); return }
                 let scope = LoginScope(site: site, pin: pin, realm: realm)
                 activeScope = scope
+                if let value = attemptLogin {
+                    attemptLogin = nil; pendingLogin = value; reply(value); refresh(); return
+                }
                 if let stored = book.accounts.first(where: { $0.scope == scope }) {
-                    if editScope != scope { reply(stored.username); refresh(); return }
-                    username.stringValue = stored.username
+                    reply(stored.username); refresh(); return
                 }
             }
             requestKind = kind
@@ -363,7 +711,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             promptTitle.isHidden = !switching
             if switching {
                 stage = "Подтверждение подключения"; note = "Check Point сейчас подключён."
-                promptLabel.stringValue = "Официальный VPN отключится, GUI Check Point закроется и начнётся вход в этом приложении. Рабочие сайты временно потеряют доступ до завершения входа. Внешний VPN продолжит работать."
+                promptLabel.stringValue = "Официальный VPN отключится, GUI Check Point закроется и начнётся вход в этом приложении. Рабочие сайты временно потеряют доступ до завершения входа."
             }
             submit.title = switching ? "Отключить Check Point и продолжить" : kind == "trust" ? "Подтвердить" : "Продолжить"
             submit.controlSize = switching ? .large : .regular
@@ -371,7 +719,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             submit.keyEquivalent = switching ? "\r" : ""
             submit.bezelStyle = .rounded
             submit.bezelColor = switching ? .controlAccentColor : nil
-            window.setContentSize(NSSize(width:570,height:switching ? 430 : 410))
+            window.setContentSize(NSSize(width:570,height:switching ? 466 : 446))
             refresh(); if !hiddenByUser { show() }
             window.makeFirstResponder(kind == "username" ? username : ["trust","switch_official"].contains(kind) ? submit : secret)
             return
@@ -379,6 +727,17 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         switch msg["stage"] as? String {
         case "verifying_gateway":
             mark(0,.waiting,"проверяется")
+        case "gateway_dns_lookup": note = "Ищем IPv4-адрес шлюза Check Point через DNS macOS…"
+        case "gateway_dns_retry": note = "DNS не вернул адрес шлюза. Повторяем запрос автоматически…"
+        case "gateway_dns_verified": note = "Адрес шлюза подтверждён. Проверяем сертификат…"
+        case "gateway_anchor_verified": note = "Подлинность шлюза проверена. Подготовка входа…"
+        case "gateway_capabilities": note = "Получение способов входа от проверенного шлюза…"
+        case "transport_preflight": note = "Автоматический выбор способа подключения к шлюзу…"
+        case "ipsec_negotiating": note = "Подготовка IPsec и проверка сертификата шлюза…"
+        case "ipsec_gateway_verified": note = "Шлюз IPsec проверен. Ответьте на запросы входа."
+        case "ipsec_connected": mark(2,.ready,"IPsec выдал адрес и DNS")
+        case "official_handoff": note = "Проверка состояния официального Check Point…"
+        case "gateway_recheck": note = "Повторная проверка шлюза перед MFA…"
         case "gateway_verified":
             mark(0,.ready,"TLS и pin проверены"); mark(1,.waiting,"ожидание входа"); stage = "Ожидание входа"
             note = browserMode ? "Запрашиваем вход в основном браузере." : "Ответьте на запросы шлюза."
@@ -391,19 +750,29 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             note = "Ответ браузера получен. Шлюз проверяет его для этой попытки."
             mark(1,.waiting,"ответ браузера получен")
         case "authenticated":
-            mark(1,.ready,"шлюз принял вход"); stage = "Открытие туннеля"; note = "Ожидаем ответ SLIM и корпоративный DNS."
+            mark(1,.ready,"шлюз принял вход"); stage = "Открытие туннеля"; note = "Ожидаем готовность туннеля и корпоративный DNS."
             if let scope = activeScope, let pendingLogin {
-                do { try book.set(pendingLogin, for: scope); editScope = nil }
+                do { try book.set(pendingLogin, for: scope); editingLogin = false; loginDraft.stringValue = "" }
                 catch { note = "Шлюз принял вход, но сохранить логин не удалось." }
             }
             pendingLogin = nil
         case "ssl_dataplane_connected": mark(2,.waiting,"TLS открыт, ожидаем SLIM")
         case "socks_starting":
-            mark(2,.ready,"SLIM выдал адрес и DNS"); mark(3,.waiting,"проверяется")
+            mark(2,.ready,"получены адрес и DNS"); mark(3,.waiting,"проверяется")
         case "connected":
+#if CVR_SELECTIVE_TUN
+            guard self.engine === p, connectionPhase == .authenticating else { return }
+            connectionPhase = .activatingRoutes
+            do { try selective.activateRoutes() }
+            catch { failConnection("Не удалось включить рабочие маршруты.", code:"ROUTE_ACTIVATION_FAILED"); return }
+            presentConnection()
+#endif
             UserDefaults.standard.set(browserMode ? "browser" : "otp", forKey:"lastSuccessfulAuthMethod")
-            mark(3,.ready,"проверены ответ и владелец"); health = .ready; stage = "Подключено"
+            mark(3,.ready,"проверены ответ и владелец")
+#if !CVR_SELECTIVE_TUN
+            health = .ready; stage = "Подключено"
             note = "SOCKS5h доступен на 127.0.0.1:1090."
+#endif
         case "traffic":
             let new = msg["counters"] as? [String:Int] ?? [:]
             let sent = new["out_dns"] ?? 0, received = new["in_dns"] ?? 0
@@ -412,7 +781,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             }
             counters = new
         case "failed":
-            clearPrompt()
+            clearPrompt(); attemptLogin = nil
             let code = msg["code"] as? String ?? ""
 
             let reasons = ["OFFICIAL_VPN_NOT_IDLE":"Отключите официальный VPN.", "SOCKS_PORT_OCCUPIED":"Порт 1090 занят.",
@@ -426,17 +795,40 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                            "TimeoutError":"Шлюз не ответил вовремя. Возможности входа не проверены.",
                            "ConnectionRefusedError":"Шлюз недоступен. Возможности входа не проверены.",
                            "IDP_REALM_NOT_FOUND":"Возможности браузерного входа не определены.",
-                           "BROWSER_TIMEOUT":"За три минуты браузер не вернул ответ этой попытки.",
+                           "BROWSER_TIMEOUT":"За три минуты Router не получил подтверждение из браузера. Нажмите «Подключить» и завершите вход в новой вкладке.",
                            "BROWSER_PROOF_REJECTED":"Шлюз отклонил ответ браузера для этой попытки.",
                            "SSL_SESSION_REFUSED":"После авторизации шлюз закрыл SSL-сеанс до готовности SOCKS.",
                            "SSL_HELLO_TIMEOUT":"Шлюз не подтвердил готовность SSL-туннеля.",
+                           "IPSEC_FAILED":"Не удалось установить IPsec-туннель. Причина сохранена в диагностике.",
+                           "IPSEC_TRANSPORT_LOST":"Соединение IPsec закрылось. Подробности — в диагностике.",
+                           "IPSEC_START_TIMEOUT":"Шлюз не подтвердил готовность IPsec вовремя.",
+                           "IPSEC_CONTROL_INVALID":"IPsec вернул неподтверждённые данные. Подключение остановлено.",
+                           "TRANSPORT_PREFLIGHT_INVALID":"Не удалось определить способ подключения к шлюзу.",
+                           "IPSEC_BROWSER_UNSUPPORTED":"Для этого шлюза в тестовой версии используйте «Код + пароль». Браузерный вход через IPsec пока не поддерживается.",
                            "TRANSPORT_LOST":"Соединение потеряно. Для восстановления войдите снова.",
                            "SSLCertVerificationError":"Ошибка проверки сертификата шлюза.", "SAVED_SITE_OR_PIN_CHANGED":"Изменилась привязка к шлюзу. Вход заблокирован."]
-            note = reasons[code] ?? ("Подключение закрыто (" + code + ").")
+            note = gatewaySetupMessage(code) ?? reasons[code] ?? ("Подключение закрыто (" + code + ").")
+            if code == "SSL_SESSION_REFUSED", let serverCode = msg["server_code"] as? Int {
+                note += " Код шлюза: \(serverCode). Подробности — в отчёте диагностики."
+            }
             let index = findings[checks[0]]?.health != .ready ? 0 : findings[checks[1]]?.health != .ready ? 1 : findings[checks[2]]?.health != .ready ? 2 : 3
             mark(index,.error,code); health = .error; stage = "Ошибка"
+#if CVR_SELECTIVE_TUN
+            failConnection(note, code: code)
+#endif
         case "transport_lost","server_disconnect","dataplane_closed":
-            if health == .ready { health = .error; stage = "Ошибка"; note = "Туннель закрыт."; mark(2,.error,"потеряно соединение") }
+#if CVR_SELECTIVE_TUN
+            if connectionPhase == .activatingRoutes {
+                failConnection("Корпоративный туннель закрылся во время включения рабочих маршрутов.", code: "TRANSPORT_LOST")
+                return
+            }
+#endif
+            if health == .ready {
+                health = .error; stage = "Ошибка"; note = "Туннель закрыт."; mark(2,.error,"потеряно соединение")
+#if CVR_SELECTIVE_TUN
+                failConnection(note, code: "TRANSPORT_LOST")
+#endif
+            }
         default: return
         }
         refresh()

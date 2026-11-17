@@ -1,0 +1,15 @@
+The optional cvr-ipsec bridge is derived from snx-rs and isakmp by Dmitry Pankratov.
+GNU Affero General Public License version 3; see IPsec-AGPL-3.txt.
+Modified for Corporate VPN Router: unprivileged packet socket, pinned CCC identity,
+signing-certificate chain validation, bounded lifecycle, ephemeral sessions.
+No endpoint-compliance assertions or operating-system VPN configuration are made.
+
+Upstream snx-rs: https://github.com/ancwrd1/snx-rs
+Commit: 7ef1327ced2809d84cb02992e2a38e6b7e168f7b
+Upstream isakmp: https://github.com/ancwrd1/isakmp
+Commit: ce07353f7a1e3f62ef3a200bca34e3de0f72d0dc
+
+Complete corresponding bridge source, patches, Cargo.lock and build instructions:
+https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.19-ipsec-test/Corporate-VPN-Router-0.3.19-IPsec-source.zip
+The Python bridge controller is included as readable source in Resources/Engine.
+The source archive also includes its source and tests.
