@@ -2,9 +2,10 @@
 import asyncio
 import ipaddress
 import json
+import os
 from pathlib import Path
 import re
-import ssl
+import tempfile
 import struct
 import sys
 from urllib.parse import urlsplit
@@ -14,7 +15,7 @@ sys.path[:0] = [str(HERE), str(HERE.parent)]
 from domain_map import DomainMap
 from helper_client import RouteHelper
 from sites import allowed_tcp, approved, hostname, matched_rule, validate
-from http_router import via_socks
+from http_router import pump, via_socks
 
 
 def target(text):
@@ -46,10 +47,56 @@ def target(text):
     return host, port, url.scheme
 
 
+async def https_over_tunnel(host, port, upstream_reader, upstream_writer):
+    """Use macOS certificate trust on the corporate TCP stream already opened."""
+    with tempfile.TemporaryDirectory(prefix='cvr-https-', dir='/private/tmp') as directory:
+        path = os.path.join(directory, 'socket')
+        peer = asyncio.get_running_loop().create_future()
+
+        def accept(reader, writer):
+            if peer.done():
+                writer.close()
+            else:
+                peer.set_result((reader, writer))
+
+        server = await asyncio.start_unix_server(accept, path=path)
+        async with server:
+            proc = await asyncio.create_subprocess_exec('/usr/bin/curl', '-q',
+                '--noproxy', '*', '--unix-socket', path, '--proto', '=https',
+                '--head', '--silent', '--max-time', '8', '--output', '/dev/null',
+                '--write-out', '%{http_code}', f'https://{host}:{port}/',
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+                env={'PATH':'/usr/bin:/bin'})
+            tasks = []
+            try:
+                reader, writer = await asyncio.wait_for(peer, 3)
+                server.close()
+                tasks = [asyncio.create_task(pump(reader, upstream_writer)),
+                         asyncio.create_task(pump(upstream_reader, writer))]
+                status, _ = await proc.communicate()
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+                if peer.done() and not peer.cancelled():
+                    peer.result()[1].close()
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+        if proc.returncode in (35, 51, 58, 60, 77, 90, 91):
+            return dict(stage='tls', message='TCP-соединение установлено. macOS не подтвердила TLS для этого имени.')
+        if proc.returncode or not status.isdigit() or status == b'000':
+            return dict(stage='https', message='TCP-соединение установлено. Ответ HTTPS не подтверждён.')
+        code = int(status)
+        return dict(stage='reachable', message=f'{host}, TCP {port}: TLS проверен, HTTP {code}. ' +
+                    ('Сервис требует вход или дополнительных прав.' if code in (401, 403) else 'Вход в сервис не проверялся.'))
+
+
 async def analyze(text, data, resources):
     host, port, scheme = target(text)
     cfg = validate(json.loads((data/'work-sites.json').read_bytes()))
-    if '.' not in host:
+    short = '.' not in host
+    if short:
         aliases = [r['domain'] for r in cfg['sites'] if r.get('alias') == host]
         if len(aliases) != 1:
             return dict(stage='short_name', message='Короткое имя не привязано. Укажите его полное рабочее имя и включите короткое имя в правиле.')
@@ -95,12 +142,14 @@ async def analyze(text, data, resources):
         reader, writer = await via_socks(host, port)
         try:
             if scheme == 'https':
-                await writer.start_tls(ssl.create_default_context(),server_hostname=host)
-            return dict(stage='reachable', message=f'{host}, TCP {port}: соединение установлено через рабочий туннель. '+('Сертификат TLS проверен. ' if scheme=='https' else '')+'Вход в сервис не проверялся.')
+                result = await https_over_tunnel(host, port, reader, writer)
+            else:
+                result = dict(stage='reachable', message=f'{host}, TCP {port}: соединение установлено через рабочий туннель. Вход в сервис не проверялся.')
+            if short:
+                result['message'] += ' Проверено полное имя из правила. Поиск короткого имени обычным приложением macOS проверяется отдельно.'
+            return result
         finally:
             writer.close()
-    except ssl.SSLError:
-        return dict(stage='tls', message='TCP-соединение установлено, проверка TLS завершилась ошибкой.')
     except (OSError, asyncio.IncompleteReadError, RuntimeError, ValueError):
         return dict(stage='tcp', message='Корпоративный путь или соединение не подтвердились. Данных для вывода о запрете порта нет.')
     finally:
@@ -109,13 +158,14 @@ async def analyze(text, data, resources):
 
 if __name__ == '__main__':
     try:
-        result=asyncio.run(asyncio.wait_for(analyze(sys.stdin.readline(2049),
-            Path.home()/'Library/Application Support/Corporate VPN Router', HERE.parents[1]),18))
+        data = Path.home()/'Library/Application Support/Corporate VPN Router'
+        # The signed SOCKS supervisor uses a relative Unix socket to fit sun_path.
+        os.chdir(data)
+        result=asyncio.run(asyncio.wait_for(analyze(sys.stdin.readline(2049), data, HERE.parents[1]),18))
     except ValueError as exc:
         result=dict(stage="invalid",message=str(exc))
     except (OSError, asyncio.TimeoutError):
         result=dict(stage='timeout', message='Проверку завершить не удалось. Доступность сервиса не подтверждена.')
-    import tempfile, os
     folder = Path.home()/'Library/Application Support/Corporate VPN Router/Selective'
     try:
         with tempfile.NamedTemporaryFile(mode='w',dir=folder,delete=False) as log:
