@@ -1,0 +1,9 @@
+{
+  "version": "0.3.20",
+  "build": 3020,
+  "asset": "Corporate-VPN-Router-0.3.20-TCP-macOS-arm64.zip",
+  "sha256": "ef5289d37e7974c37391b6f62a5164b809e2a80de3c222c7d6b2c6942a95a9da",
+  "macOS": "26+",
+  "arch": "arm64",
+  "ordinarySSHAndKubernetesOnRecipientVerified": false
+}
