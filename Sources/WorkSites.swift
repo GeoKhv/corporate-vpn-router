@@ -138,7 +138,7 @@ final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     var editing: Int?
     var applying = false
     let table = NSTableView()
-    let scope = NSPopUpButton(), domain = NSTextField(), login = NSTextField(), suffixes = NSTextField()
+    let tree = NSButton(checkboxWithTitle:"С поддоменами",target:nil,action:nil), domain = NSTextField(), login = NSTextField(), suffixes = NSTextField()
     let address = NSTextView(), source = NSTextField(labelWithString:"")
     let ports = NSTextField(), short = NSButton(checkboxWithTitle:"Короткое имя",target:nil,action:nil)
     var gatewaySuffixes = [String]()
@@ -148,15 +148,23 @@ final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     let previewBox=NSStackView(), previewTitle=NSTextField(labelWithString:""), addButton=NSButton()
     let previewList=NSStackView(), previewScroll=NSScrollView()
     var previewHeight:NSLayoutConstraint?
+    var filter=""
+    let search=NSSearchField(), editBox=NSStackView(), editButton=NSButton(), deleteButton=NSButton()
+    // Draft indexes of the rows currently listed; the search field only narrows the view.
+    var rowIndexes:[Int] {
+        let query=filter.lowercased()
+        return draft.sites.indices.filter { query.isEmpty || draft.sites[$0].domain.contains(query) || (draft.sites[$0].alias ?? "").contains(query) }
+    }
     weak var column:NSStackView?
     let status = NSTextField(wrappingLabelWithString:""), preview = NSTextField(wrappingLabelWithString:"")
-    func numberOfRows(in tableView: NSTableView) -> Int { draft.sites.count }
+    func numberOfRows(in tableView: NSTableView) -> Int { rowIndexes.count }
     func tableView(_ tableView: NSTableView, objectValueFor column: NSTableColumn?, row: Int) -> Any? {
-        let site = draft.sites[row]
+        let indexes=rowIndexes
+        guard indexes.indices.contains(row) else { return nil }
+        let site = draft.sites[indexes[row]]
         switch column?.identifier.rawValue {
-        case "host": return site.domain
-        case "scope": return site.scope == "tree" ? "С поддоменами" : "Точное имя"
-        case "ports": return (site.tcp ?? .selected(draft.ports)).label
+        case "host": return (site.scope == "tree" ? "*." : "") + site.domain
+        case "purpose": return AccessPurpose.label(site.tcp,defaultPorts:draft.ports)
         default: return site.alias ?? "—"
         }
     }
@@ -224,17 +232,27 @@ extension BetaMenu {
         if settingsWindow == nil {
             let w=makeWindow("Доступы",730,720)
             w.isRestorable=false
-            for (id,title,width) in [("host","Адрес",285),("scope","Охват",125),("ports","TCP",95),("alias","Алиас",135)] {
+            for (id,title,width) in [("host","Адрес",300),("purpose","Для чего",230),("alias","Короткое имя",130)] {
                 let column=NSTableColumn(identifier:NSUserInterfaceItemIdentifier(id))
                 column.title=title; column.width=CGFloat(width); p.table.addTableColumn(column)
             }
             p.table.delegate=p; p.table.dataSource=p
-            p.scope.addItems(withTitles:["Точное имя","С поддоменами"])
-            p.domain.placeholderString="Полное имя"; p.ports.placeholderString="443"
-            p.domain.widthAnchor.constraint(equalToConstant:240).isActive=true
-            p.ports.widthAnchor.constraint(equalToConstant:90).isActive=true
-            p.commit.target=self; p.commit.action=#selector(editSite)
-            let form=NSStackView(views:[p.domain,p.scope,p.ports,p.short,p.commit])
+            p.table.target=self; p.table.doubleAction=#selector(selectSite(_:))
+            p.search.placeholderString="Поиск по адресу или короткому имени";p.search.target=self;p.search.action=#selector(searchChanged(_:))
+            p.search.widthAnchor.constraint(equalToConstant:300).isActive=true;p.search.isHidden=true
+            p.domain.placeholderString="Полное имя"; p.ports.placeholderString="443, 22 или *"
+            p.domain.widthAnchor.constraint(equalToConstant:300).isActive=true
+            p.ports.widthAnchor.constraint(equalToConstant:160).isActive=true
+            p.commit.title="Готово";p.commit.target=self; p.commit.action=#selector(editSite);p.commit.bezelStyle = .rounded;p.commit.keyEquivalent="\r"
+            let purposes=NSPopUpButton(frame:.zero,pullsDown:true);purposes.addItem(withTitle:"Добавить назначение")
+            for (name,port) in AccessPurpose.named { purposes.addItem(withTitle:name+" · \(port)");purposes.lastItem?.representedObject=port }
+            purposes.addItem(withTitle:"Любой TCP");purposes.lastItem?.representedObject="*"
+            purposes.target=self;purposes.action=#selector(pickPurpose(_:))
+            func caption(_ text:String)->NSTextField { let l=NSTextField(labelWithString:text);l.textColor = .secondaryLabelColor;l.widthAnchor.constraint(equalToConstant:48).isActive=true;return l }
+            let editTitle=NSTextField(labelWithString:"Правка доступа");editTitle.font = .systemFont(ofSize:13,weight:.semibold)
+            for view in [editTitle,NSStackView(views:[caption("Имя"),p.domain,p.tree]),NSStackView(views:[caption("Порты"),p.ports,purposes]),
+                         NSStackView(views:[p.short,panelButton("Отмена",#selector(cancelEdit)),p.commit])] { p.editBox.addArrangedSubview(view) }
+            p.editBox.orientation = .vertical;p.editBox.alignment = .leading;p.editBox.spacing=6;p.editBox.isHidden=true
             p.address.isRichText=false; p.address.isAutomaticQuoteSubstitutionEnabled=false
             p.address.isAutomaticDashSubstitutionEnabled=false
             p.address.textContainer?.widthTracksTextView=true
@@ -250,7 +268,9 @@ extension BetaMenu {
             p.previewBox.orientation = .vertical;p.previewBox.alignment = .leading;p.previewBox.spacing=6
             for view in [p.previewTitle,p.previewScroll,NSStackView(views:[p.addButton,panelButton("Очистить",#selector(clearPreview))])] { p.previewBox.addArrangedSubview(view) }
             p.previewBox.isHidden=true
-            let actions=NSStackView(views:[panelButton("Изменить",#selector(selectSite)),panelButton("Удалить",#selector(removeSite)),panelButton("Отменить правку",#selector(cancelDraftEdit)),panelButton("Импорт…",#selector(importSites)),panelButton("Экспорт…",#selector(exportSites))])
+            p.editButton.title="Изменить";p.editButton.target=self;p.editButton.action=#selector(selectSite(_:))
+            p.deleteButton.title="Удалить";p.deleteButton.target=self;p.deleteButton.action=#selector(removeSite)
+            let actions=NSStackView(views:[p.editButton,p.deleteButton,panelButton("Импорт…",#selector(importSites)),panelButton("Экспорт…",#selector(exportSites))])
             p.suffixes.placeholderString="Дополнительные суффиксы поиска через запятую"
             p.login.placeholderString="Точные имена для доступа до входа"
             for field in [p.suffixes,p.login] { field.widthAnchor.constraint(equalToConstant:460).isActive=true }
@@ -261,7 +281,7 @@ extension BetaMenu {
 #endif
             let save=NSStackView(views:saveButtons)
             let column=makeColumn([addTitle,hint,scroll(p.address,width:675,height:56),pasteRow,p.preview,p.previewBox,
-                NSTextField(labelWithString:"Рабочие правила"),scroll(p.table,width:675,height:118),actions,form,
+                NSTextField(labelWithString:"Мои доступы"),p.search,scroll(p.table,width:675,height:168),actions,p.editBox,
                 p.source,NSStackView(views:[NSTextField(labelWithString:"Свои суффиксы"),p.suffixes]),NSStackView(views:[NSTextField(labelWithString:"До входа"),p.login]),save,settingsNote,p.status],spacing:7)
             p.column=column;attachColumn(column,to:w)
             settingsWindow=w
@@ -269,7 +289,7 @@ extension BetaMenu {
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)), saved.base==p.base { p.draft=saved.profile }
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), let latest=saved.draft(for:p.base) {p.draft=latest}
             loadDraft();updateSearchSource()
-        } else if p.base != storedWork(), p.draft == p.base, p.editing == nil, p.domain.stringValue.isEmpty {
+        } else if p.base != storedWork(), p.draft == p.base, p.editing == nil {
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base; loadDraft()
         }
         routeStatus()
@@ -278,21 +298,44 @@ extension BetaMenu {
     func loadDraft(_ selected:Int = -1) {
         let p=sitesPanel
         p.table.reloadData()
-        if p.draft.sites.indices.contains(selected) { p.table.selectRowIndexes(IndexSet(integer:selected),byExtendingSelection:false) }
+        if let row=p.rowIndexes.firstIndex(of:selected) { p.table.selectRowIndexes(IndexSet(integer:row),byExtendingSelection:false) }
         p.login.stringValue=p.draft.beforeLogin.joined(separator:", ")
         p.suffixes.stringValue=(p.draft.searchDomains ?? []).joined(separator:", ")
+        p.search.isHidden = p.draft.sites.count<=10 && p.filter.isEmpty
         newSite()
         settingsNote.stringValue=p.base==p.draft ? "Сохранённые правила" : "Черновик • есть неприменённые изменения"
     }
-    @objc func selectSite() {
-        let p=sitesPanel,i=p.table.selectedRow
-        guard p.draft.sites.indices.contains(i) else {settingsNote.stringValue="Выберите правило в списке.";return}
-        let row=p.draft.sites[i]
-        p.editing=i;p.domain.stringValue=row.domain;p.scope.selectItem(at:row.scope=="tree" ? 1:0)
-        p.ports.stringValue=(row.tcp ?? .selected(p.draft.ports)).label;p.short.state=row.alias==nil ? .off:.on
-        p.commit.title="Изменить"; settingsNote.stringValue="Редактируется " + row.domain
+    func selectedSiteIndex() -> Int? {
+        let p=sitesPanel,row=p.table.selectedRow,indexes=p.rowIndexes
+        return indexes.indices.contains(row) ? indexes[row]:nil
     }
-    @objc func newSite(){let p=sitesPanel;p.editing=nil;p.domain.stringValue="";p.ports.stringValue=TCPPorts.selected(p.draft.ports).label;p.scope.selectItem(at:0);p.short.state = .off;p.commit.title="Добавить"}
+    @objc func searchChanged(_ sender:NSSearchField) { sitesPanel.filter=sender.stringValue;sitesPanel.table.reloadData() }
+    @objc func selectSite(_ sender:Any? = nil) {
+        let p=sitesPanel
+        if sender is NSTableView, p.table.clickedRow<0 { return }
+        guard let i=selectedSiteIndex() else {settingsNote.stringValue="Выберите доступ в списке.";return}
+        let row=p.draft.sites[i]
+        p.editing=i;p.domain.stringValue=row.domain;p.tree.state=row.scope=="tree" ? .on:.off
+        p.ports.stringValue=(row.tcp ?? .selected(p.draft.ports)).label;p.short.state=row.alias==nil ? .off:.on
+        p.editBox.isHidden=false;p.table.isEnabled=false;p.editButton.isEnabled=false;p.deleteButton.isEnabled=false
+        settingsNote.stringValue="Редактируется " + row.domain;fitSettingsWindow()
+        settingsWindow?.makeFirstResponder(p.domain)
+    }
+    @objc func newSite(){
+        let p=sitesPanel;p.editing=nil;p.domain.stringValue="";p.ports.stringValue=TCPPorts.selected(p.draft.ports).label;p.tree.state = .off;p.short.state = .off
+        p.editBox.isHidden=true;p.table.isEnabled=true;p.editButton.isEnabled=true;p.deleteButton.isEnabled=true
+        fitSettingsWindow()
+    }
+    @objc func cancelEdit(){ newSite();settingsNote.stringValue="Правка отменена." }
+    @objc func pickPurpose(_ sender:NSPopUpButton) {
+        let p=sitesPanel
+        guard let value=sender.selectedItem?.representedObject else{return}
+        if let port=value as? Int {
+            let current=p.ports.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
+            let list=current=="*" || current.isEmpty ? []:current.split(separator:",").map{$0.trimmingCharacters(in:.whitespaces)}
+            if !list.contains(String(port)) { p.ports.stringValue=(list+[String(port)]).joined(separator:", ") }
+        } else { p.ports.stringValue="*" }
+    }
     func readLogin(){
         let p=sitesPanel
         func names(_ text:String)->[String]{text.lowercased().split(whereSeparator:{$0=="," || $0.isWhitespace}).map(String.init)}
@@ -312,34 +355,30 @@ extension BetaMenu {
     }
     @objc func cancelDraftEdit(){
         let p=sitesPanel
-        if p.editing != nil || !p.domain.stringValue.isEmpty {newSite();return}
+        if p.editing != nil {newSite();return}
         if let previous=p.history.popLast(){p.draft=previous;loadDraft();persistDraft()}
     }
     @objc func removeSite(){
-        let p=sitesPanel,i=p.table.selectedRow
-        guard p.draft.sites.indices.contains(i) else{return}
+        let p=sitesPanel
+        guard p.editing==nil,let i=selectedSiteIndex() else{return}
         readLogin();let old=p.draft;p.draft.sites.remove(at:i);changedDraft(old)
     }
     @discardableResult @objc func editSite()->Bool {
-        let p=sitesPanel,h=p.domain.stringValue.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()
-        guard Configuration.validHost(h), h.contains(".") else{settingsNote.stringValue="Введите полное DNS-имя. Для маски используйте разбор адресов.";return false}
+        let p=sitesPanel
+        guard let editing=p.editing,p.draft.sites.indices.contains(editing) else{return false}
+        let h=p.domain.stringValue.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()
+        guard Configuration.validHost(h), h.contains(".") else{settingsNote.stringValue="Введите полное DNS-имя. Маску задайте флажком «С поддоменами».";return false}
         let raw=p.ports.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
         let tokens=raw.split(separator:",",omittingEmptySubsequences:false)
         let ports=tokens.compactMap { Int($0.trimmingCharacters(in:.whitespaces)) }
         guard raw=="*" || (ports.count==tokens.count && (1...32).contains(ports.count) && ports.allSatisfy({(1...65535).contains($0)})) else {settingsNote.stringValue="Укажите TCP-порты через запятую или *.";return false}
         readLogin()
-        var row=WorkSite(domain:h,scope:p.scope.indexOfSelectedItem==1 ? "tree":"exact",tcp:raw=="*" ? .any:.selected(Array(Set(ports)).sorted()),alias:p.short.state == .on ? h.components(separatedBy:".").first:nil)
+        var row=WorkSite(domain:h,scope:p.tree.state == .on ? "tree":"exact",tcp:raw=="*" ? .any:.selected(Array(Set(ports)).sorted()),alias:p.short.state == .on ? h.components(separatedBy:".").first:nil)
         let old=p.draft
-        if p.editing==nil, let cover=old.covers(row) {
-            p.address.string=h+":" + String(ports.first ?? 443)
-            settingsNote.stringValue="Уже разрешено правилом "+cover.domain+". Можно проверить подключение.";newSite();return true
-        }
-        guard !old.beforeLogin.contains(h), !old.sites.enumerated().contains(where:{$0.offset != p.editing && ($0.element.domain==h || (row.alias != nil && row.alias==$0.element.alias))}) else {settingsNote.stringValue="Имя или алиас уже используется. Выберите правило и нажмите «Изменить».";return false}
-        if let i=p.editing {
-            if old.sites[i].tcp==nil && row.tcp == .selected(old.ports.sorted()) { row.tcp=nil }
-            p.draft.sites[i]=row
-        } else { p.draft.sites.append(row) }
-        p.draft.version=2;changedDraft(old);return true
+        guard !old.beforeLogin.contains(h), !old.sites.enumerated().contains(where:{$0.offset != editing && ($0.element.domain==h || (row.alias != nil && row.alias==$0.element.alias))}) else {settingsNote.stringValue="Имя или короткое имя уже используется в другом доступе.";return false}
+        if old.sites[editing].tcp==nil && row.tcp == .selected(old.ports.sorted()) { row.tcp=nil }
+        p.draft.sites[editing]=row
+        p.draft.version=2;changedDraft(old,editing);return true
     }
     @objc func exportSites(){
         readLogin();let panel=NSSavePanel();panel.nameFieldStringValue="work-rules.json"
@@ -498,6 +537,7 @@ extension BetaMenu {
     }
     @objc func addPreview(){
         let p=sitesPanel,old=p.draft
+        guard p.editing==nil else {settingsNote.stringValue="Сначала завершите правку: «Готово» или «Отмена».";return}
         var next=old,added=[String]()
         do {
             for item in p.items where item.check.state == .on && item.check.isEnabled {
@@ -553,7 +593,7 @@ extension BetaMenu {
 #else
         if BrowserRouter.effective() && !activated {settingsNote.stringValue="Сначала нажмите «Настроить Chrome…» для проверки маршрута в браузере.";return}
 #endif
-        guard sitesPanel.domain.stringValue.isEmpty else { settingsNote.stringValue="Завершите ввод кнопкой «Добавить» или «Изменить» либо отмените правку.";return }
+        guard sitesPanel.editing==nil else { settingsNote.stringValue="Завершите правку кнопкой «Готово» или отмените её.";return }
         readLogin()
         persistDraft()
         let temp=paths.data.appendingPathComponent("draft-"+UUID().uuidString)
