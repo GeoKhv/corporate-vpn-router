@@ -403,10 +403,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         echo.isHidden = requestKind == "switch_official"
 #if CVR_SELECTIVE_TUN
         setupBrowser.isHidden = selective.helperAvailability == .ready || connectionPhase.pending || connectionPhase == .stopping
-        setupBrowser.title = selective.setupTitle
+        if selective.holdingRoutes && !connectionPhase.pending { setupBrowser.isHidden = false }
+        setupBrowser.title = selective.holdingRoutes ? "Отключить рабочие маршруты" : selective.setupTitle
         setupBrowser.isEnabled = engine == nil && selective.state != "stopping" && selective.state != "installing" && selective.helperAvailability != .checking
         primary.isEnabled = connectionPhase.pending || connectionPhase == .connected ||
-            (!stopping && engine == nil && selective.process == nil && selective.state != "installing" && selective.cleanupConfirmed)
+            (!stopping && engine == nil && (selective.holdingRoutes || (selective.process == nil && selective.state != "installing" && selective.cleanupConfirmed)))
         method.isEnabled = !connectionPhase.pending && engine == nil
 #else
         setupBrowser.isHidden = activated && BrowserRouter.effective()
@@ -565,13 +566,19 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard updates?.preparing != true, !terminationPending else { return }
 #endif
 #if CVR_SELECTIVE_TUN
-        guard [.idle, .failed].contains(connectionPhase), engine == nil, selective.process == nil,
-              selective.state != "installing", selective.cleanupConfirmed, prepareLogin() else { return }
+        guard [.idle, .failed].contains(connectionPhase), engine == nil,
+              selective.holdingRoutes || (selective.process == nil && selective.state != "installing" && selective.cleanupConfirmed),
+              prepareLogin() else { return }
         guard verifyRuntime() else {
             failConnection("Файлы запущенного Router изменились. Завершите приложение и откройте установленную копию заново.", code: "APP_CHANGED_ON_DISK"); return
         }
         guard storedWork() != nil else { note = "Добавьте рабочие сайты."; refresh(); return }
         connectionAttempt += 1; connectionFailure = nil; connectionFailureCode = nil; connectionNotice = nil
+        if selective.holdingRoutes {
+            connectionPhase = .preparingRoutes
+            startAuthentication()
+            return
+        }
         connectionPhase = .checkingHelper; journal("ui", "connect")
         selective.checkHelper(resources: resources)
         continueConnection(); presentConnection()
@@ -632,7 +639,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 self.journal("ssl", "exit", code: "EXIT_" + String(p.terminationStatus))
                 if self.connectionPhase != .failed && self.connectionPhase != .stopping && self.connectionPhase != .idle {
                     self.failConnection("Сеанс неожиданно завершился (код \(p.terminationStatus)).", code: "ENGINE_EXIT")
-                } else { self.selective.stop() }
+                } else if !self.selective.holdingRoutes { self.selective.stop() }
                 if self.connectionPhase == .stopping && self.selective.process == nil && self.selective.cleanupConfirmed { self.connectionPhase = .idle }
                 self.presentConnection()
 #else

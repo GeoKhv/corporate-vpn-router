@@ -45,7 +45,15 @@ final class SelectiveRouter {
     var checkingCleanup = false
     var failureCode: String?, attemptGateway: String?, attemptRDPHost: String?
     var changed: (() -> Void)?
-    var awaitingTunnel: Bool { state == "awaitingTunnel" && process?.isRunning == true }
+    var holdingRoutes: Bool { state == "holding" && process?.isRunning == true }
+    var awaitingTunnel: Bool { (state == "awaitingTunnel" || holdingRoutes) && process?.isRunning == true }
+    func holdRoutes() -> Bool {
+        if holdingRoutes { return true }
+        guard ready, let input else { return false }
+        do { try input.write(contentsOf: Data("hold\n".utf8)) } catch { return false }
+        state = "holding"
+        return true
+    }
     var ready: Bool { state == "ready" && process?.isRunning == true }
     var busy: Bool { process != nil || state == "installing" || helperAvailability == .checking || checkingCleanup }
     var setupTitle: String {
@@ -304,7 +312,7 @@ final class SelectiveRouter {
     }
     func activateRoutes() throws {
         guard awaitingTunnel, let input else { throw RouterError.staleNetwork }
-        try input.write(contentsOf: Data("activate\n".utf8))
+        try input.write(contentsOf: Data((holdingRoutes ? "resume\n" : "activate\n").utf8))
         state = "activating"
     }
     func stop() {

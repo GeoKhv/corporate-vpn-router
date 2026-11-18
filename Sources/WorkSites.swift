@@ -16,6 +16,12 @@ enum TCPPorts: Codable {
     }
 }
 struct WorkSite: Codable { var domain: String; var scope: String; var tcp: TCPPorts?; var alias: String? }
+struct SharedTCPRule: Decodable {
+    let kind: String
+    let domain: String
+    let ports: [Int]
+    let shortName: Bool
+}
 struct WorkProfile: Codable {
     var version = 1
     var sites: [WorkSite] = []
@@ -146,6 +152,28 @@ extension BetaMenu {
     @objc func importSites(){let panel=NSOpenPanel();panel.allowsMultipleSelection=false
         guard panel.runModal() == .OK, let u=panel.url else{return}
         do{let data=try Data(contentsOf:u);guard data.count<=131072 else{throw RouterError.invalidConfiguration}
+            if let rule = try? JSONDecoder().decode(SharedTCPRule.self, from:data) {
+                guard rule.kind == "exact-tcp-rule", Configuration.validHost(rule.domain), rule.domain.contains("."),
+                      !rule.ports.isEmpty, rule.ports.count <= 32, rule.ports.allSatisfy({ (1...65535).contains($0) }),
+                      !sitesPanel.draft.beforeLogin.contains(rule.domain) else { throw RouterError.invalidConfiguration }
+                let p = sitesPanel
+                let exact = p.draft.sites.firstIndex { $0.domain == rule.domain }
+                guard exact.map({ p.draft.sites[$0].scope == "exact" }) ?? true else {
+                    settingsNote.stringValue="Для этого имени уже задано правило с поддоменами. Выберите разрешения вручную."
+                    return
+                }
+                let inherited = p.draft.sites.filter { $0.domain == rule.domain ||
+                    ($0.scope == "tree" && rule.domain.hasSuffix("." + $0.domain)) }.max { $0.domain.count < $1.domain.count }
+                let base = inherited.map { $0.tcp ?? .selected(p.draft.ports) } ?? .selected([])
+                if let index = exact { p.list.selectItem(at:index); selectSite() } else { newSite(); p.domain.stringValue=rule.domain }
+                switch base {
+                case .any: p.ports.stringValue="*"
+                case .selected(let ports): p.ports.stringValue=TCPPorts.selected(Array(Set(ports + rule.ports)).sorted()).label
+                }
+                if rule.shortName { p.short.state = .on }
+                if editSite() { settingsNote.stringValue="В черновике изменено одно точное правило. Проверьте адрес и порты, затем сохраните список." }
+                return
+            }
             let draft=try JSONDecoder().decode(WorkProfile.self,from:data); guard [1,2].contains(draft.version) && !draft.sites.isEmpty && draft.sites.count<=256 else{throw RouterError.invalidConfiguration}
             sitesPanel.draft=draft;loadDraft();settingsNote.stringValue="Импортирован черновик. Проверьте область доменов и адреса до входа."
         }catch{settingsNote.stringValue="Не удалось прочитать профиль рабочих сайтов."}
@@ -296,6 +324,7 @@ extension BetaMenu {
     }
     @objc func appRouting(){
 #if CVR_SELECTIVE_TUN
+        if selective.holdingRoutes { stop("Рабочие маршруты выключены."); return }
         guard engine == nil else { settingsNote.stringValue = "Сначала отключите рабочий туннель."; return }
         if selective.process != nil { selective.stop() }
         else if selective.helperAvailability.needsInstallation || selective.helperAvailability == .desktopAvailable { installRouteHelper() }

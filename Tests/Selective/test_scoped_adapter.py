@@ -37,7 +37,8 @@ async def main():
         stop=asyncio.Event()
         cfg=dict(mode='stable-map',map_path=str(d/'map'),policy=policy,password='synthetic',host=full,
                  verify_names=True,dns_backend_port=available(),socks_port=available())
-        serve_task=asyncio.create_task(serve(cfg,d,fixture,stop_event=stop))
+        held=asyncio.Event()
+        serve_task=asyncio.create_task(serve(cfg,d,fixture,stop_event=stop,held=held))
         for _ in range(50):
             if (d/'services.pid').exists():break
             await asyncio.sleep(.03)
@@ -77,6 +78,12 @@ async def main():
                 await asyncio.sleep(.1)
             else:raise AssertionError('TCP rule reload did not become effective')
             assert await ordinary(ports[1]);assert not await ordinary(ports[2])
+            held.set()
+            assert await dns('node',1) is None
+            assert await dns(full,28) is None
+            assert not await ordinary(ports[0]) and not await ordinary(ports[1])
+            held.clear()
+            assert await dns('node',1)==ip and await ordinary(ports[1])
             stop.set();await serve_task
             assert not await ordinary(ports[0])
             assert DomainMap(d/'map').name_for_ip(ip6)==full

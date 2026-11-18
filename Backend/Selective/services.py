@@ -52,7 +52,7 @@ def dns_answer(packet, cfg, registry=None, is_allowed=None, canonical=None):
     return header + packet[12:end] + answer, dict(event='dns', name=name, type=kind, rcode=rcode, refusal=refusal)
 
 
-async def serve(cfg, directory, installed=None, *, stop_event=None):
+async def serve(cfg, directory, installed=None, *, stop_event=None, held=None):
     if installed is None:
         engine = Path(__file__).resolve().parent.parent
         sys.path.insert(0, str(engine))
@@ -74,6 +74,8 @@ async def serve(cfg, directory, installed=None, *, stop_event=None):
                if row.get('alias')}
 
     async def checked_answer(packet):
+        if held is not None and held.is_set():
+            return dns_answer(packet, cfg, registry, lambda _: False)
         if not stable or not cfg.get('verify_names'):
             return dns_answer(packet, cfg, registry, allowed_dns if stable else None)
         from sparse_dns import decode_name
@@ -158,6 +160,8 @@ async def serve(cfg, directory, installed=None, *, stop_event=None):
                 permitted = allowed_tcp(cfg['policy'], name, port, cfg.get('rdp_host'))
             else:
                 permitted = port in cfg.get('policy', {}).get('ports', [443])
+            if held is not None and held.is_set():
+                raise OSError('corporate transport disconnected')
             if not allowed or not permitted:
                 raise ValueError('outside exact allowlist')
             ur, uw = await asyncio.wait_for(installed.via_socks(name, port), 12)

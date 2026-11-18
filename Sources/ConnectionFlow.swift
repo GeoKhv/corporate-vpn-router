@@ -84,18 +84,19 @@ extension BetaMenu {
     func failConnection(_ message: String, code: String) {
         // Latch the first failure before cleanup causes synchronous callbacks.
         if connectionFailure == nil { connectionFailure = message; connectionFailureCode = code }
+        let keepRoutes = selective.holdingRoutes || (connectionPhase == .connected && selective.holdRoutes())
         connectionPhase = .failed; journal("ui", "failure", code: code)
-        shutdownConnection(); presentConnection()
+        shutdownConnection(keepRoutes: keepRoutes); presentConnection()
     }
 
-    func shutdownConnection() {
+    func shutdownConnection(keepRoutes: Bool = false) {
         clearPrompt(); pendingLogin = nil; attemptLogin = nil
         if let p = engine, p.isRunning {
             stopping = true; p.terminate()
             DispatchQueue.main.asyncAfter(deadline: .now() + 4) { if p.isRunning { kill(p.processIdentifier, SIGKILL) } }
         }
         try? input?.close(); input = nil
-        selective.stop()
+        if !keepRoutes { selective.stop() }
     }
 
     func presentConnection() {
@@ -126,7 +127,8 @@ extension BetaMenu {
         case .failed:
             health = .error; stage = "Ошибка подключения"
             note = connectionFailure ?? "Подключение завершилось с ошибкой."
-            if engine != nil || selective.process != nil { note += "\nОчистка рабочих маршрутов…" }
+            if selective.holdingRoutes { note += "\nРабочие маршруты защищены до повторного входа. Личный интернет доступен." }
+            else if engine != nil || selective.process != nil { note += "\nОчистка рабочих маршрутов…" }
             else if !selective.cleanupConfirmed { note += "\nОчистка ещё не подтверждена. Повторное подключение заблокировано." }
         }
         refresh()

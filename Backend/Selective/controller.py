@@ -137,12 +137,19 @@ async def start(app_pid):
     stage=None; tasks=[]; stop=asyncio.Event(); prepared=False; reader=False
     loop=asyncio.get_running_loop()
     activation=asyncio.Event()
+    held=asyncio.Event()
+    published=False
     def input_ready():
         # The menu sends this single fixed token only after SSL and the SOCKS
         # owner were verified. EOF, cancel, or an invalid command always stops.
         command=os.read(sys.stdin.fileno(),4096)
         if command == b'activate\n' and not activation.is_set():
             activation.set()
+        elif published and command == b'hold\n':
+            held.set()
+        elif published and held.is_set() and command == b'resume\n':
+            held.clear()
+            emit('ready','Рабочий транспорт восстановлен.',session=str(stage))
         else:
             stop.set()
             activation.set()
@@ -179,7 +186,7 @@ async def start(app_pid):
                  password=secrets.token_hex(24),map_path=str(STATE/'domain-map.json'),
                  retained_addresses=[registry.address(name,version) for name in registry.names for version in (4,6)])
         (stage/'trial-input.json').write_text(json.dumps(inp))
-        service=asyncio.create_task(serve(inp,stage,stop_event=stop));tasks.append(service)
+        service=asyncio.create_task(serve(inp,stage,stop_event=stop,held=held));tasks.append(service)
         for _ in range(60):
             if service.done():await service
             if (stage/'services.pid').exists():break
@@ -210,6 +217,7 @@ async def start(app_pid):
         await check_system_dns()
         if stop.is_set():return
         await helper.call('publish')
+        published=True
         (stage/'ready.json').write_text(json.dumps(dict(helper='launchd',started=time.time())))
         emit('ready','Рабочие маршруты готовы. Safari, Яндекс и Chrome используют обычные настройки.',session=str(stage),gateway=gateway+'@'+gateway_ip)
         next_dns_check=loop.time()+10
