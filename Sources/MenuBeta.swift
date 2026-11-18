@@ -36,6 +36,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let username = NSTextField(), loginDraft = NSTextField(), secret = InlineSecureField()
     let echo = NSButton(checkboxWithTitle: "Показывать последний символ на секунду", target: nil, action: nil)
     var primary = NSButton(), edit = NSButton(), submit = NSButton(), menuConnect = NSMenuItem()
+    var menuStatus = NSMenuItem(), menuCancel = NSMenuItem()
     var setupBrowser = NSButton()
 #if CVR_SELECTIVE_TUN
     let selective = SelectiveRouter()
@@ -78,26 +79,56 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         installMainMenu()
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
-#if CVR_SELECTIVE_TUN
-        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router · TUN Trial", #selector(show)), ("Подключить", #selector(menuToggle)),
-            ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)),
-            ("Сохранить отчёт о запуске…", #selector(saveStartupReport)),
-            ("Настроить помощник и рабочий ПК…", #selector(editRouteHelper)), ("Удалить помощник маршрутов…", #selector(removeRouteHelper)),
-            ("Проверить службу Check Point…", #selector(checkpointDiagnostic)), ("Завершить", #selector(quit))]
-#else
-        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router", #selector(show)), ("Подключить", #selector(menuToggle)),
-            ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Обновления…", #selector(updateLink)), ("Вернуться к beta.5…", #selector(rollbackMenu)), ("Удалить Router…", #selector(uninstallMenu)), ("Завершить", #selector(quit))]
-#endif
-        for (title, action) in entries {
-            let entry = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
-            entry.target = self
-            if action == #selector(menuToggle) { menuConnect = entry }
+        // Order: state line, the one action for this state, windows, submenus, Quit last.
+        // Update items live in their own submenu, so Quit never ends up in the middle.
+        menu.autoenablesItems = false
+        @discardableResult func entry(_ title: String, _ action: Selector, in target: NSMenu, key: String = "") -> NSMenuItem {
+            let e = target.addItem(withTitle: title, action: action, keyEquivalent: key)
+            e.target = self
+            return e
         }
+        func submenu(_ title: String) -> NSMenu {
+            let holder = menu.addItem(withTitle: title, action: nil, keyEquivalent: "")
+            let sub = NSMenu(title: title)
+            holder.submenu = sub
+            return sub
+        }
+        menuStatus = menu.addItem(withTitle: stage, action: nil, keyEquivalent: "")
+        menuStatus.isEnabled = false
+        menuConnect = entry("Подключить…", #selector(menuToggle), in: menu)
+        menuCancel = entry("Отменить подключение", #selector(menuCancelConnection), in: menu)
+        menuCancel.isHidden = true
+        menu.addItem(.separator())
+        entry("Открыть Router", #selector(show), in: menu)
+        entry("Доступы…", #selector(settings), in: menu)
+        menu.addItem(.separator())
+#if CVR_UPDATES
+        let updatesMenu = submenu("Обновления")
+        updatesMenu.autoenablesItems = false
+#endif
+        let diagnosticsMenu = submenu("Диагностика")
+        entry("Окно диагностики…", #selector(diagnose), in: diagnosticsMenu)
+#if CVR_SELECTIVE_TUN
+        entry("Проверить службу Check Point…", #selector(checkpointDiagnostic), in: diagnosticsMenu)
+        diagnosticsMenu.addItem(.separator())
+        entry("Сохранить отчёт о запуске…", #selector(saveStartupReport), in: diagnosticsMenu)
+        let maintenanceMenu = submenu("Обслуживание")
+        entry("Настроить помощник и рабочий ПК…", #selector(editRouteHelper), in: maintenanceMenu)
+        maintenanceMenu.addItem(.separator())
+        entry("Удалить помощник маршрутов…", #selector(removeRouteHelper), in: maintenanceMenu)
+#else
+        let maintenanceMenu = submenu("Обслуживание")
+        entry("Обновления…", #selector(updateLink), in: maintenanceMenu)
+        entry("Вернуться к beta.5…", #selector(rollbackMenu), in: maintenanceMenu)
+        maintenanceMenu.addItem(.separator())
+        entry("Удалить Router…", #selector(uninstallMenu), in: maintenanceMenu)
+#endif
+        menu.addItem(.separator())
+        entry("Завершить", #selector(quit), in: menu, key: "q")
         item.menu = menu
 #if CVR_UPDATES
-        menu.autoenablesItems = false
         let updates = RouterUpdates(owner:self); self.updates = updates
-        updates.start(menu:menu)
+        updates.start(menu:updatesMenu)
 #endif
         window = makeWindow("Corporate VPN Router", 510, 362)
         diagnostics = makeWindow("Диагностика Corporate VPN Router", 520, 306)
@@ -330,10 +361,36 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         #endif
         attachColumn(makeColumn(views, spacing: 12), to: diagnostics)
     }
-    @objc func menuToggle() {
-        if menuConnect.title == "Подключить" { show(); connect() }
-        else { toggle() }
+    /// One menu action per state: connect (and show the login window), show the
+    /// pending login, or disconnect. The menu title no longer decides the action.
+    func refreshMenuActions() {
+#if CVR_SELECTIVE_TUN
+        let waitingForInput = connectionPhase.pending && requestKind != nil
+        menuConnect.title = connectionPhase == .connected ? "Отключить"
+            : connectionPhase.pending ? (waitingForInput ? "Показать окно входа" : "Подключение…")
+            : connectionPhase == .stopping ? "Отключение…" : "Подключить…"
+        menuConnect.isEnabled = connectionPhase.pending ? waitingForInput : primary.isEnabled
+        menuCancel.isHidden = !connectionPhase.pending
+        menuCancel.isEnabled = primary.isEnabled
+#else
+        menuConnect.title = engine == nil ? "Подключить…" : (health == .ready ? "Отключить" : "Показать окно входа")
+        menuConnect.isEnabled = primary.isEnabled
+        menuCancel.isHidden = engine == nil || health == .ready
+        menuCancel.isEnabled = primary.isEnabled
+#endif
     }
+    @objc func menuToggle() {
+#if CVR_SELECTIVE_TUN
+        if connectionPhase == .connected { toggle() }
+        else if connectionPhase.pending { show() }
+        else { show(); connect() }
+#else
+        if engine == nil { show(); connect() }
+        else if health == .ready { toggle() }
+        else { show() }
+#endif
+    }
+    @objc func menuCancelConnection() { toggle() }
     @objc func show() { hiddenByUser = false; if window.isMiniaturized { window.deminiaturize(nil) }; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { show(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -343,7 +400,15 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return false
     }
     func windowDidResignKey(_ n: Notification) { secret.hideEcho() }
-    @objc func quit() { NSApp.terminate(nil) }
+    @objc func quit() {
+#if CVR_SELECTIVE_TUN
+        let active = connectionPhase == .connected || connectionPhase.pending
+#else
+        let active = engine != nil
+#endif
+        if active && !confirmAction("Отключить рабочий туннель и выйти?", "Рабочие доступы станут недоступны до следующего входа.", "Отключить и выйти") { return }
+        NSApp.terminate(nil)
+    }
     func applicationWillTerminate(_ n: Notification) {
         stop("Приложение завершено.")
 #if CVR_SELECTIVE_TUN
@@ -426,11 +491,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #endif
         useCode.isHidden = !browserMode || engine != nil || health == .ready
         leaveOfficial.isHidden = requestKind != "switch_official"
-        menuConnect.title = primary.title; promptBox.isHidden = requestKind == nil
+        refreshMenuActions(); promptBox.isHidden = requestKind == nil
         item.button?.image = health.dot()
         item.button?.title = " " + health.menuTitle; item.button?.toolTip = "Corporate VPN Router · " + stage
         item.button?.setAccessibilityLabel("Corporate VPN Router · " + stage)
-        item.menu?.items.first?.title = "Открыть · " + stage
+        menuStatus.title = stage; menuStatus.image = health.dot()
         for check in checks {
             let finding = findings[check]
             let current = engine != nil && health != .idle && health != .error
