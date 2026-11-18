@@ -7,7 +7,7 @@ from sites import validate
 
 def validate_selective(cfg, gateway=None):
     validate(cfg)
-    if any(row['scope'] != 'tree' for row in cfg['sites']):
+    if cfg['version'] == 1 and any(row['scope'] != 'tree' for row in cfg['sites']):
         raise ValueError('Эта проба поддерживает только «Имя и все поддомены». Точные правила не расширяются автоматически.')
     def captured(name):
         return any(name == r['domain'] or name.endswith('.' + r['domain']) for r in cfg['sites'])

@@ -6,12 +6,23 @@ func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(forma
 let fm = FileManager.default
 let ioQueue = DispatchQueue(label: routeHelperLabel + ".serial")
 
+struct TCPGrant: Codable {
+    let domain: String
+    let scope: String
+    let ports: [Int]
+    let anyTCP: Bool
+    let alias: String?
+    func matches(_ host: String) -> Bool {
+        host == domain || (scope == "tree" && host.hasSuffix("." + domain))
+    }
+}
 #if CVR_PORTABLE_HELPER
 // Private rules exist only on the enrolled Mac. Installation requires an
 // administrator and passes the exact policy that was displayed for approval.
 struct LocalRoutePolicy: Codable {
     let domains: [String]
     let desktop: String
+    let rules: [TCPGrant]?
     static func decode(_ data: Data) throws -> Self {
         guard data.count <= 65536 else { throw HelperFailure("INVALID_LOCAL_POLICY") }
         let value = try JSONDecoder().decode(Self.self, from:data)
@@ -25,6 +36,22 @@ struct LocalRoutePolicy: Codable {
               value.domains.allSatisfy(valid), value.desktop.isEmpty || (valid(value.desktop) &&
               value.domains.contains { value.desktop == $0 || value.desktop.hasSuffix("." + $0) })
         else { throw HelperFailure("INVALID_LOCAL_POLICY") }
+        if let rules = value.rules {
+            guard rules.map({ $0.domain }) == value.domains else { throw HelperFailure("INVALID_RULE_DOMAINS") }
+            var aliases = Set<String>()
+            for rule in rules {
+                guard ["exact","tree"].contains(rule.scope),
+                      (rule.anyTCP ? rule.ports.isEmpty : !rule.ports.isEmpty),
+                      rule.ports.count <= 32, rule.ports.allSatisfy({ (1...65535).contains($0) })
+                else { throw HelperFailure("INVALID_TCP_GRANT") }
+                if let alias = rule.alias {
+                    guard alias == String(rule.domain.split(separator:".")[0]),
+                          !["local","localhost","onion","com","net","org"].contains(alias),
+                          alias.contains(where: { $0.isLetter }), aliases.insert(alias).inserted
+                    else { throw HelperFailure("INVALID_SHORT_NAME") }
+                }
+            }
+        }
         return value
     }
 }
@@ -267,6 +294,8 @@ func adapterRules(ports: [Int], rdpSlot: Int?) -> [[String:Any]] {
 final class Broker {
     let home: String, state: String
     var journal: [String:Any] = [:]
+    var registeredNames = [Int:String]()
+    var usesScopedRules = false
     var adapter: Child?
     var lease: UUID?
     var beat = Date.distantPast
@@ -298,9 +327,42 @@ final class Broker {
     func resolverData(_ domain:String) -> Data {
         Data("# CVR Route Helper \(journal["id"] as! String)\ndomain \(domain)\nnameserver 127.0.0.1\nport 53541\nsearch_order 1000\ntimeout 1\n".utf8)
     }
+    #if CVR_PORTABLE_HELPER
+    func writeTCPRules() throws {
+        let granted = localPolicy?.rules ?? []
+        var entries = [[String:Any]]()
+        for (slot, name) in registeredNames.sorted(by: { $0.key < $1.key }) {
+            guard let rule = granted.filter({ $0.matches(name) }).max(by: { $0.domain.count < $1.domain.count }) else { continue }
+            var entry: [String:Any] = ["ip_cidr":["198.18.75.\(slot)/32","fdc7:7652:9a10:75::\(String(slot,radix:16))/128"]]
+            if !rule.anyTCP { entry["port"] = Array(Set(rule.ports + (name == approvedRDPHost ? [3389] : []))).sorted() }
+            entries.append(entry)
+        }
+        try writeRoot(try jsonData(["version":3,"rules":entries]), state+"/tcp-rules.json")
+    }
+    func register(_ input: [String:Any]) throws {
+        guard usesScopedRules, let name=input["name"] as? String, name.utf8.count <= 253,
+              name.range(of:"^[a-z0-9-]+(\\.[a-z0-9-]+)+$",options:.regularExpression) != nil,
+              let slot=input["slot"] as? Int, (2...254).contains(slot),
+              localPolicy?.rules?.contains(where: { $0.matches(name) }) == true,
+              registeredNames[slot] == nil || registeredNames[slot] == name else { throw HelperFailure("INVALID_RULE_BINDING") }
+        if registeredNames[slot] == name { return }
+        registeredNames[slot] = name
+        do { try writeTCPRules() } catch { registeredNames.removeValue(forKey:slot); throw error }
+    }
+    #endif
     func begin(_ input:[String:Any],owner:UUID) throws -> [String:Any] {
         guard journal.isEmpty, lease == nil else { throw HelperFailure("SESSION_BUSY_OR_CLEANUP_REQUIRED") }
-        let (domains,ports,password,rdpSlot)=try validateBegin(input)
+        let (baseDomains,ports,password,rdpSlot)=try validateBegin(input)
+        var domains = baseDomains
+        registeredNames.removeAll()
+        usesScopedRules = false
+        #if CVR_PORTABLE_HELPER
+        if let grants = localPolicy?.rules {
+            guard Set(baseDomains) == Set(grants.map({$0.domain})) else { throw HelperFailure("RULE_APPROVAL_REQUIRED") }
+            usesScopedRules = true
+            domains += grants.compactMap({$0.alias})
+        }
+        #endif
         guard liveInterface() == 0 else { throw HelperFailure("UTUN73_IN_USE") }
         let resolver="/private/etc/resolver"
         try checkParents(resolver)
@@ -317,10 +379,19 @@ final class Broker {
         var identityMilliseconds:Double?
         var logWasReset=false
         do {
-            let config:[String:Any] = ["log":["level":"warn","timestamp":true],
+            var config:[String:Any] = ["log":["level":"warn","timestamp":true],
                 "inbounds":[["type":"tun","tag":"work-tun","interface_name":"utun73","address":["198.18.73.1/32","fdc7:7652:9a10::1/128"],"mtu":1500,"auto_route":false,"dns_mode":"disabled","stack":"gvisor"]],
                 "outbounds":[["type":"socks","tag":"verified-work","server":"127.0.0.1","server_port":11090,"version":"5","username":"trial","password":password]],
                 "route":["rules":adapterRules(ports: ports, rdpSlot: rdpSlot)]]
+            #if CVR_PORTABLE_HELPER
+            if usesScopedRules {
+                try writeTCPRules()
+                config["route"] = [
+                    "rule_set":[["type":"local","tag":"approved-tcp","format":"source","path":state+"/tcp-rules.json"]],
+                    "rules":[["inbound":["work-tun"],"network":"tcp","rule_set":["approved-tcp"],"action":"route","outbound":"verified-work"],["action":"reject","no_drop":true]] as [[String:Any]]
+                ] as [String:Any]
+            }
+            #endif
             try writeRoot(try jsonData(config),state+"/adapter.json")
             try writeRoot(Data(),state+"/adapter.log")
             logWasReset=true
@@ -420,7 +491,11 @@ final class Broker {
         adapter=nil
         var conflicts=[String]()
         for domain in journal["resolvers"] as? [String] ?? [] {
-            guard approvedDomains.contains(domain) else { throw HelperFailure("INVALID_JOURNAL_DOMAIN") }
+            var ownedDomains = approvedDomains
+            #if CVR_PORTABLE_HELPER
+            ownedDomains += localPolicy?.rules?.compactMap({$0.alias}) ?? []
+            #endif
+            guard ownedDomains.contains(domain) else { throw HelperFailure("INVALID_JOURNAL_DOMAIN") }
             let path="/private/etc/resolver/"+domain
             var st=stat()
             if lstat(path,&st)==0 {
@@ -439,7 +514,7 @@ final class Broker {
                                    "resolver_conflicts_preserved":conflicts,"at":Date().timeIntervalSince1970]
         try writeRoot(try jsonData(result),state+"/last-cleanup.json")
         guard unlink(journalPath)==0 else { throw HelperFailure("JOURNAL_REMOVE_FAILED") };syncDirectory(state)
-        unlink(state+"/adapter.json");journal=[:];lease=nil;error=nil
+        unlink(state+"/tcp-rules.json");unlink(state+"/adapter.json");journal=[:];lease=nil;error=nil
     }
     func request(_ input:[String:Any],owner:UUID) throws -> [String:Any] {
         guard let op=input["op"] as? String else { throw HelperFailure("INVALID_OPERATION") }
@@ -447,7 +522,11 @@ final class Broker {
             var status:[String:Any] = ["ok":true,"version":helperBuild,"build":"0.3.10","active":lease != nil,"cleanupPending":!journal.isEmpty && lease==nil,"error":error ?? "", "approvedPorts":approvedPorts]
 #if CVR_PORTABLE_HELPER
             guard localPolicy != nil else { throw HelperFailure("LOCAL_POLICY_MISSING") }
-            status["build"] = "0.3.11"
+            status["build"] = "0.3.20"
+            if let rules = localPolicy?.rules {
+                status["tcpRules"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(rules))
+                status.removeValue(forKey:"approvedPorts")
+            }
 #endif
             status["approvedDomains"] = approvedDomains
             if !approvedRDPHost.isEmpty { status["approvedRDPHost"] = approvedRDPHost }
@@ -458,6 +537,10 @@ final class Broker {
         guard lease==owner else { throw HelperFailure("NO_SESSION") }
         beat=Date()
         switch op {
+        #if CVR_PORTABLE_HELPER
+        case "register":
+            try register(input)
+        #endif
         case "heartbeat": guard Set(input.keys)==["op"] else { throw HelperFailure("INVALID_REQUEST") }
         case "route":
             guard Set(input.keys)==["op","addresses"],let addresses=input["addresses"] as? [String] else { throw HelperFailure("INVALID_REQUEST") }
@@ -516,12 +599,21 @@ func install(_ uid:uid_t, enrollment: Data? = nil) throws {
     if fm.fileExists(atPath:routeHelperState+"/session.json") { throw HelperFailure("STOP_ROUTES_BEFORE_INSTALL") }
     try secureDirectory(routeHelperHome);try secureDirectory(routeHelperState)
     guard chmod(routeHelperHome,0o755)==0 else { throw HelperFailure("INSTALL_PERMISSIONS_FAILED") }
+    let destinations = [(routeHelperHome+"/RouteHelper",mode_t(0o755)),(routeHelperHome+"/sing-box",mode_t(0o755)),
+                        (routeHelperHome+"/LocalPolicy.json",mode_t(0o600)),(routeHelperPlist,mode_t(0o644))]
+    var oldFiles = [String:Data]()
+    for (path,_) in destinations where fm.fileExists(atPath:path) {
+        try checkRootPath(path,directory:false)
+        oldFiles[path] = try Data(contentsOf:URL(fileURLWithPath:path))
+    }
     if fm.fileExists(atPath:routeHelperPlist) {
         try checkRootPath(routeHelperPlist,directory:false)
         let old=try PropertyListSerialization.propertyList(from:Data(contentsOf:URL(fileURLWithPath:routeHelperPlist)),format:nil) as? [String:Any]
         guard let args=old?["ProgramArguments"] as? [String],args==[routeHelperHome+"/RouteHelper","--daemon",String(uid)] else { throw HelperFailure("EXISTING_INSTALLATION_PRESERVED") }
-        _=try command("/bin/launchctl",["bootout","system/"+routeHelperLabel])
+        let unloaded=try command("/bin/launchctl",["bootout","system/"+routeHelperLabel])
+        guard unloaded.0==0 || unloaded.1.contains("Could not find service") else { throw HelperFailure("OLD_HELPER_BUSY") }
     }
+    do {
 #if CVR_PORTABLE_HELPER
     try writeRoot(enrollment, routeHelperHome+"/LocalPolicy.json")
 #endif
@@ -530,6 +622,17 @@ func install(_ uid:uid_t, enrollment: Data? = nil) throws {
     let plist:[String:Any] = ["Label":routeHelperLabel,"ProgramArguments":[routeHelperHome+"/RouteHelper","--daemon",String(uid)],"MachServices":[routeHelperLabel:true],"RunAtLoad":true,"KeepAlive":true,"ThrottleInterval":3,"ExitTimeOut":15,"AbandonProcessGroup":false,"ProcessType":"Background","Umask":63]
     try writeRoot(try PropertyListSerialization.data(fromPropertyList:plist,format:.xml,options:0),routeHelperPlist,mode:0o644)
     let result=try command("/bin/launchctl",["bootstrap","system",routeHelperPlist]);guard result.0==0 else { throw HelperFailure("LAUNCHD_BOOTSTRAP_FAILED: "+result.1) }
+    } catch let original {
+        for (path, mode) in destinations {
+            if let data=oldFiles[path] { try writeRoot(data,path,mode:mode) }
+            else if fm.fileExists(atPath:path) { try checkRootPath(path,directory:false);try fm.removeItem(atPath:path) }
+        }
+        if oldFiles[routeHelperPlist] != nil {
+            let restored=try command("/bin/launchctl",["bootstrap","system",routeHelperPlist])
+            guard restored.0==0 else { throw HelperFailure("RESTORED_FILES_BOOTSTRAP_FAILED") }
+        }
+        throw original
+    }
 }
 func uninstall() throws {
     if fm.fileExists(atPath:routeHelperState+"/session.json") { throw HelperFailure("STOP_ROUTES_BEFORE_UNINSTALL") }

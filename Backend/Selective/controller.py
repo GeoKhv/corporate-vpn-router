@@ -103,7 +103,7 @@ async def start(app_pid):
     # An Idle VPN is normal; only explicit service errors are classified as such.
     from trust import official_info
     from helper_client import RouteHelper
-    from sites import rdp_host_for_profile
+    from sites import rdp_host_for_profile, approved, matched_rule
     from sparse_dns import serve as serve_front
     import trust
     try:
@@ -154,8 +154,8 @@ async def start(app_pid):
         if not helper_is_idle(status):
             CLEANUP_CONFIRMED=False
             raise RuntimeError('HELPER_SESSION_PENDING')
-        if status.get('version')!='0.3.0-alpha.3' or status.get('build') not in ('0.3.10','0.3.11'):raise RuntimeError('HELPER_UPDATE_REQUIRED')
-        if not set(row['domain'] for row in cfg['sites']).issubset(status['approvedDomains']) or not set(cfg['ports']).issubset(status['approvedPorts']):
+        if status.get('version')!='0.3.0-alpha.3' or status.get('build') not in ('0.3.10','0.3.11','0.3.20'):raise RuntimeError('HELPER_UPDATE_REQUIRED')
+        if not approved(cfg, status):
             raise RuntimeError('HELPER_POLICY_APPROVAL_REQUIRED')
         loop.add_reader(sys.stdin.fileno(),input_ready);reader=True
         for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,cancel)
@@ -175,7 +175,7 @@ async def start(app_pid):
         stage=Path(tempfile.mkdtemp(prefix='cvr-selective-input-',dir='/private/tmp'))
         (STATE/'last-session.txt').write_text(str(stage))
         inp=dict(mode='stable-map',host=cfg['sites'][0]['domain'],ipv4='198.18.73.2',ipv6='fdc7:7652:9a10::2',
-                 policy=cfg,rdp_host=rdp_host,gateway=gateway,dns_port=53541,dns_backend_port=53542,socks_port=11090,
+                 policy=cfg,verify_names='tcpRules' in status,rdp_host=rdp_host,gateway=gateway,dns_port=53541,dns_backend_port=53542,socks_port=11090,
                  password=secrets.token_hex(24),map_path=str(STATE/'domain-map.json'),
                  retained_addresses=[registry.address(name,version) for name in registry.names for version in (4,6)])
         (stage/'trial-input.json').write_text(json.dumps(inp))
@@ -190,9 +190,15 @@ async def start(app_pid):
         # A failed begin can still have created a journal/interface. Always
         # verify cleanup, including partial startup and lost replies.
         prepared=True;CLEANUP_CONFIRMED=False
-        await helper.call('begin',domains=[r['domain'] for r in cfg['sites']],ports=cfg['ports'],password=inp['password'],**rdp_rule)
+        await helper.call('begin',domains=[r['domain'] for r in cfg['sites']],ports=[443] if 'tcpRules' in status else cfg['ports'],password=inp['password'],**rdp_rule)
         async def install(addresses):
             await check_system_dns()
+            if 'tcpRules' in status:
+                current = DomainMap(STATE/'domain-map.json')
+                for slot in {int(a) & 255 for a in addresses}:
+                    name = current.reverse.get(slot)
+                    if name and matched_rule(cfg, name):
+                        await helper.call('register', name=name, slot=slot)
             await helper.call('route',addresses=[str(a) for a in addresses])
         front=asyncio.create_task(serve_front(cfg,stage,stop.is_set,route_installer=install));tasks.append(front)
         for _ in range(150):
@@ -268,14 +274,31 @@ def save(path):
         session=Path((STATE/'last-session.txt').read_text())
         if (session/'ready.json').exists() and not (session/'cleanup.json').exists():
             raise ValueError('Сначала остановите рабочие маршруты.')
+    from sites import approved
+    from helper_client import RouteHelper
+    async def check():
+        client = RouteHelper(RESOURCES)
+        try:
+            status = await client.open()
+            if not helper_is_idle(status) or not approved(cfg, status):
+                raise ValueError('Список не применён. Подтвердите правила в помощнике маршрутов.')
+        finally:
+            await client.close()
+    asyncio.run(check())
+    if (DATA/'work-sites.json').exists():
+        put('previous-work-sites.json', (DATA/'work-sites.json').read_bytes())
     put('work-sites.json',cfg)
-    print('Список сохранён. Новые домены вне разрешённой области потребуют обновления помощника администратором.')
+    print('Правила сохранены и сверены с помощником. Действуют при следующем подключении.')
 
 
 if __name__=='__main__':
     os.umask(0o077)
     try:
         if sys.argv[1]=='save':save(sys.argv[2])
+        elif sys.argv[1]=='check-draft':
+            from routing import verify_gateway
+            candidate=validate_selective(json.loads(Path(sys.argv[2]).read_text()), policy()[1] if (DATA/'work-sites.json').exists() else None)
+            verify_gateway(candidate)
         elif sys.argv[1]=='validate':policy();print('Список поддерживается.')
         elif sys.argv[1]=='start':asyncio.run(start(int(sys.argv[2])))
         else:raise ValueError('Unknown operation')

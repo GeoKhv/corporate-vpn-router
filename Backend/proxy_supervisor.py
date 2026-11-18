@@ -11,7 +11,7 @@ import sys
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 from policy_control import bind_control, SOCKS_CONTROL
-from sites import gate
+from sites import approved, gate
 
 
 def main():
@@ -26,6 +26,8 @@ def main():
     child = None
     current = None
     verified_pid = None
+    previous_bytes = None
+    approved_status = None
 
     def stop_child():
         nonlocal child, verified_pid
@@ -41,10 +43,22 @@ def main():
         child = None
 
     def reload_policy():
-        nonlocal child, current
+        nonlocal child, current, previous_bytes, approved_status
         try:
-            new = gate(json.loads(policy.read_bytes()), os.environ.get('CVR_RDP_HOST'))
-        except (KeyError, ValueError, TypeError, OSError):
+            content = policy.read_bytes()
+            if content == previous_bytes and child is not None:
+                return True
+            cfg = json.loads(content)
+            if cfg.get('version') == 2 or approved_status is not None:
+                if approved_status is None:
+                    result = subprocess.run([ROOT.parent/'RouteHelper/RouteClient'],
+                        input=b'{"op":"status"}\n', capture_output=True, timeout=5, check=True)
+                    approved_status = json.loads(result.stdout)
+                if not approved(cfg, approved_status):
+                    raise ValueError('Unapproved TCP rules')
+            new = gate(cfg, os.environ.get('CVR_RDP_HOST'))
+            previous_bytes = content
+        except (KeyError, ValueError, TypeError, OSError, subprocess.SubprocessError):
             stop_child()
             current = None
             return False

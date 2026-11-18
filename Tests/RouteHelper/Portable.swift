@@ -19,7 +19,7 @@ import Foundation
         }
         localPolicy = try policy([domain], desktop)
         let status = try Broker().request(["op":"status"], owner: UUID())
-        precondition(status["build"] as? String == "0.3.11")
+        precondition(status["build"] as? String == "0.3.20")
         let base: [String:Any] = ["op":"begin", "domains":[domain], "ports":[443],
                                   "password":String(repeating:"a",count:48)]
         _ = try validateBegin(base)

@@ -1,16 +1,27 @@
 --- a/src/ocproxy.c
 +++ b/src/ocproxy.c
-@@ -400,6 +400,42 @@
+@@ -400,6 +400,61 @@
  		ocp_sock_del(s);
  }
  
 +/* Corporate VPN Router: require an exact domain or label-boundary suffix.
 + * This check runs on the only listener, before any DNS lookup or TCP SYN. */
++static int cvr_rule_port(const char *ports, const char *domain, unsigned int port)
++{
++    char key[272];
++    snprintf(key, sizeof(key), "|%s:%u|", domain, port);
++    if (strstr(ports, key)) return 1;
++    snprintf(key, sizeof(key), "|%s:*|", domain);
++    return strstr(ports, key) != NULL;
++}
++
 +static int cvr_allowed(const unsigned char *name, size_t n, unsigned int port)
 +{
 +    char hostname[256], key[260], portkey[12];
 +    const char *domains = getenv("CVR_DOMAINS"), *ports = getenv("CVR_PORTS");
 +    size_t i; char *label;
++    int scoped = ports && strstr(ports, "|@scoped|");
++    if (!name || !n) return 0;
 +    if (n && name[n-1] == '.') --n;
 +    if (!domains || !ports || n == 0 || n > 253) return 0;
 +    snprintf(portkey, sizeof(portkey), "|%u|", port);
@@ -23,7 +34,7 @@
 +        hostname[i] = c;
 +    }
 +    hostname[n] = 0;
-+    if (!strstr(ports, portkey)) {
++    if (port && !scoped && !strstr(ports, portkey)) {
 +        char endpoint[264];
 +        snprintf(endpoint, sizeof(endpoint), "|%s:%u|", hostname, port);
 +        if (!strstr(ports, endpoint)) return 0;
@@ -31,10 +42,18 @@
 +    snprintf(key, sizeof(key), "|!%s|", hostname);
 +    if (strstr(domains, key)) return 0;
 +    snprintf(key, sizeof(key), "|=%s|", hostname);
-+    if (strstr(domains, key)) return 1;
++    if (strstr(domains, key)) {
++        char endpoint[272];
++        snprintf(endpoint, sizeof(endpoint), "|=%s:%u|", hostname, port);
++        return !port || !scoped || cvr_rule_port(ports, hostname, port) || strstr(ports, endpoint);
++    }
 +    for (label = hostname; label; ) {
 +        snprintf(key, sizeof(key), "|%s|", label);
-+        if (strstr(domains, key)) return 1;
++        if (strstr(domains, key)) {
++            char endpoint[272];
++            snprintf(endpoint, sizeof(endpoint), "|=%s:%u|", hostname, port);
++            return !port || !scoped || cvr_rule_port(ports, label, port) || strstr(ports, endpoint);
++        }
 +        label = strchr(label, '.'); if (label) ++label;
 +    }
 +    return 0;
@@ -43,7 +62,13 @@
  static void socks_cmd_cb(evutil_socket_t fd, short what, void *ctx)
  {
  	struct ocp_sock *s = ctx;
-@@ -445,24 +481,22 @@
+@@ -440,29 +495,27 @@
+ 		/* read cmd, atyp */
+ 		if (s->sock_pos <= offsetof(struct socks_req, atyp))
+ 			goto req_more;
+-		if (req->cmd != SOCKS_CMD_CONNECT) {
++		if (req->cmd != SOCKS_CMD_CONNECT && req->cmd != 0xf0) {
+ 			socks_reply(s, SOCKS_CMDNOTSUPP);
  			return;
  		}
  		if (req->atyp == SOCKS_ATYP_IPV4) {
@@ -69,14 +94,69 @@
  				goto req_more;
  			s->rport = (name[namelen] << 8) | name[namelen + 1];
 -			name[namelen] = 0;
-+			if (!cvr_allowed(name, namelen, s->rport)) {
++			if ((req->cmd == 0xf0) != (s->rport == 0) || !cvr_allowed(name, namelen, s->rport)) {
 +                socks_reply(s, SOCKS_NOT_ALLOWED); return;
 +            }
 +            name[namelen] = 0;
  			start_resolution(s, (char *)name);
  			return;
  		} else {
-@@ -1009,6 +1043,7 @@
+@@ -541,6 +594,7 @@
+ 		warn("%s: tcp_connect() returned %d\n", __func__, (int)err);
+ }
+ 
++extern int cvr_dns_rcode;
+ static void finish_resolution(const char *hostname, ip_addr_t *ipaddr, void *arg)
+ {
+ 	struct ocp_sock *s = arg;
+@@ -555,12 +609,25 @@
+ 	}
+ 
+ 	if (ipaddr) {
+-		/* success */
+-		start_connection(s, ipaddr);
++		/* A resolve-only request never sends a TCP SYN. */
++        if (s->conn_type == CONN_TYPE_SOCKS && s->rport == 0) {
++            struct socks_reply reply = { SOCKS_VER, SOCKS_OK, 0, SOCKS_ATYP_IPV4, 0, 0 };
++            (void)write(s->fd, &reply, sizeof(reply));
++            ocp_sock_del(s);
++            return;
++        }
++        start_connection(s, ipaddr);
+ 		return;
+ 	}
+ 
+-	/* DNS resolution failed */
++	/* Resolve-only clients distinguish confirmed absence from local failure. */
++    if (s->conn_type == CONN_TYPE_SOCKS && s->rport == 0) {
++        int reply = cvr_dns_rcode == 3 ? SOCKS_HOST_UNREACHABLE :
++                    cvr_dns_rcode == 0 ? 0xf1 : 1;
++        socks_reply(s, reply);
++        return;
++    }
++    /* DNS resolution failed */
+ 	if (s->conn_type == CONN_TYPE_SOCKS)
+ 		socks_reply(s, SOCKS_HOST_UNREACHABLE);
+ 	else
+@@ -583,7 +650,7 @@
+ 	if (err == ERR_INPROGRESS)
+ 		return;
+ 	else if (err == ERR_OK)
+-		start_connection(s, &s->rhost);
++		finish_resolution(hostname, &s->rhost, s);
+ 	else if (err == ERR_MEM) {
+ 		warn("%s: DNS table full, aborting lookup\n", __func__);
+ 		found(hostname, NULL, s);
+@@ -617,7 +684,7 @@
+ 	 * obvious.
+ 	 */
+ 	if (strchr(hostname, '.'))
+-		enqueue_dns_req(s, hostname, NULL, retry_resolution);
++		enqueue_dns_req(s, hostname, NULL, finish_resolution);
+ 	else
+ 		enqueue_dns_req(s, hostname, dns_domain, finish_resolution);
+ }
+@@ -1009,6 +1076,7 @@
  	lwip_init();
  	dns_init();
  
@@ -84,3 +164,35 @@
  	if (dns_str) {
  		if (!ipaddr_aton(dns_str, &dns))
  			die("Invalid DNS IP: '%s'\n", dns_str);
+--- a/lwip/src/core/dns.c
++++ b/lwip/src/core/dns.c
+@@ -218,6 +218,7 @@
+ /* DNS variables */
+ static struct udp_pcb        *dns_pcb;
+ static u8_t                   dns_seqno;
++int cvr_dns_rcode = -1;
+ static struct dns_table_entry dns_table[DNS_TABLE_SIZE];
+ static ip_addr_t              dns_servers[DNS_MAX_SERVERS];
+ /** Contiguous buffer for processing responses */
+@@ -844,12 +845,19 @@
+   goto memerr;
+ 
+ responseerr:
+-  /* ERROR: call specified callback function with NULL as name to indicate an error */
++  /* Negative answers must match our actual single question. */
+   if (pEntry->found) {
++    if ((hdr->flags1 & DNS_FLAG1_RESPONSE) && !(hdr->flags1 & 2) &&
++        nquestions == 1 && p->tot_len > SIZEOF_DNS_HDR + strlen(pEntry->name) + 5 &&
++        dns_compare_name((unsigned char *)pEntry->name, dns_payload + SIZEOF_DNS_HDR) == 0) {
++      if (pEntry->err == 3 || (pEntry->err == 0 && ntohs(hdr->numanswers) == 0))
++        cvr_dns_rcode = pEntry->err;
++    }
+     (*pEntry->found)(pEntry->name, NULL, pEntry->arg);
+-  }
++    cvr_dns_rcode = -1;
++  }
+ flushentry:
+   /* flush this entry */
+   pEntry->state = DNS_STATE_UNUSED;
+   pEntry->found = NULL;
+ 

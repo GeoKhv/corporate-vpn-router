@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sites import validate
+from sites import validate, allowed_tcp
 from policy_control import bind_control, HTTP_CONTROL, SOCKS_CONTROL
 
 DATA = Path.home() / 'Library/Application Support/Corporate VPN Router'
@@ -59,7 +59,13 @@ async def worker_identity():
         writer.close()
 
 
-async def via_socks(host, port, proxy_port=1090):
+class CorporateDNSFailure(OSError):
+    def __init__(self, rcode):
+        super().__init__('Corporate DNS lookup failed')
+        self.rcode = rcode
+
+
+async def via_socks(host, port, proxy_port=1090, *, resolve_only=False):
     owner = await worker_identity()
     reader, writer = await asyncio.open_connection(ADDRESS, proxy_port)
     try:
@@ -69,8 +75,10 @@ async def via_socks(host, port, proxy_port=1090):
         if await worker_identity() != owner:
             raise OSError('SOCKS generation changed')
         name = host.encode('ascii')
-        writer.write(bytes((5, 1, 0, 3, len(name))) + name + struct.pack('!H', port))
+        writer.write(bytes((5, 0xf0 if resolve_only else 1, 0, 3, len(name))) + name + struct.pack('!H', port))
         version, status, reserved, kind = await reader.readexactly(4)
+        if resolve_only and version == 5 and reserved == 0 and status:
+            raise CorporateDNSFailure({4:3, 0xf1:0}.get(status,2))
         if (version, status, reserved) != (5, 0, 0):
             raise OSError('SOCKS refused')
         size = {1: 4, 4: 16}.get(kind)
@@ -197,8 +205,9 @@ class Router:
             if not cfg:
                 raise OSError('policy unavailable')
             self.clients.add(current)
+            host = next((row["domain"] for row in cfg["sites"] if row.get("alias") == host), host)
             if is_work(cfg, host):
-                if port not in cfg['ports']:
+                if not allowed_tcp(cfg, host, port):
                     raise OSError('port denied')
                 opening = via_socks(host, port)
             else:

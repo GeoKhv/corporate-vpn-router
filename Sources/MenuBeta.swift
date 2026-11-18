@@ -224,7 +224,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     private func setupRouteHelper(edit: Bool) {
         guard engine == nil, !selective.busy else { return }; show()
         #if CVR_UPDATES
-        if Bundle.main.object(forInfoDictionaryKey:"CVRRouteHelperBuild") as? String == "0.3.11",
+        if Bundle.main.object(forInfoDictionaryKey:"CVRRouteHelperBuild") as? String == "0.3.20",
            selective.helperAvailability.needsInstallation || selective.helperAvailability.canConnect {
             configureLocalHelper(edit: edit)
             return
@@ -253,7 +253,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             Configuration.validHost(host) && profile.work(host) && domains.contains { host == $0 || host.hasSuffix("." + $0) }
         }
         func enroll(_ desktop: String) {
-            guard let data = try? JSONSerialization.data(withJSONObject:["domains":domains,"desktop":desktop]) else { return }
+            guard let data = try? profile.enrollment(desktop:desktop) else { return }
             selective.manageHelper(resources:resources,enrollment:data,reconfigure:selective.helperAvailability.canConnect)
         }
         if let selected, !edit || selective.helperAvailability != .ready { enroll(selected); return }

@@ -16,7 +16,7 @@ import sys
 import time
 
 
-def dns_answer(packet, cfg, registry=None, is_allowed=None):
+def dns_answer(packet, cfg, registry=None, is_allowed=None, canonical=None):
     if len(packet) < 12:
         raise ValueError('short DNS')
     ident, flags, count, _, _, _ = struct.unpack('!6H', packet[:12])
@@ -40,7 +40,7 @@ def dns_answer(packet, cfg, registry=None, is_allowed=None):
     refusal=None
     if allowed and kind in (1, 28):
         try:
-            address=registry.address(name,4 if kind==1 else 6) if registry else cfg['ipv4' if kind == 1 else 'ipv6']
+            address=registry.address(canonical or name,4 if kind==1 else 6) if registry else cfg['ipv4' if kind == 1 else 'ipv6']
             data = ipaddress.ip_address(address).packed
         except (OSError,ValueError) as exc:
             # A conclusive negative answer, never a timeout or public fallback.
@@ -70,11 +70,39 @@ async def serve(cfg, directory, installed=None, *, stop_event=None):
     def record(**event):
         log.write(json.dumps(dict(time=time.time(), **event)) + '\n')
 
-    class DNS(asyncio.DatagramProtocol):
-        def connection_made(self, transport): self.transport = transport
-        def datagram_received(self, packet, addr):
+    aliases = {row['alias']: row['domain'] for row in cfg.get('policy', {}).get('sites', [])
+               if row.get('alias')}
+
+    async def checked_answer(packet):
+        if not stable or not cfg.get('verify_names'):
+            return dns_answer(packet, cfg, registry, allowed_dns if stable else None)
+        from sparse_dns import decode_name
+        queried, _ = decode_name(packet, 12)
+        canonical = aliases.get(queried, queried)
+        exists = False
+        failure = 3
+        if allowed_dns(canonical):
             try:
-                reply, event = dns_answer(packet, cfg, registry, allowed_dns if stable else None)
+                _, writer = await asyncio.wait_for(
+                    installed.via_socks(canonical, 0, resolve_only=True), 8)
+                writer.close()
+                exists = True
+            except (OSError, asyncio.IncompleteReadError, asyncio.TimeoutError) as exc:
+                failure = getattr(exc,"rcode",2)
+        reply,event = dns_answer(packet, cfg, registry, lambda name: exists, canonical)
+        if not exists:
+            reply = reply[:3] + bytes([(reply[3] & 0xf0) | failure]) + reply[4:]
+            event['rcode'] = failure
+        return reply,event
+
+    class DNS(asyncio.DatagramProtocol):
+        def connection_made(self, transport):
+            self.transport = transport
+        def datagram_received(self, packet, addr):
+            asyncio.create_task(self.reply(packet, addr))
+        async def reply(self, packet, addr):
+            try:
+                reply, event = await checked_answer(packet)
                 record(**event)
                 self.transport.sendto(reply, addr)
             except (ValueError, IndexError, struct.error, UnicodeError):
@@ -84,7 +112,7 @@ async def serve(cfg, directory, installed=None, *, stop_event=None):
         try:
             while True:
                 n = struct.unpack('!H', await asyncio.wait_for(reader.readexactly(2), 5))[0]
-                reply, event = dns_answer(await asyncio.wait_for(reader.readexactly(n), 5), cfg, registry, allowed_dns if stable else None)
+                reply, event = await checked_answer(await asyncio.wait_for(reader.readexactly(n), 5))
                 record(**event)
                 writer.write(struct.pack('!H', len(reply)) + reply)
                 await writer.drain()
@@ -125,8 +153,12 @@ async def serve(cfg, directory, installed=None, *, stop_event=None):
             allowed = name == cfg['host']
             if cfg.get('mode') in ('domain-pool','stable-map'):
                 allowed = installed.is_work(cfg['policy'], name)
-            allowed_rdp = stable and port == 3389 and name == cfg.get('rdp_host')
-            if not allowed or (port not in cfg.get('policy', {}).get('ports', [443]) and not allowed_rdp):
+            if stable:
+                from sites import allowed_tcp
+                permitted = allowed_tcp(cfg['policy'], name, port, cfg.get('rdp_host'))
+            else:
+                permitted = port in cfg.get('policy', {}).get('ports', [443])
+            if not allowed or not permitted:
                 raise ValueError('outside exact allowlist')
             ur, uw = await asyncio.wait_for(installed.via_socks(name, port), 12)
             upstream = uw

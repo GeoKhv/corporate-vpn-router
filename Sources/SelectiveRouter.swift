@@ -230,7 +230,7 @@ final class SelectiveRouter {
             }
         }
     }
-    func manageHelper(resources: URL, remove: Bool = false, enrollment: Data? = nil, reconfigure: Bool = false) {
+    func manageHelper(resources: URL, remove: Bool = false, enrollment: Data? = nil, reconfigure: Bool = false, completion: ((Bool)->Void)? = nil) {
         guard !busy else { message = "Сначала остановите рабочие маршруты."; changed?(); return }
         // Even an explicit maintenance click cannot turn a failed probe into
         // installation. Recheck evidence immediately before authorization.
@@ -262,7 +262,7 @@ final class SelectiveRouter {
                     self.state = self.helperAvailability.canConnect ? "stopped" : "error"
                     self.message = availability == .ready ? "Помощник установлен и проверен. Выберите способ входа и нажмите «Подключить»." : "Установка завершилась. " + self.helperAvailability.explanation
                 }
-                self.changed?(); self.managementFinished?()
+                self.changed?(); if let completion { completion(error == nil && availability?.canConnect == true) } else { self.managementFinished?() }
             }
         }
     }
@@ -284,6 +284,13 @@ final class SelectiveRouter {
                 " и подключение Windows App к " + desktop + " (TCP 3389)."
         }
         // Pass data as argv: JSON string escapes (notably \/) aren't AppleScript.
+        if let data=enrollment, let policy=try? JSONSerialization.jsonObject(with:data) as? [String:Any],
+           let rules=policy["rules"] as? [[String:Any]] {
+            prompt = "Разрешить рабочие TCP-подключения:\n" + rules.map { row in
+                let ports = (row["anyTCP"] as? Bool == true) ? "любой TCP" : (row["ports"] as? [Int] ?? []).map(String.init).joined(separator:",")
+                return (row["scope"] as? String == "tree" ? "с поддоменами " : "точно ") + (row["domain"] as? String ?? "") + " · " + ports + ((row["alias"] as? String).map { " · короткое имя " + $0 } ?? "")
+            }.joined(separator:"\n") + ((policy["desktop"] as? String).flatMap { $0.isEmpty ? nil : "\nRDP 3389: " + $0 } ?? "")
+        }
         return ["-e", authorizationScript, cmd + policyArgument, prompt]
     }
     static func runAuthorization(_ arguments: [String]) -> String? {

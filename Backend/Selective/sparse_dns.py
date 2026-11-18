@@ -38,13 +38,14 @@ async def serve(policy,stage,stop,route_installer=None):
         if qd!=1 or flags&0xf800:raise ValueError('question')
         name,pos=decode_name(packet,12);kind,cls=struct.unpack('!HH',packet[pos:pos+4]);end=pos+4
         log.write(json.dumps(dict(time=time.time(),name=name,type=kind,event='query'))+'\n')
-        if not allowed(name,policy) or cls!=1:
+        aliases = {r['alias']: r['domain'] for r in policy['sites'] if r.get('alias')}
+        if not allowed(aliases.get(name, name),policy) or cls!=1:
             return struct.pack('!6H',ident,0x8183,1,0,0,0)+packet[12:end]
         # TCP loopback to the local synthetic DNS service. Never public DNS.
         r,w=await asyncio.wait_for(asyncio.open_connection('127.0.0.1',cfg.get('dns_backend_port',53542)),3)
         try:
             w.write(struct.pack('!H',len(packet))+packet);await w.drain()
-            size=struct.unpack('!H',await asyncio.wait_for(r.readexactly(2),3))[0]
+            size=struct.unpack('!H',await asyncio.wait_for(r.readexactly(2),10))[0]
             response=await asyncio.wait_for(r.readexactly(size),3)
         finally:w.close()
         rid,_,qd,an,_,_=struct.unpack('!6H',response[:12]);assert rid==ident and qd==1

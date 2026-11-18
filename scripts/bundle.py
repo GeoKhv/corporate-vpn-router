@@ -30,7 +30,8 @@ def native(dest):
             oc=next(Path(tmp).glob('*ocproxy*'));lib=next(Path(tmp).glob('libevent-*'))
             run('/usr/bin/patch','-p1','-i',str(TP/'ocproxy-policy.patch'),cwd=oc)
             run('/bin/sh','./configure','--disable-shared','--enable-static','--disable-openssl','--disable-samples','--disable-libevent-regress','--disable-dependency-tracking',cwd=lib,env=native_env)
-            run('/usr/bin/make','-j4','include/event2/event-config.h','libevent.la',cwd=lib,env=native_env)
+            run('/usr/bin/make','include/event2/event-config.h',cwd=lib,env=native_env)
+            run('/usr/bin/make','-j4','libevent.la',cwd=lib,env=native_env)
             s=(oc/'Makefile.am').read_text().split('LWIP_SOURCES',1)[1].split('APP_SOURCES',1)[0]
             inputs=re.findall(r'(?m)^\s*([a-zA-Z0-9_/.]+\.c)\s*\\?\s*$',s)+['src/ocproxy.c']
             includes=['src','lwip/src','lwip/src/include','lwip/src/include/ipv4','lwip/src/include/ipv6','contrib/ports/unix/include']

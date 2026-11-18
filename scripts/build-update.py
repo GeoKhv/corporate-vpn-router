@@ -26,7 +26,7 @@ run('swiftc','-D','CVR_MENU_BETA','-D','CVR_DEMO_SINGLE','-D','CVR_SELECTIVE_TUN
 assert (ROOT/'Backend/connection_trace.py').read_bytes()==(res/'Engine/connection_trace.py').read_bytes()
 from report_terms import write_terms
 write_terms(ROOT,res/'ReportTerms.json')
-for name in ['trust.py','session.py','official_handoff.py','tls_policy.py','connection_resilience.py','browser_auth.py','sites.py','proxy_supervisor.py','support_report.py','gateway_disconnect.py','ipsec_session.py']:
+for name in ['trust.py','session.py','official_handoff.py','tls_policy.py','connection_resilience.py','browser_auth.py','sites.py','proxy_supervisor.py','support_report.py','http_router.py','gateway_disconnect.py','ipsec_session.py']:
  shutil.copy2(ROOT/'Backend'/name,res/'Engine'/name)
 # Never silently inherit a test transport in a later normal build.
 (res/'Engine/cvr-ipsec').unlink(missing_ok=True)
@@ -50,7 +50,7 @@ if a.ipsec_bridge:
    destination.parent.mkdir(parents=True,exist_ok=True)
    destination.write_bytes(source.read_bytes());destination.chmod(0o644)
  license_target.chmod(0o755)
-for name in ['controller.py','services.py']:
+for name in ['controller.py','services.py','policy.py','sparse_dns.py','analyze.py']:
  shutil.copy2(ROOT/'Backend/Selective'/name,res/'Engine/Selective'/name)
 # Do not inherit a host-only proxy from an older bootstrap.
 bundle.CACHE.mkdir(parents=True,exist_ok=True)
@@ -122,7 +122,7 @@ d.update(CFBundleShortVersionString=a.version,CFBundleVersion=str(a.build),LSMin
  SUEnableAutomaticChecks=True,SUAutomaticallyUpdate=False,SUAllowsAutomaticUpdates=False,
  SUScheduledCheckInterval=86400,SUEnableSystemProfiling=False,SUShowReleaseNotes=False,
  SUVerifyUpdateBeforeExtraction=True,SURequireSignedFeed=True,SUSignedFeedFailureExpirationInterval=0,
- CVRRouteHelperSHA256=helper_sha,CVRRouteHelperBuild='0.3.10' if a.private else '0.3.11',CVRRouteHelperProtocol='0.3.0-alpha.3')
+ CVRRouteHelperSHA256=helper_sha,CVRRouteHelperBuild='0.3.10' if a.private else '0.3.20',CVRRouteHelperProtocol='0.3.0-alpha.3')
 info.write_bytes(plistlib.dumps(d,sort_keys=True))
 (res/'VERSION').write_text(a.version+'\n');(res/'INSTALLER_REVISION').write_text(a.version+'\n')
 # Remove only Finder metadata from build copies; never quarantine or security policy.

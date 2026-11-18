@@ -248,6 +248,20 @@ class Report:
         if reply.get('error'):
             item['error']=self.term(reply['error'])
         self.row(item)
+        rules=reply.get('tcpRules')
+        if isinstance(rules,list):
+            for index,rule in enumerate(rules[:256]):
+                if not isinstance(rule,dict):continue
+                self.row({'rule':index+1,'scope':rule.get('scope') if rule.get('scope') in ('tree','exact') else 'unknown',
+                          'any_tcp':rule.get('anyTCP') is True,'short_name':bool(rule.get('alias')),
+                          'tcp_ports':[port for port in rule.get('ports',[]) if type(port) is int and 1<=port<=65535][:32]})
+        elif isinstance(reply.get('approvedPorts'),list):
+            self.row({'approved_tcp_ports':[p for p in reply['approvedPorts'] if type(p) is int and 1<=p<=65535][:32]})
+        try:
+            stage=document(DATA/'Selective'/'last-analysis.json')['stage']
+            if stage in ('invalid','short_name','excluded','no_rule','port','helper','inactive','dns','route','tcp','tls','reachable','timeout'):
+                self.row({'last_tcp_check':stage})
+        except (OSError,KeyError,ValueError):pass
         failure=reply.get('lastAdapterFailure')
         if isinstance(failure,dict):
             self.row({'lastAdapterFailure':self.term(failure.get('stage')),'UTC':utc(failure.get('time')),
