@@ -87,44 +87,61 @@ func run() throws {
         guard let b=button(title,window.contentView!) else {fatalError("Missing button "+title)}
         b.performClick(nil)
     }
+    // One path to add: paste, parse into the in-window preview, add the checked lines.
+    func paste(_ text:String) {
+        panel.address.string=text
+        press("Разобрать")
+        waitFor("preview shown for "+text){!panel.previewBox.isHidden && !panel.items.isEmpty}
+    }
     panel.table.selectRowIndexes(IndexSet(integer:2),byExtendingSelection:false)
-    panel.domain.stringValue="administrator.test.example"
-    press("Добавить")
-    require(panel.draft==initial && menu.settingsNote.stringValue.contains("test.example"),"covered child leaves selected parent intact")
-    panel.domain.stringValue="first.example";press("Добавить")
-    panel.domain.stringValue="second.example";press("Добавить")
-    require(panel.draft.sites.count==initial.sites.count+2,"two additions")
+    paste("administrator.test.example")
+    require(panel.items[0].covered?.domain=="test.example" && !panel.items[0].check.isEnabled,"covered child is inactive and names its rule")
+    require(panel.previewTitle.stringValue.contains("уже разрешено") && !panel.addButton.isEnabled,"nothing to add")
+    require(panel.draft==initial && panel.table.selectedRow==2,"covered child leaves selected parent intact")
+    press("Очистить")
+    require(panel.previewBox.isHidden && panel.items.isEmpty,"preview cleared")
+    paste("first.example");panel.addButton.performClick(nil)
+    require(panel.draft.sites.count==initial.sites.count+1 && panel.address.string.isEmpty && panel.previewBox.isHidden,"add clears the paste field")
+    require(panel.table.selectedRow==2,"adding never replaces the selected row")
+    paste("second.example");panel.addButton.performClick(nil)
+    require(panel.draft.sites.count==initial.sites.count+2,"two additions in a row")
+    require(panel.stateLabel.stringValue.contains("не сохранен"),"state shows unsaved changes")
     panel.table.selectRowIndexes(IndexSet(integer:4),byExtendingSelection:false)
+    press("Изменить")
+    require(!panel.editBox.isHidden && panel.domain.stringValue=="first.example","edit opens in place")
+    panel.domain.stringValue="discarded.example";press("Отмена")
+    require(panel.editBox.isHidden && panel.draft.sites[4].domain=="first.example","cancelled edit changes nothing")
     press("Изменить")
     panel.domain.stringValue="renamed.example";panel.commit.performClick(nil)
     require(panel.draft.sites[4].domain=="renamed.example","explicit rename")
-    press("Отменить правку")
-    require(panel.draft.sites[4].domain=="first.example","undo rename")
+    press("Отменить")
+    require(panel.draft==initial && panel.stateLabel.stringValue=="Все изменения сохранены","Cancel rolls the draft back to the saved rules")
+    paste("first.example\nsecond.example");panel.addButton.performClick(nil)
+    require(panel.draft.sites.count==initial.sites.count+2,"both lines added at once")
+    panel.table.selectRowIndexes(IndexSet(integer:4),byExtendingSelection:false)
+    press("Изменить")
     panel.domain.stringValue="unfinished.example"
-    press("Применить правила")
-    require(panel.draft.sites.count==initial.sites.count+2 && panel.domain.stringValue=="unfinished.example","apply never commits input")
+    press("Сохранить")
+    require(panel.draft.sites.count==initial.sites.count+2 && panel.domain.stringValue=="unfinished.example" && panel.editing != nil,"save never commits an edit in progress")
     window.performClose(nil);menu.settings()
-    require(panel.domain.stringValue=="unfinished.example","close preserves input")
-    press("Отменить правку")
-    panel.address.string="any.example:22\nhttps://third.example:8443/secret?a=private"
-    func approvePreview(){
-        let timer=Timer(timeInterval:0.05,repeats:true){ t in
-            if let modal=NSApp.modalWindow,let b=button("В черновик",modal.contentView!) {t.invalidate();b.performClick(nil)}
-        }
-        RunLoop.main.add(timer,forMode:.modalPanel)
-        press("Разобрать адреса…")
-        waitFor("preview added"){panel.draft.sites.contains{$0.domain=="third.example"}}
-    }
-    approvePreview()
+    require(panel.domain.stringValue=="unfinished.example" && !panel.editBox.isHidden,"close preserves the unfinished edit")
+    press("Отмена")
+    paste("any.example:22\nhttps://third.example:8443/secret?a=private")
+    require(panel.items[0].covered != nil && panel.items[1].purpose.titleOfSelectedItem=="Веб · 8443","covered line inactive, port detected")
+    panel.addButton.performClick(nil)
     require(panel.draft.sites[3]==initial.sites[3],"paste preserves any TCP and alias")
     require(panel.draft.sites.last?.tcp == .selected([8443]),"explicit nonstandard port")
+    paste("service.example")
+    panel.items[0].purpose.selectItem(withTitle:"Kubernetes · 6443");panel.addButton.performClick(nil)
+    require(panel.draft.sites.last?.tcp == .selected([6443]),"purpose can be changed without retyping")
     menu.selective.helperAvailability = .ready
-    press("Применить правила")
+    press("Сохранить")
     waitFor("cancelled approval"){!panel.applying}
     require(menu.storedWork()==initial,"cancel preserves applied rules")
     require(fm.fileExists(atPath:menu.pendingURL.path),"pending draft persisted")
-    cancel=false;press("Применить правила")
+    cancel=false;press("Сохранить")
     waitFor("successful apply"){menu.storedWork()==panel.draft}
+    waitFor("saved state shown"){panel.stateLabel.stringValue=="Все изменения сохранены"}
     require(!fm.fileExists(atPath:menu.pendingURL.path),"clear pending on success")
     window.performClose(nil)
     menu.menuConnect=NSMenuItem(title:"Подключить",action:#selector(BetaMenu.menuToggle),keyEquivalent:"")
@@ -140,6 +157,6 @@ func run() throws {
         if menu.connectionPhase.pending {menu.stop("test")}
         waitFor("stopped"){!menu.connectionPhase.pending && menu.selective.process==nil}
     }
-    print("PASS AppKit table selection, two adds, covered child, explicit rename and undo, batch, anyTCP, pending, cancel/retry, closed/minimized window")
+    print("PASS inline add preview, covered child, two adds, in-place rename and cancel, unfinished edit kept, anyTCP, purposes, pending, cancel/retry, closed/minimized window")
 }
 do { try run() } catch { fputs("FAIL: \(error)\n",stderr);exit(1) }
