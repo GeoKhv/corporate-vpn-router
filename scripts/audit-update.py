@@ -42,6 +42,10 @@ bad=[];count=0
 def scan(name,data):
  global count
  count+=1;lower=data.lower()
+ if name=='Contents/Resources/BundledTCPRule.json':
+  expected=Path(__file__).resolve().parents[1]/'packaging/updates/BundledTCPRule.json'
+  if data!=expected.read_bytes():bad.append(name)
+  return
  if name==pin_resource and pin_bytes is not None:
   if data!=pin_bytes:bad.append(name)
   return

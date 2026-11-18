@@ -39,6 +39,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var setupBrowser = NSButton()
 #if CVR_SELECTIVE_TUN
     let selective = SelectiveRouter()
+    var applyingBundledRule = false
     var connectionPhase = ConnectionPhase.idle
     var connectionFailure: String?, connectionFailureCode: String?, connectionNotice: String?
     var connectionAttempt = 0
@@ -224,6 +225,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     private func setupRouteHelper(edit: Bool) {
         guard engine == nil, !selective.busy else { return }; show()
         #if CVR_UPDATES
+        if !edit && applyBundledRuleIfNeeded(connectAfterward:false) { return }
         if Bundle.main.object(forInfoDictionaryKey:"CVRRouteHelperBuild") as? String == "0.3.20",
            selective.helperAvailability.needsInstallation || selective.helperAvailability.canConnect {
             configureLocalHelper(edit: edit)

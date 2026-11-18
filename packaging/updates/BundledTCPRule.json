@@ -1,0 +1,9 @@
+{
+  "kind": "exact-tcp-rule",
+  "domain": "dfa-test-master1.moscow.alfaintra.net",
+  "ports": [
+    22,
+    6443
+  ],
+  "shortName": true
+}

@@ -1,6 +1,6 @@
 import AppKit
 
-enum TCPPorts: Codable {
+enum TCPPorts: Codable, Equatable {
     case any, selected([Int])
     init(from decoder: Decoder) throws {
         let value = try decoder.singleValueContainer()
@@ -15,18 +15,52 @@ enum TCPPorts: Codable {
         switch self { case .any: return "*"; case .selected(let ports): return ports.map(String.init).joined(separator:", ") }
     }
 }
-struct WorkSite: Codable { var domain: String; var scope: String; var tcp: TCPPorts?; var alias: String? }
+struct WorkSite: Codable, Equatable { var domain: String; var scope: String; var tcp: TCPPorts?; var alias: String? }
 struct SharedTCPRule: Decodable {
     let kind: String
     let domain: String
     let ports: [Int]
     let shortName: Bool
 }
-struct WorkProfile: Codable {
+struct WorkProfile: Codable, Equatable {
     var version = 1
     var sites: [WorkSite] = []
     var beforeLogin: [String] = []
     var ports = [443]
+    mutating func mergeExactRule(_ rule: SharedTCPRule) throws {
+        guard rule.kind == "exact-tcp-rule", Configuration.validHost(rule.domain), rule.domain.contains("."),
+              !rule.ports.isEmpty, rule.ports.count <= 32, rule.ports.allSatisfy({ (1...65535).contains($0) }),
+              !beforeLogin.contains(rule.domain) else { throw RouterError.invalidConfiguration }
+        let index = sites.firstIndex { $0.domain == rule.domain }
+        if let index, sites[index].scope != "exact" {
+            throw ProxyFailure("Для этого имени уже задано правило с поддоменами. Существующий охват сохранён.")
+        }
+        let inherited = sites.filter { $0.domain == rule.domain ||
+            ($0.scope == "tree" && rule.domain.hasSuffix("." + $0.domain)) }.max { $0.domain.count < $1.domain.count }
+        var row = WorkSite(domain:rule.domain, scope:"exact")
+        if let index { row = sites[index] }
+        let base = inherited.map { $0.tcp ?? .selected(ports) } ?? .selected([])
+        switch base {
+        case .any: row.tcp = .any
+        case .selected(let existing):
+            let merged = Array(Set(existing + rule.ports)).sorted()
+            guard merged.count <= 32 else { throw ProxyFailure("В точном правиле получилось больше 32 TCP-портов.") }
+            row.tcp = .selected(merged)
+        }
+        if rule.shortName {
+            let alias = String(rule.domain.prefix(while: { $0 != "." }))
+            guard !sites.contains(where: { $0.domain != rule.domain && $0.alias == alias }) else {
+                throw ProxyFailure("Это короткое имя уже привязано к другому серверу.")
+            }
+            row.alias = alias
+        }
+        if let index { sites[index] = row } else {
+            guard sites.count < 256 else { throw RouterError.invalidConfiguration }
+            sites.append(row)
+        }
+        version = 2
+    }
+
     func enrollment(desktop: String) throws -> Data {
         let rules = sites.map { row -> [String:Any] in
             let selection = row.tcp ?? .selected(ports)
@@ -55,8 +89,7 @@ final class SitesPanel {
 }
 
 extension BetaMenu {
-    static func routeCommand(_ op: String, _ args: [String] = []) -> CommandResult {
-        let res = ProductPaths().app.appendingPathComponent("Contents/Resources")
+    static func routeCommand(_ op: String, _ args: [String] = [], resources res: URL = ProductPaths().app.appendingPathComponent("Contents/Resources")) -> CommandResult {
 #if CVR_SELECTIVE_TUN
         if op == "save" || op == "validate" || op == "check-draft" {
             return command(res.appendingPathComponent("Runtime/bin/python3.13").path,
@@ -153,25 +186,10 @@ extension BetaMenu {
         guard panel.runModal() == .OK, let u=panel.url else{return}
         do{let data=try Data(contentsOf:u);guard data.count<=131072 else{throw RouterError.invalidConfiguration}
             if let rule = try? JSONDecoder().decode(SharedTCPRule.self, from:data) {
-                guard rule.kind == "exact-tcp-rule", Configuration.validHost(rule.domain), rule.domain.contains("."),
-                      !rule.ports.isEmpty, rule.ports.count <= 32, rule.ports.allSatisfy({ (1...65535).contains($0) }),
-                      !sitesPanel.draft.beforeLogin.contains(rule.domain) else { throw RouterError.invalidConfiguration }
-                let p = sitesPanel
-                let exact = p.draft.sites.firstIndex { $0.domain == rule.domain }
-                guard exact.map({ p.draft.sites[$0].scope == "exact" }) ?? true else {
-                    settingsNote.stringValue="Для этого имени уже задано правило с поддоменами. Выберите разрешения вручную."
-                    return
-                }
-                let inherited = p.draft.sites.filter { $0.domain == rule.domain ||
-                    ($0.scope == "tree" && rule.domain.hasSuffix("." + $0.domain)) }.max { $0.domain.count < $1.domain.count }
-                let base = inherited.map { $0.tcp ?? .selected(p.draft.ports) } ?? .selected([])
-                if let index = exact { p.list.selectItem(at:index); selectSite() } else { newSite(); p.domain.stringValue=rule.domain }
-                switch base {
-                case .any: p.ports.stringValue="*"
-                case .selected(let ports): p.ports.stringValue=TCPPorts.selected(Array(Set(ports + rule.ports)).sorted()).label
-                }
-                if rule.shortName { p.short.state = .on }
-                if editSite() { settingsNote.stringValue="В черновике изменено одно точное правило. Проверьте адрес и порты, затем сохраните список." }
+                readLogin()
+                try sitesPanel.draft.mergeExactRule(rule)
+                loadDraft(sitesPanel.draft.sites.firstIndex { $0.domain == rule.domain } ?? 0)
+                settingsNote.stringValue="В черновике изменено одно точное правило. Проверьте адрес и порты, затем сохраните список."
                 return
             }
             let draft=try JSONDecoder().decode(WorkProfile.self,from:data); guard [1,2].contains(draft.version) && !draft.sites.isEmpty && draft.sites.count<=256 else{throw RouterError.invalidConfiguration}
@@ -404,3 +422,86 @@ extension BetaMenu {
         do{try p.run();NSApp.terminate(nil)}catch{maintenanceError("Не удалось запустить проверенную копию beta.5.")}
     }
 }
+
+#if CVR_SELECTIVE_TUN && CVR_UPDATES
+extension BetaMenu {
+    // Keep the receipt independent of app version so later updates respect manual edits.
+    func applyBundledRuleIfNeeded(connectAfterward: Bool) -> Bool {
+        let resource = resources.appendingPathComponent("BundledTCPRule.json")
+        let receipt = paths.data.appendingPathComponent("bundled-tcp-rule-v1.applied")
+        let fm = FileManager.default
+        guard !applyingBundledRule, engine == nil, !selective.busy,
+              selective.helperAvailability.canConnect || selective.helperAvailability.needsInstallation,
+              !fm.fileExists(atPath:receipt.path), fm.fileExists(atPath:resource.path),
+              fm.fileExists(atPath:workURL.path) else { return false }
+        do {
+            let original = try Data(contentsOf:workURL)
+            let profile = try JSONDecoder().decode(WorkProfile.self,from:original)
+            let rule = try JSONDecoder().decode(SharedTCPRule.self,from:Data(contentsOf:resource))
+            // Only a Mac whose existing work profile covers this destination is eligible.
+            guard profile.work(rule.domain) else { return false }
+            var candidate = profile
+            // A conflicting user-defined tree or alias takes precedence over this preset.
+            do { try candidate.mergeExactRule(rule) } catch {
+                connectionNotice = "Сохранены ваши правила. " + error.localizedDescription
+                return false
+            }
+            let status = SelectiveRouter.helperReply(resources:resources)
+            let desktop = status?["approvedRDPHost"] as? String ??
+                Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile) ?? ""
+            let enrollment = try candidate.enrollment(desktop:desktop)
+            let expected = try JSONSerialization.jsonObject(with:enrollment) as? [String:Any]
+            let authorized = selective.helperAvailability.canConnect &&
+                (status?["tcpRules"] as? NSArray)?.isEqual(expected?["rules"]) == true
+            if authorized && candidate == profile {
+                try Data("applied\n".utf8).write(to:receipt, options:.atomic)
+                return false
+            }
+            let pending = paths.data.appendingPathComponent("pending-" + UUID().uuidString)
+            try JSONFile.write(candidate,to:pending)
+            let validation = Self.routeCommand("check-draft",[pending.path],resources:resources)
+            guard validation.code == 0 else {
+                try? fm.removeItem(at:pending)
+                throw ProxyFailure(validation.output)
+            }
+            applyingBundledRule = true
+            if connectAfterward { connectionPhase = .installingHelper; presentConnection() }
+            func finish(_ success: Bool) {
+                defer { try? fm.removeItem(at:pending) }
+                let resume = connectAfterward && self.connectionPhase == .installingHelper
+                self.applyingBundledRule = false
+                do {
+                    guard success else { throw ProxyFailure(self.selective.message) }
+                    guard try Data(contentsOf:self.workURL) == original else {
+                        throw ProxyFailure("Список рабочих сайтов изменился во время подтверждения. Повторите подключение с актуальным списком.")
+                    }
+                    let confirmed = SelectiveRouter.helperReply(resources:self.resources)
+                    guard (confirmed?["tcpRules"] as? NSArray)?.isEqual(expected?["rules"]) == true else {
+                        throw ProxyFailure("Помощник ещё не подтвердил рабочее правило. Повторите подключение.")
+                    }
+                    if candidate != profile {
+                        let result = Self.routeCommand("save",[pending.path],resources:self.resources)
+                        guard result.code == 0 else { throw ProxyFailure(result.output) }
+                    }
+                    try Data("applied\n".utf8).write(to:receipt, options:.atomic)
+                    if resume {
+                        self.connectionPhase = .checkingHelper
+                        self.continueConnection()
+                    }
+                } catch {
+                    if resume { self.failConnection(error.localizedDescription,code:"BUNDLED_RULE_PENDING") }
+                    else { self.connectionNotice = error.localizedDescription }
+                }
+                self.presentConnection()
+            }
+            if authorized { finish(true) }
+            else { selective.manageHelper(resources:resources,enrollment:enrollment,reconfigure:true,completion:finish) }
+            return true
+        } catch {
+            if connectAfterward { failConnection(error.localizedDescription,code:"BUNDLED_RULE_PENDING") }
+            else { connectionNotice = error.localizedDescription; presentConnection() }
+            return true
+        }
+    }
+}
+#endif

@@ -239,19 +239,19 @@ final class SelectiveRouter {
         }
     }
     func manageHelper(resources: URL, remove: Bool = false, enrollment: Data? = nil, reconfigure: Bool = false, completion: ((Bool)->Void)? = nil) {
-        guard !busy else { message = "Сначала остановите рабочие маршруты."; changed?(); return }
+        guard !busy else { message = "Сначала остановите рабочие маршруты."; changed?(); completion?(false); return }
         // Even an explicit maintenance click cannot turn a failed probe into
         // installation. Recheck evidence immediately before authorization.
         if !remove {
             helperAvailability = inspectHelper(resources)
             guard helperAvailability.needsInstallation || (reconfigure && enrollment != nil && helperAvailability.canConnect) else {
-                message = helperAvailability.explanation; changed?(); return
+                message = helperAvailability.explanation; changed?(); completion?(false); return
             }
         }
         failureCode = nil; attemptGateway = nil
         #if CVR_UPDATES
         do { _ = try Provisioning.helper(resources) }
-        catch { message = error.localizedDescription; changed?(); return }
+        catch { message = error.localizedDescription; changed?(); completion?(false); return }
 #endif
         let arguments = Self.authorizationArguments(resources: resources, remove: remove, enrollment: enrollment)
         state = "installing"; message = remove ? "Подтвердите удаление помощника в macOS." : "Подтвердите установку помощника в macOS. После подтверждения это окно покажет результат."; changed?()

@@ -1,8 +1,8 @@
-# Corporate VPN Router · 0.3.20
+# Corporate VPN Router · 0.3.21
 
 Приложение для выборочного доступа к рабочим ресурсам Check Point на Mac с Apple Silicon. Рабочие домены идут через корпоративный туннель; остальные соединения используют обычный маршрут Mac, в том числе внешний VPN. Текущий пакет требует **macOS 26 или новее**.
 
-**[Релиз 0.3.20](https://github.com/GeoKhv/corporate-vpn-router/releases/tag/v0.3.20)** · **[Скачать ZIP](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.20/Corporate-VPN-Router-0.3.20-TCP-macOS-arm64.zip)** · [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.20/Corporate-VPN-Router-0.3.20-TCP-macOS-arm64.zip.sha256)
+**[Релиз 0.3.21](https://github.com/GeoKhv/corporate-vpn-router/releases/tag/v0.3.21)** · **[Скачать ZIP](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.21/Corporate-VPN-Router-0.3.21-TCP-macOS-arm64.zip)** · [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.21/Corporate-VPN-Router-0.3.21-TCP-macOS-arm64.zip.sha256)
 
 Установленный Router обновляется через **«Проверить обновления» → «Загрузить и установить»**. Пакет и лента Sparkle подписаны Ed25519. Перед заменой приложения сохраняется резервная копия и завершается его рабочий сеанс. Личные настройки остаются в Application Support. ZIP предназначен для обновления уже настроенной установки; для первого запуска нужен согласованный STARTER-комплект.
 
@@ -10,6 +10,7 @@
 
 ## Что изменилось
 
+- **0.3.21** доставляет правило для рабочего сервера вместе с приложением. При первом подключении Router добавит короткое имя и TCP-порты 22 и 6443 в подходящий рабочий профиль.
 - **0.3.20** добавляет рабочие TCP-порты, короткие имена, локальную проверку адреса и импорт одного правила.
 - **0.3.19:** техническое `password:` получает подпись фактора выбранного шлюза, например OTP. Проверка HTTPS показывает конкретный адрес и причину. Сохранённый файл отчёта автоматически копируется в буфер для вставки через Cmd+V.
 - **0.3.18:** удалён неиспользуемый запрос маршрутов CCC после успешной IPsec-авторизации.

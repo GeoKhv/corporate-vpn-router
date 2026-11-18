@@ -45,8 +45,11 @@ extension BetaMenu {
     }
 
     func continueConnection() {
-        guard connectionPhase == .checkingHelper else { return }
+        guard connectionPhase == .checkingHelper, !applyingBundledRule else { return }
         if selective.helperAvailability == .checking { return }
+        #if CVR_UPDATES
+        if applyBundledRuleIfNeeded(connectAfterward:true) { return }
+        #endif
         if !selective.helperAvailability.canConnect {
             failConnection(selective.helperAvailability.explanation,
                            code: "HELPER_" + selective.helperAvailability.rawValue.uppercased())
@@ -59,6 +62,7 @@ extension BetaMenu {
 
     func selectiveChanged() {
         journal("routes", selective.state, code: selective.failureCode)
+        if applyingBundledRule { presentConnection(); return }
         if connectionPhase == .checkingHelper { continueConnection() }
         else if connectionPhase == .installingHelper && selective.state != "installing" {
             if selective.state == "error" || !selective.helperAvailability.canConnect {

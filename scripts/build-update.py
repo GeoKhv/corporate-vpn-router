@@ -18,6 +18,7 @@ app=a.output/'Corporate VPN Router TUN Trial.app';res=app/'Contents/Resources'
 def run(*args):subprocess.run([str(x) for x in args],check=True)
 run('codesign','--verify','--deep','--strict',a.base_app)
 run('ditto',a.base_app,app)
+shutil.copyfile(ROOT/'packaging/updates/BundledTCPRule.json',res/'BundledTCPRule.json')
 framework=app/'Contents/Frameworks/Sparkle.framework';framework.parent.mkdir(exist_ok=True)
 if (a.sparkle/'Sparkle.framework').resolve() != (a.base_app/'Contents/Frameworks/Sparkle.framework').resolve():
  run('ditto',a.sparkle/'Sparkle.framework',framework)
