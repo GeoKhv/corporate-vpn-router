@@ -5,5 +5,9 @@
     22,
     6443
   ],
-  "shortName": true
+  "shortName": true,
+  "httpsSites": [
+    "testrwa.alfabank.ru",
+    "administrator.testrwa.alfabank.ru"
+  ]
 }

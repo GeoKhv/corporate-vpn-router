@@ -579,7 +579,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             failConnection("Файлы запущенного Router изменились. Завершите приложение и откройте установленную копию заново.", code: "APP_CHANGED_ON_DISK"); return
         }
         #if CVR_UPDATES
-        if FileManager.default.fileExists(atPath:pendingURL.path) {applyPending(connectAfter:true);return}
+        if !selective.holdingRoutes && FileManager.default.fileExists(atPath:pendingURL.path) {applyPending(connectAfter:true);return}
         #endif
         guard storedWork() != nil else { note = "Добавьте рабочие сайты."; refresh(); return }
         connectionAttempt += 1; connectionFailure = nil; connectionFailureCode = nil; connectionNotice = nil

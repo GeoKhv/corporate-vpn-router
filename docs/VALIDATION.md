@@ -687,3 +687,7 @@ second Mac are pending. The candidate is not represented as remotely validated.
 ## 0.3.22
 
 [Основной Mac, проверки интерфейса, ограничения и приёмка](RESOURCES-0.3.22.ru.md).
+
+## 0.3.23
+
+[Воспроизведение на предыдущей версии, тесты восстановления и миграции](RESOURCES-0.3.23.ru.md).

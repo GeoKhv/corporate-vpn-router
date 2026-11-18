@@ -88,6 +88,15 @@ struct PortableRules: Codable {
 struct PendingWork: Codable {
     let base: WorkProfile
     let profile: WorkProfile
+    // Written before the controller's atomic profile replacement. Either side of a
+    // process interruption can load the draft matching the profile actually on disk.
+    var nextBase: WorkProfile? = nil
+    var nextDraft: WorkProfile? = nil
+
+    func draft(for active: WorkProfile) -> WorkProfile? {
+        if base == active { return profile }
+        return nextBase == active ? nextDraft : nil
+    }
 }
 
 final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
@@ -205,7 +214,7 @@ extension BetaMenu {
             settingsWindow=w
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)), saved.base==p.base { p.draft=saved.profile }
-            if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), saved.base==p.base {p.draft=saved.profile}
+            if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), let latest=saved.draft(for:p.base) {p.draft=latest}
             loadDraft();updateSearchSource()
         } else if p.base != storedWork(), p.draft == p.base, p.editing == nil, p.domain.stringValue.isEmpty {
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base; loadDraft()
@@ -437,7 +446,7 @@ extension BetaMenu {
         let validation=Self.routeCommand("check-draft",[temp.path],resources:resources)
         guard validation.code==0 else { settingsNote.stringValue=validation.output;return }
         let profile=sitesPanel.draft
-        guard !sitesPanel.applying,sitesPanel.base==storedWork() else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через экспорт.";return}
+        guard !sitesPanel.applying,!applyingBundledRule,sitesPanel.base==storedWork() else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через экспорт.";return}
         do {try JSONFile.write(PendingWork(base:sitesPanel.base,profile:profile),to:pendingURL)} catch {settingsNote.stringValue="Не удалось записать черновик.";return}
         guard engine==nil && !selective.busy else {settingsNote.stringValue="Черновик сохранён до следующего подключения. Текущий сеанс продолжается.";return}
         applyPending(connectAfter:false)
@@ -447,11 +456,68 @@ extension BetaMenu {
         routeStatus()
     }
     #if CVR_SELECTIVE_TUN && CVR_UPDATES
+    func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool) throws {
+        guard storedWork()==old else {throw ProxyFailure("Профиль изменился. Проверьте текущие правила.")}
+        let p=sitesPanel
+        let open=settingsWindow != nil && p.base==old
+        var edited:WorkProfile?
+        if open {
+            readLogin()
+            edited=p.draft
+        } else if FileManager.default.fileExists(atPath:draftURL.path) {
+            let disk=try JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL))
+            edited=disk.draft(for:old)
+        }
+        var rebased=edited
+        if var draft=edited, bundled {
+            // Add migration changes only to rows the user has not independently edited.
+            for row in new.sites {
+                let previous=old.sites.first { $0.domain==row.domain }
+                if row==previous {continue}
+                if let i=draft.sites.firstIndex(where:{$0.domain==row.domain}) {
+                    if draft.sites[i]==previous {draft.sites[i]=row}
+                } else if previous==nil && draft.covers(row)==nil {draft.sites.append(row)}
+            }
+            draft.version=max(draft.version,new.version)
+            rebased=draft
+        }
+        if let edited, let rebased {
+            try JSONFile.write(PendingWork(base:old,profile:edited,nextBase:new,nextDraft:rebased),to:draftURL)
+        }
+        let result=Self.routeCommand("save",[file.path],resources:resources)
+        guard result.code==0 else {throw ProxyFailure(result.output)}
+        if open {
+            p.base=new;p.draft=rebased ?? new;p.table.reloadData()
+            if bundled {p.history.removeAll()}
+        }
+        if rebased==new {try? FileManager.default.removeItem(at:draftURL)}
+    }
+
     func applyPending(connectAfter:Bool) {
         let p=sitesPanel
         guard !p.applying else{return}
-        func report(_ text:String){settingsNote.stringValue=text;if connectAfter {connectionNotice=text;presentConnection()}}
-        guard let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)),saved.base==storedWork() else {report("Отложенный профиль расходится с сохранённым. Проверьте рабочие правила.");return}
+        func report(_ text:String) {
+            settingsNote.stringValue=text
+            if connectAfter {
+                connectionNotice=text
+                if connectionPhase == .failed {connectionFailure=text}
+                presentConnection()
+            }
+        }
+        guard let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)) else {report("Не удалось прочитать отложенный профиль.");return}
+        func completePending() {
+            do { try FileManager.default.removeItem(at:pendingURL) }
+            catch {report("Правила записаны. Не удалось убрать отметку отложенного применения.");return}
+            report(settingsWindow != nil && p.draft != saved.profile
+                ? "Отложенные правила применены. В черновике остались неприменённые изменения."
+                : "Правила применены и сверены с помощником.")
+            if connectAfter {connect()}
+        }
+        if storedWork()==saved.profile && saved.profile != saved.base {
+            // A previous save succeeded but the process exited before clearing pending.
+            completePending();return
+        }
+        guard saved.base==storedWork() else {report("Отложенный профиль расходится с сохранённым. Проверьте рабочие правила.");return}
         let profile=saved.profile
         let temp=paths.data.appendingPathComponent("apply-"+UUID().uuidString)
         do {try JSONFile.write(profile,to:temp)} catch {report("Ошибка чтения черновика.");return}
@@ -465,13 +531,9 @@ extension BetaMenu {
             defer {try? FileManager.default.removeItem(at:temp)}
             p.applying=false
             guard success else{report("Утверждение не завершено. Черновик сохранён.");return}
-            let result=Self.routeCommand("save",[temp.path],resources:resources)
-            guard result.code==0 else{report(result.output);return}
-            try? FileManager.default.removeItem(at:pendingURL)
-            p.base=profile
-            if p.draft==profile {try? FileManager.default.removeItem(at:draftURL)}
-            report(result.output)
-            if connectAfter {connect()}
+            do {try saveAppliedProfile(temp,from:saved.base,to:profile,bundled:false)}
+            catch {report(error.localizedDescription);return}
+            completePending()
         }
         if let old=status?["tcpRules"] as? NSArray, old.isEqual(expected["rules"]) {finish(true)}
         else {selective.manageHelper(resources:resources,enrollment:enrollment,reconfigure:true,completion:finish)}
@@ -612,23 +674,45 @@ extension BetaMenu {
     // Keep the receipt independent of app version so later updates respect manual edits.
     func applyBundledRuleIfNeeded(connectAfterward: Bool) -> Bool {
         let resource = resources.appendingPathComponent("BundledTCPRule.json")
-        let receipt = paths.data.appendingPathComponent("bundled-tcp-rule-v1.applied")
+        let legacyReceipt = paths.data.appendingPathComponent("bundled-tcp-rule-v1.applied")
+        let httpsReceipt = paths.data.appendingPathComponent("bundled-https-v1.applied")
         let fm = FileManager.default
         guard !applyingBundledRule, engine == nil, !selective.busy,
               selective.helperAvailability.canConnect || selective.helperAvailability.needsInstallation,
-              !fm.fileExists(atPath:receipt.path), fm.fileExists(atPath:resource.path),
+              (!fm.fileExists(atPath:legacyReceipt.path) || !fm.fileExists(atPath:httpsReceipt.path)), fm.fileExists(atPath:resource.path),
               fm.fileExists(atPath:workURL.path) else { return false }
         do {
             let original = try Data(contentsOf:workURL)
             let profile = try JSONDecoder().decode(WorkProfile.self,from:original)
-            let rule = try JSONDecoder().decode(SharedTCPRule.self,from:Data(contentsOf:resource))
-            // Only a Mac whose existing work profile covers this destination is eligible.
-            guard profile.work(rule.domain) else { return false }
-            var candidate = profile
-            // A conflicting user-defined tree or alias takes precedence over this preset.
-            do { try candidate.mergeExactRule(rule) } catch {
-                connectionNotice = "Сохранены ваши правила. " + error.localizedDescription
-                return false
+            let bytes=try Data(contentsOf:resource)
+            let rule = try JSONDecoder().decode(SharedTCPRule.self,from:bytes)
+            struct HTTPSDelivery: Decodable { let httpsSites:[String] }
+            let delivery=try JSONDecoder().decode(HTTPSDelivery.self,from:bytes)
+            var candidate=profile
+            var receipts=[URL]()
+            if !fm.fileExists(atPath:legacyReceipt.path), profile.work(rule.domain) {
+                do {
+                    try candidate.mergeExactRule(rule)
+                    receipts.append(legacyReceipt)
+                } catch { connectionNotice="Сохранены ваши правила. " + error.localizedDescription }
+            }
+            if !fm.fileExists(atPath:httpsReceipt.path) {
+                var conflict=false
+                for host in delivery.httpsSites {
+                    let row=WorkSite(domain:host,scope:"exact",tcp:.selected([443]))
+                    if candidate.covers(row) != nil {continue}
+                    // A tree on this exact name without 443 cannot be widened silently.
+                    if candidate.beforeLogin.contains(host) || candidate.sites.contains(where:{$0.domain==host && $0.scope=="tree"}) {
+                        conflict=true;connectionNotice="Сохранено конфликтующее правило для " + host
+                        continue
+                    }
+                    try candidate.mergeExactRule(SharedTCPRule(kind:"exact-tcp-rule",domain:host,ports:[443],shortName:false))
+                }
+                if !conflict || candidate != profile {receipts.append(httpsReceipt)}
+            }
+            guard !receipts.isEmpty else {return false}
+            func markApplied() throws {
+                for receipt in receipts {try Data("applied\n".utf8).write(to:receipt,options:.atomic)}
             }
             let status = SelectiveRouter.helperReply(resources:resources)
             let desktop = status?["approvedRDPHost"] as? String ??
@@ -638,7 +722,7 @@ extension BetaMenu {
             let authorized = selective.helperAvailability.canConnect &&
                 (status?["tcpRules"] as? NSArray)?.isEqual(expected?["rules"]) == true
             if authorized && candidate == profile {
-                try Data("applied\n".utf8).write(to:receipt, options:.atomic)
+                try markApplied()
                 return false
             }
             let pending = paths.data.appendingPathComponent("pending-" + UUID().uuidString)
@@ -664,10 +748,9 @@ extension BetaMenu {
                         throw ProxyFailure("Помощник ещё не подтвердил рабочее правило. Повторите подключение.")
                     }
                     if candidate != profile {
-                        let result = Self.routeCommand("save",[pending.path],resources:self.resources)
-                        guard result.code == 0 else { throw ProxyFailure(result.output) }
+                        try self.saveAppliedProfile(pending,from:profile,to:candidate,bundled:true)
                     }
-                    try Data("applied\n".utf8).write(to:receipt, options:.atomic)
+                    try markApplied()
                     if resume {
                         self.connectionPhase = .checkingHelper
                         self.continueConnection()

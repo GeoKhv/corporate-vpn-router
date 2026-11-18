@@ -43,8 +43,21 @@ func run() throws {
     """+"\n")
     let rule = try JSONDecoder().decode(SharedTCPRule.self,from:Data(contentsOf:resources.appendingPathComponent("BundledTCPRule.json")))
     let suffix=rule.domain.split(separator:".").dropFirst().joined(separator:".")
-    let original=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree"),WorkSite(domain:"mail.example",scope:"exact",tcp:.selected([8443]))], beforeLogin:["vpn.example"],ports:[443])
-    var old=original; old.version=2
+    var original=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree"),WorkSite(domain:"mail.example",scope:"exact",tcp:.selected([8443]))], beforeLogin:["vpn.example"],ports:[443])
+    // Exercise a previous installed profile on a disposable copy if supplied.
+    if CommandLine.arguments.count>2 {
+        original=try JSONDecoder().decode(WorkProfile.self,from:Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[2])))
+    } else {
+        original.sites.append(WorkSite(domain:"unrelated.example",scope:"exact",tcp:.any,alias:"unrelated"))
+    }
+    var old=original;old.version=2
+    let payloadObject=try JSONSerialization.jsonObject(with:Data(contentsOf:resources.appendingPathComponent("BundledTCPRule.json"))) as! [String:Any]
+    let https=payloadObject["httpsSites"] as! [String]
+    require(https==["testrwa.alfabank.ru","administrator.testrwa.alfabank.ru"],"approved HTTPS payload")
+    let fromPrevious=CommandLine.arguments.count>2
+    if fromPrevious {
+        try JSONFile.write(true,to:paths.data.appendingPathComponent("bundled-tcp-rule-v1.applied"))
+    }
     try JSONFile.write(old,to:menu.workURL)
     try JSONFile.write(["site":"vpn.example"],to:paths.data.appendingPathComponent("ssl-site.json"))
     let desktop="desktop."+suffix
@@ -80,20 +93,40 @@ func run() throws {
     cancel=false;connect()
     waitFor("same click continues to route startup") { fm.fileExists(atPath:started.path) }
     let stored=try JSONDecoder().decode(WorkProfile.self,from:Data(contentsOf:menu.workURL))
-    require(stored.sites.dropLast().elementsEqual(old.sites),"other sites intact")
-    require(stored.sites.last==WorkSite(domain:rule.domain,scope:"exact",tcp:.selected([22,443,6443]),alias:String(rule.domain.prefix(while:{$0 != "."}))),"narrow rule with inherited HTTPS")
+    for row in old.sites where row.domain != rule.domain || fromPrevious {
+        require(stored.sites.contains(row),"prior row, alias and ports unchanged")
+    }
+    require(stored.beforeLogin==old.beforeLogin && stored.searchDomains==old.searchDomains && stored.ports==old.ports,"profile settings intact")
+    if !fromPrevious {
+        require(stored.sites.contains(WorkSite(domain:rule.domain,scope:"exact",tcp:.selected([22,443,6443]),alias:String(rule.domain.prefix(while:{$0 != "."})))),"legacy delivery")
+    }
+    for host in https {
+        require(stored.covers(WorkSite(domain:host,scope:"exact",tcp:.selected([443]))) != nil,"delivered HTTPS")
+        require(stored.sites.filter{$0.domain==host}.count<=1,"no duplicate")
+    }
+    require(!stored.sites.contains{$0.domain=="alfabank.ru" && !old.sites.contains($0)},"no parent expansion")
     require(try JSONDecoder().decode(WorkProfile.self,from:Data(contentsOf:paths.data.appendingPathComponent("previous-work-sites.json")))==old,"previous profile backed up")
     menu.stop("done");waitFor("fixture stopped") { menu.selective.process==nil }
     try JSONFile.write(old,to:menu.workURL)
     require(!menu.applyBundledRuleIfNeeded(connectAfterward:false),"user removal respected")
     let receipt=paths.data.appendingPathComponent("bundled-tcp-rule-v1.applied")
-    try fm.removeItem(at:receipt)
+    if !fromPrevious {try fm.removeItem(at:receipt)}
     try JSONFile.write(stored,to:menu.workURL)
     require(!menu.applyBundledRuleIfNeeded(connectAfterward:false) && fm.fileExists(atPath:receipt.path),"already installed and approved, no prompt")
     require(prompts==2,"one cancelled authorization plus one accepted authorization")
+    let httpsReceipt=paths.data.appendingPathComponent("bundled-https-v1.applied")
+    try fm.removeItem(at:httpsReceipt)
+    var covered=old
+    covered.sites.removeAll {https.contains($0.domain)}
+    covered.sites.append(WorkSite(domain:https[0],scope:"tree",tcp:.any))
+    try JSONFile.write(covered,to:menu.workURL)
+    try reply((try JSONSerialization.jsonObject(with:covered.enrollment(desktop:desktop)) as! [String:Any])["rules"]!)
+    require(!menu.applyBundledRuleIfNeeded(connectAfterward:false) && menu.storedWork()==covered && fm.fileExists(atPath:httpsReceipt.path),"anyTCP tree covers both; no duplicate or prompt")
+    try JSONFile.write(old,to:menu.workURL)
+    require(!menu.applyBundledRuleIfNeeded(connectAfterward:false) && menu.storedWork()==old,"subsequent user change respected")
     var legacy=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree")])
     try legacy.mergeExactRule(rule)
-    require(legacy.version==2 && legacy.sites.last==stored.sites.last,"v1 scope and ports retained")
+    require(legacy.version==2 && legacy.sites.last?.tcp == .selected([22,443,6443]),"v1 scope and ports retained")
     print("PASS packaged rule, cancel/retry, verified save, same-click continuation, existing settings, no reapplication after deletion, unchanged v1 and v2 grants")
 }
 do { try run() } catch { fputs("FAIL: \(error)\n",stderr);exit(1) }

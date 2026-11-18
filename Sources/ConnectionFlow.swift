@@ -75,6 +75,9 @@ extension BetaMenu {
         } else if connectionPhase == .activatingRoutes && selective.ready {
             connectionPhase = .connected
             health = .ready; stage = "Подключено"; note = "Рабочие сайты доступны."
+            if FileManager.default.fileExists(atPath:pendingURL.path) {
+                note += " Отложенные правила сохранятся до подключения после полного отключения."
+            }
         } else if selective.state == "stopped", [.preparingRoutes, .authenticating, .activatingRoutes, .connected].contains(connectionPhase) {
             failConnection("Контроллер маршрутов завершился. Подключение остановлено.", code: "ROUTES_LOST")
         } else if (connectionPhase == .authenticating && !selective.awaitingTunnel) ||
