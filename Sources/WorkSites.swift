@@ -207,7 +207,11 @@ extension BetaMenu {
             p.login.placeholderString="Точные имена для доступа до входа"
             for field in [p.suffixes,p.login] { field.widthAnchor.constraint(equalToConstant:460).isActive=true }
             for field in [p.status,p.preview,settingsNote] {field.preferredMaxLayoutWidth=665}
-            let save=NSStackView(views:[panelButton("Применить правила",#selector(savePolicy)),panelButton("Предыдущие правила",#selector(undoSites)),panelButton("Сертификаты…",#selector(certificates))])
+            var saveButtons=[panelButton("Применить правила",#selector(savePolicy)),panelButton("Предыдущие правила",#selector(undoSites))]
+#if CVR_SELECTIVE_TUN
+            saveButtons.append(panelButton("Сертификаты…",#selector(certificates)))
+#endif
+            let save=NSStackView(views:saveButtons)
             attachColumn(makeColumn([NSTextField(labelWithString:"Рабочие правила"),scroll(p.table,width:675,height:118),actions,form,
                 NSTextField(labelWithString:"Вставьте ссылки или имена, по одному на строку"),scroll(p.address,width:675,height:50),pasteRow,p.preview,
                 p.source,NSStackView(views:[NSTextField(labelWithString:"Свои суффиксы"),p.suffixes]),NSStackView(views:[NSTextField(labelWithString:"До входа"),p.login]),save,settingsNote,p.status],spacing:7),to:w)
