@@ -391,7 +391,15 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #endif
     }
     @objc func menuCancelConnection() { toggle() }
-    @objc func show() { hiddenByUser = false; if window.isMiniaturized { window.deminiaturize(nil) }; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil) }
+    @objc func show() {
+        hiddenByUser = false
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        // A menu bar (LSUIElement) app is not brought forward reliably by the
+        // deprecated ignoringOtherApps flag on macOS 14+.
+        if #available(macOS 14.0, *) { NSApp.activate() } else { NSApp.activate(ignoringOtherApps: true) }
+        window.makeKeyAndOrderFront(nil)
+        window.orderFrontRegardless()
+    }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { show(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -804,6 +812,9 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             submit.bezelColor = switching ? .controlAccentColor : nil
             window.setContentSize(NSSize(width:570,height:switching ? 466 : 446))
             refresh()
+            // The gateway asks for input seconds after "Подключить"; by then the
+            // window may be closed, behind Check Point's GUI or another app.
+            show()
             window.makeFirstResponder(kind == "username" ? username : ["trust","switch_official"].contains(kind) ? submit : secret)
             return
         }
