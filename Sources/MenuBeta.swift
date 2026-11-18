@@ -217,6 +217,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         primary = NSButton(title: "Подключить", target: self, action: #selector(toggle))
         setupBrowser = NSButton(title: "Настроить Chrome…", target: self, action: #selector(appRouting))
         let row = NSStackView(views: [primary,
+                                      NSButton(title: "Доступы…", target: self, action: #selector(settings)),
                                       NSButton(title: "Диагностика…", target: self, action: #selector(diagnose))])
         let motto = NSTextField(labelWithString: "Trust me, I'm an engineer.")
         let author = NSTextField(labelWithString: "Made by @geokhv ·")
@@ -272,7 +273,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     #if CVR_UPDATES
     private func configureLocalHelper(edit: Bool) {
         guard let profile = storedWork(), !profile.sites.isEmpty else {
-            note = "Сначала откройте «Рабочие сайты» и проверьте сохранённый профиль."; refresh(); return
+            note = "Сначала откройте «Доступы…» и проверьте сохранённый профиль."; refresh(); return
         }
         let previous = SelectiveRouter.helperReply(resources:resources)
         let domains = (previous?["approvedDomains"] as? [String] ?? profile.sites.map { $0.domain }).sorted()
@@ -654,7 +655,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         #if CVR_UPDATES
         if !selective.holdingRoutes && FileManager.default.fileExists(atPath:pendingURL.path) {applyPending(connectAfter:true);return}
         #endif
-        guard storedWork() != nil else { note = "Добавьте рабочие сайты."; refresh(); return }
+        guard storedWork() != nil else { note = "Добавьте доступ: кнопка «Доступы…»."; refresh(); return }
         connectionAttempt += 1; connectionFailure = nil; connectionFailureCode = nil; connectionNotice = nil
         if selective.holdingRoutes {
             connectionPhase = .preparingRoutes
@@ -668,7 +669,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard engine == nil, prepareLogin() else { return }
         let route=Self.routeCommand("status")
         guard route.code==0 && route.output.hasPrefix("Chrome ·") && BrowserRouter.effective(), activated, storedWork() != nil else {
-            note = storedWork() == nil ? "Откройте «Рабочие сайты…» и добавьте список." : "Нажмите «Настроить Chrome…», подтвердите профиль в macOS, затем подключитесь."
+            note = storedWork() == nil ? "Откройте «Доступы…» и добавьте адреса." : "Нажмите «Настроить Chrome…», подтвердите профиль в macOS, затем подключитесь."
             refresh(); return
         }
         startAuthentication()
@@ -802,7 +803,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             promptTitle.isHidden = !switching
             if switching {
                 stage = "Подтверждение подключения"; note = "Check Point сейчас подключён."
-                promptLabel.stringValue = "Официальный VPN отключится, GUI Check Point закроется и начнётся вход в этом приложении. Рабочие сайты временно потеряют доступ до завершения входа."
+                promptLabel.stringValue = "Официальный VPN отключится, GUI Check Point закроется и начнётся вход в этом приложении. Рабочие доступы временно пропадут до завершения входа."
             }
             submit.title = switching ? "Отключить Check Point и продолжить" : kind == "trust" ? "Подтвердить" : "Продолжить"
             submit.controlSize = switching ? .large : .regular

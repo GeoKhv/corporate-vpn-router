@@ -185,7 +185,7 @@ extension BetaMenu {
     @objc func settings() {
         let p=sitesPanel
         if settingsWindow == nil {
-            let w=makeWindow("Рабочие ресурсы",730,685)
+            let w=makeWindow("Доступы",730,685)
             w.isRestorable=false
             for (id,title,width) in [("host","Адрес",285),("scope","Охват",125),("ports","TCP",95),("alias","Алиас",135)] {
                 let column=NSTableColumn(identifier:NSUserInterfaceItemIdentifier(id))

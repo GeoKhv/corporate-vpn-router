@@ -74,7 +74,7 @@ extension BetaMenu {
             startAuthentication()
         } else if connectionPhase == .activatingRoutes && selective.ready {
             connectionPhase = .connected
-            health = .ready; stage = "Подключено"; note = "Рабочие сайты доступны."
+            health = .ready; stage = "Подключено"; note = "Рабочие доступы открыты."
             if FileManager.default.fileExists(atPath:pendingURL.path) {
                 note += " Отложенные правила сохранятся до подключения после полного отключения."
             }
