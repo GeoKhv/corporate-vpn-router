@@ -99,6 +99,38 @@ struct PendingWork: Codable {
     }
 }
 
+enum AccessPurpose {
+    static let named:[(String,Int)]=[("Веб",443),("Веб",80),("SSH",22),("Kubernetes",6443),("Postgres",5432),("Redis",6379),("Kafka",9092)]
+    // Purpose shown to the user for one TCP port; the scheme only refines nonstandard ports.
+    static func label(port:Int,scheme:String="") -> String {
+        if port==6443 { return "Kubernetes · 6443" }
+        switch scheme {
+        case "https","http": return "Веб · \(port)"
+        case "ssh": return "SSH · \(port)"
+        case "postgresql": return "Postgres · \(port)"
+        case "redis": return "Redis · \(port)"
+        default: break
+        }
+        if let known=named.first(where:{$0.1==port}) { return known.0+" · \(port)" }
+        return "TCP · \(port)"
+    }
+    static func label(_ tcp:TCPPorts?,defaultPorts ports:[Int]) -> String {
+        switch tcp ?? .selected(ports) {
+        case .any: return "Любой TCP"
+        case .selected(let list): return list.sorted().map{label(port:$0)}.joined(separator:", ")
+        }
+    }
+}
+final class PreviewItem {
+    let host:String, choices:[String], tree:Bool, alias:String?, scheme:String, port:Int
+    let check=NSButton(checkboxWithTitle:"",target:nil,action:nil)
+    let hostPopup=NSPopUpButton(), purpose=NSPopUpButton(), aliasCheck=NSButton(checkboxWithTitle:"",target:nil,action:nil)
+    var covered:WorkSite?
+    init(host:String,choices:[String],tree:Bool,alias:String?,scheme:String,port:Int) {
+        self.host=host;self.choices=choices;self.tree=tree;self.alias=alias;self.scheme=scheme;self.port=port
+    }
+}
+
 final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     var draft = WorkProfile()
     var base = WorkProfile()
@@ -112,6 +144,11 @@ final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     var gatewaySuffixes = [String]()
     let commit = NSButton()
     var requestID = UUID()
+    var items=[PreviewItem]()
+    let previewBox=NSStackView(), previewTitle=NSTextField(labelWithString:""), addButton=NSButton()
+    let previewList=NSStackView(), previewScroll=NSScrollView()
+    var previewHeight:NSLayoutConstraint?
+    weak var column:NSStackView?
     let status = NSTextField(wrappingLabelWithString:""), preview = NSTextField(wrappingLabelWithString:"")
     func numberOfRows(in tableView: NSTableView) -> Int { draft.sites.count }
     func tableView(_ tableView: NSTableView, objectValueFor column: NSTableColumn?, row: Int) -> Any? {
@@ -185,7 +222,7 @@ extension BetaMenu {
     @objc func settings() {
         let p=sitesPanel
         if settingsWindow == nil {
-            let w=makeWindow("Доступы",730,685)
+            let w=makeWindow("Доступы",730,720)
             w.isRestorable=false
             for (id,title,width) in [("host","Адрес",285),("scope","Охват",125),("ports","TCP",95),("alias","Алиас",135)] {
                 let column=NSTableColumn(identifier:NSUserInterfaceItemIdentifier(id))
@@ -201,7 +238,18 @@ extension BetaMenu {
             p.address.isRichText=false; p.address.isAutomaticQuoteSubstitutionEnabled=false
             p.address.isAutomaticDashSubstitutionEnabled=false
             p.address.textContainer?.widthTracksTextView=true
-            let pasteRow=NSStackView(views:[panelButton("Разобрать адреса…",#selector(parseAddresses)),panelButton("Проверить подключение",#selector(previewRoute))])
+            let pasteRow=NSStackView(views:[panelButton("Разобрать",#selector(parseAddresses))])
+            let addTitle=NSTextField(labelWithString:"Добавить доступ");addTitle.font = .systemFont(ofSize:13,weight:.semibold)
+            let hint=NSTextField(wrappingLabelWithString:"Вставьте ссылки, имена, user@host, host:порт или строку server: из kubeconfig — по одной на строку");hint.textColor = .secondaryLabelColor;hint.preferredMaxLayoutWidth=675
+            p.previewTitle.font = .systemFont(ofSize:12,weight:.medium)
+            p.addButton.target=self;p.addButton.action=#selector(addPreview);p.addButton.bezelStyle = .rounded;p.addButton.keyEquivalent="\r"
+            p.previewList.orientation = .vertical;p.previewList.alignment = .leading;p.previewList.spacing=6
+            p.previewScroll.hasVerticalScroller=true;p.previewScroll.borderType = .bezelBorder;p.previewScroll.documentView=p.previewList
+            p.previewScroll.widthAnchor.constraint(equalToConstant:675).isActive=true
+            p.previewHeight=p.previewScroll.heightAnchor.constraint(equalToConstant:120);p.previewHeight?.isActive=true
+            p.previewBox.orientation = .vertical;p.previewBox.alignment = .leading;p.previewBox.spacing=6
+            for view in [p.previewTitle,p.previewScroll,NSStackView(views:[p.addButton,panelButton("Очистить",#selector(clearPreview))])] { p.previewBox.addArrangedSubview(view) }
+            p.previewBox.isHidden=true
             let actions=NSStackView(views:[panelButton("Изменить",#selector(selectSite)),panelButton("Удалить",#selector(removeSite)),panelButton("Отменить правку",#selector(cancelDraftEdit)),panelButton("Импорт…",#selector(importSites)),panelButton("Экспорт…",#selector(exportSites))])
             p.suffixes.placeholderString="Дополнительные суффиксы поиска через запятую"
             p.login.placeholderString="Точные имена для доступа до входа"
@@ -212,9 +260,10 @@ extension BetaMenu {
             saveButtons.append(panelButton("Сертификаты…",#selector(certificates)))
 #endif
             let save=NSStackView(views:saveButtons)
-            attachColumn(makeColumn([NSTextField(labelWithString:"Рабочие правила"),scroll(p.table,width:675,height:118),actions,form,
-                NSTextField(labelWithString:"Вставьте ссылки или имена, по одному на строку"),scroll(p.address,width:675,height:50),pasteRow,p.preview,
-                p.source,NSStackView(views:[NSTextField(labelWithString:"Свои суффиксы"),p.suffixes]),NSStackView(views:[NSTextField(labelWithString:"До входа"),p.login]),save,settingsNote,p.status],spacing:7),to:w)
+            let column=makeColumn([addTitle,hint,scroll(p.address,width:675,height:56),pasteRow,p.preview,p.previewBox,
+                NSTextField(labelWithString:"Рабочие правила"),scroll(p.table,width:675,height:118),actions,form,
+                p.source,NSStackView(views:[NSTextField(labelWithString:"Свои суффиксы"),p.suffixes]),NSStackView(views:[NSTextField(labelWithString:"До входа"),p.login]),save,settingsNote,p.status],spacing:7)
+            p.column=column;attachColumn(column,to:w)
             settingsWindow=w
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)), saved.base==p.base { p.draft=saved.profile }
@@ -340,85 +389,149 @@ extension BetaMenu {
             DispatchQueue.main.async {completion(result)}
         }
     }
-    @objc func previewRoute(){
-        let p=sitesPanel,text=p.address.string.trimmingCharacters(in:.whitespacesAndNewlines),id=UUID()
+    func fitSettingsWindow() {
+        guard let w=settingsWindow,let column=sitesPanel.column else{return}
+        w.contentView?.layoutSubtreeIfNeeded()
+        let height=column.fittingSize.height+38
+        var frame=w.frame
+        let target=w.frameRect(forContentRect:NSRect(x:0,y:0,width:frame.width,height:height)).height
+        frame.origin.y+=frame.height-target;frame.size.height=target
+        w.setFrame(frame,display:true,animate:false)
+    }
+    func checkRoute(_ text:String){
+        let p=sitesPanel,id=UUID()
         guard text.utf8.count<=2048, !text.contains("\n") else {p.preview.stringValue="Для проверки выберите один адрес.";return}
         p.requestID=id;p.preview.stringValue="Проверяем соединение…"
         analyzeInput(Data(text.utf8),preview:false){ result in
-            guard id==p.requestID,text==p.address.string.trimmingCharacters(in:.whitespacesAndNewlines) else{return}
+            guard id==p.requestID else{return}
             p.preview.stringValue=result["message"] as? String ?? "Проверка не завершена."
         }
     }
+    @objc func checkCoveredRow(_ sender:NSButton){ if let text=sender.identifier?.rawValue {checkRoute(text)} }
     @objc func parseAddresses(){
         let p=sitesPanel,text=p.address.string,id=UUID()
         readLogin()
-        guard !text.isEmpty,text.utf8.count<=32768 else {p.preview.stringValue="Вставьте до 64 адресов (32 КБ).";return}
+        guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=32768 else {p.preview.stringValue="Вставьте до 64 адресов (32 КБ).";return}
         let request:[String:Any]=["text":text,"suffixes":Array(Set(p.gatewaySuffixes+(p.draft.searchDomains ?? []))).sorted()]
         guard let data=try? JSONSerialization.data(withJSONObject:request) else{return}
         p.requestID=id;p.preview.stringValue="Разбираем адреса…"
         analyzeInput(data,preview:true){ result in
             guard id==p.requestID,text==p.address.string else{return}
             guard let rows=result["rows"] as? [[String:Any]],!rows.isEmpty else {p.preview.stringValue=result["message"] as? String ?? "Нет адресов.";return}
-            self.offerRows(rows)
+            self.showPreview(rows)
         }
     }
-    func offerRows(_ rows:[[String:Any]]) {
-        let p=sitesPanel,alert=NSAlert()
-        var controls=[NSView](), choices=[(NSButton,NSPopUpButton,[WorkSite])]()
-        for item in rows {
-            guard let host=item["host"] as? String,let port=item["port"] as? Int else {
-                controls.append(NSTextField(labelWithString:item["error"] as? String ?? "Неизвестный формат"));continue
-            }
-            let hosts=item["choices"] as? [String] ?? [host]
-            let popup=NSPopUpButton(); popup.addItems(withTitles:hosts)
-            if hosts.count>1 { popup.insertItem(withTitle:"Выберите полное имя",at:0);popup.selectItem(at:0) }
-            let tree=item["tree"] as? Bool == true
-            let rules=hosts.map {WorkSite(domain:$0,scope:tree ? "tree":"exact",tcp:.selected([port]),alias:item["alias"] as? String)}
-            let covered=hosts.count==1 ? p.draft.covers(rules[0]):nil
-            let scheme=item["scheme"] as? String ?? "tcp"
-            var label="\(scheme.uppercased()) · \(port)" + (item["assumed"] as? Bool == true ? " по умолчанию":"")
-            if tree { label += " · домен и поддомены" }
-            if let alias=item["alias"] as? String { label += " · алиас "+alias }
-            if let covered { label += " · разрешено: "+covered.domain }
-            let check=NSButton(checkboxWithTitle:label,target:nil,action:nil)
-            check.state=covered==nil ? .on:.off;check.isEnabled=covered==nil
-            controls.append(NSStackView(views:[popup,check]));choices.append((check,popup,rules))
+    func firstLabel(_ host:String)->String { String(host.prefix(while:{$0 != "."})) }
+    func previewRow(_ item:PreviewItem,note:String?)->NSView {
+        let hostView:NSView
+        if item.choices.count>1 {
+            item.hostPopup.addItems(withTitles:["Выберите полное имя"]+item.choices);item.hostPopup.selectItem(at:0)
+            item.hostPopup.target=self;item.hostPopup.action=#selector(previewChoice(_:))
+            hostView=item.hostPopup
+        } else {
+            let label=NSTextField(labelWithString:(item.tree ? "*.":"")+item.host);label.lineBreakMode = .byTruncatingMiddle
+            hostView=label
         }
-        let stack=makeColumn(controls)
-        stack.frame=NSRect(origin:.zero,size:stack.fittingSize)
-        let scroll=NSScrollView(frame:NSRect(x:0,y:0,width:min(800,max(510,stack.fittingSize.width+22)),height:min(340,stack.fittingSize.height+12)))
-        scroll.hasVerticalScroller=true;scroll.hasHorizontalScroller=true;scroll.documentView=stack
-        alert.accessoryView=scroll;alert.messageText="Распознанные адреса"
-        alert.informativeText="Выберите новые назначения. Для смены портов или охвата существующего правила используйте «Изменить»."
-        alert.addButton(withTitle:"В черновик");alert.addButton(withTitle:"Отмена")
-        p.preview.stringValue="Разобрано строк: \(rows.count). Доступ можно проверить отдельно."
-        guard alert.runModal() == .alertFirstButtonReturn else{return}
-        let old=p.draft
-        var next=old
+        var options=AccessPurpose.named.map{(AccessPurpose.label(port:$0.1),$0.1)}
+        if !options.contains(where:{$0.1==item.port}) { options.insert((AccessPurpose.label(port:item.port,scheme:item.scheme),item.port),at:0) }
+        for (title,port) in options { item.purpose.addItem(withTitle:title);item.purpose.lastItem?.representedObject=port }
+        item.purpose.selectItem(at:options.firstIndex{$0.1==item.port} ?? 0)
+        let main=NSStackView(views:[item.check,hostView,item.purpose])
+        if !item.tree && item.host.contains(".") || item.alias != nil {
+            item.aliasCheck.title="Короткое имя: "+(item.alias ?? firstLabel(item.host))
+            item.aliasCheck.state=item.alias==nil ? .off:.on
+            main.addArrangedSubview(item.aliasCheck)
+        }
+        item.check.target=self;item.check.action=#selector(previewToggled)
+        hostView.widthAnchor.constraint(equalToConstant:230).isActive=true
+        item.purpose.widthAnchor.constraint(equalToConstant:150).isActive=true
+        guard let note else {return main}
+        let text=NSTextField(labelWithString:note);text.textColor = .secondaryLabelColor
+        var views:[NSView]=[main,text]
+        if item.covered != nil {
+            let check=NSButton(title:"Проверить подключение",target:self,action:#selector(checkCoveredRow(_:)))
+            check.identifier=NSUserInterfaceItemIdentifier(item.host+":"+String(item.port));check.controlSize = .small;check.bezelStyle = .inline
+            views.append(check)
+        }
+        return makeColumn(views,spacing:2)
+    }
+    @objc func previewChoice(_ sender:NSPopUpButton) {
+        sitesPanel.items.first{$0.hostPopup===sender}?.check.state = sender.indexOfSelectedItem>0 ? .on:.off
+        updatePreviewCount()
+    }
+    @objc func previewToggled(){updatePreviewCount()}
+    func updatePreviewCount() {
+        let p=sitesPanel,count=p.items.filter{$0.check.state == .on && $0.check.isEnabled}.count
+        p.addButton.title="Добавить \(count)";p.addButton.isEnabled=count>0
+    }
+    func showPreview(_ rows:[[String:Any]]) {
+        let p=sitesPanel
+        p.items=[];p.previewList.arrangedSubviews.forEach{$0.removeFromSuperview()}
+        var covered=0
+        for row in rows {
+            guard let host=row["host"] as? String,let port=row["port"] as? Int else {
+                let label=NSTextField(wrappingLabelWithString:"✕ "+(row["error"] as? String ?? "Неизвестный формат"))
+                label.textColor = .systemRed;label.preferredMaxLayoutWidth=640;p.previewList.addArrangedSubview(label);continue
+            }
+            let item=PreviewItem(host:host,choices:row["choices"] as? [String] ?? [host],tree:row["tree"] as? Bool==true,alias:row["alias"] as? String,
+                                 scheme:row["scheme"] as? String ?? "tcp",port:port)
+            let rule=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:.selected([port]),alias:item.alias)
+            item.covered=item.choices.count==1 ? p.draft.covers(rule):nil
+            item.check.state=item.covered==nil && item.choices.count==1 ? .on:.off
+            var note:String?
+            if let cover=item.covered {
+                item.check.isEnabled=false;item.purpose.isEnabled=false;item.aliasCheck.isEnabled=false;covered+=1
+                note="уже есть: "+(cover.scope=="tree" ? "*.":"")+cover.domain
+            }
+            p.items.append(item);p.previewList.addArrangedSubview(previewRow(item,note:note))
+        }
+        p.previewTitle.stringValue="Найдено: \(rows.count)"+(covered>0 ? " · уже разрешено: \(covered)":"")
+        p.previewList.frame=NSRect(origin:.zero,size:p.previewList.fittingSize)
+        p.previewHeight?.constant=min(190,p.previewList.fittingSize.height+8)
+        p.previewBox.isHidden=false;p.preview.stringValue=""
+        updatePreviewCount();fitSettingsWindow()
+    }
+    @objc func clearPreview(){
+        let p=sitesPanel
+        p.items=[];p.previewList.arrangedSubviews.forEach{$0.removeFromSuperview()}
+        p.previewBox.isHidden=true;p.preview.stringValue="";fitSettingsWindow()
+    }
+    @objc func addPreview(){
+        let p=sitesPanel,old=p.draft
+        var next=old,added=[String]()
         do {
-            for (check,popup,rules) in choices where check.state == .on {
-                let idx=popup.indexOfSelectedItem-(rules.count>1 ? 1:0)
-                guard rules.indices.contains(idx) else{throw ProxyFailure("Выберите полное имя из найденных.")}
-                var row=rules[idx]
+            for item in p.items where item.check.state == .on && item.check.isEnabled {
+                var host=item.host
+                if item.choices.count>1 {
+                    guard item.hostPopup.indexOfSelectedItem>0 else{throw ProxyFailure("Выберите полное имя из найденных.")}
+                    host=item.choices[item.hostPopup.indexOfSelectedItem-1]
+                }
+                let port=item.purpose.selectedItem?.representedObject as? Int ?? item.port
+                let alias=item.aliasCheck.superview != nil && item.aliasCheck.state == .on ? (item.alias ?? firstLabel(host)):nil
+                var row=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:.selected([port]),alias:alias)
                 if next.covers(row) != nil { continue }
                 guard !next.beforeLogin.contains(row.domain) else{throw ProxyFailure("Имя исключено для доступа до входа.")}
                 if let existing=next.sites.first(where:{$0.domain==row.domain}) {
                     // An alias selected in the preview can be attached without changing grants.
                     guard row.alias != nil,existing.alias==nil, next.covers(WorkSite(domain:row.domain,scope:row.scope,tcp:row.tcp)) != nil else {throw ProxyFailure("Для "+row.domain+" уже есть правило. Измените его явно.")}
-                    row=existing;row.alias=rules[idx].alias
+                    row=existing;row.alias=alias
                     next.sites.removeAll{$0.domain==row.domain}
                 } else if let parent=next.matching(row.domain) {
                     // A more specific row must retain inherited ports.
                     switch parent.tcp ?? .selected(next.ports) {
                     case .any:row.tcp = .any
-                    case .selected(let ports):if case .selected(let added)=row.tcp {row.tcp = .selected(Array(Set(ports+added)).sorted())}
+                    case .selected(let ports):if case .selected(let more)=row.tcp {row.tcp = .selected(Array(Set(ports+more)).sorted())}
                     }
                 }
                 guard row.alias==nil || !next.sites.contains(where:{$0.alias==row.alias}) else{throw ProxyFailure("Алиас уже занят.")}
-                next.sites.append(row);next.version=2
+                next.sites.append(row);next.version=2;added.append(row.domain)
             }
-            if next != old {p.draft=next;changedDraft(old)}
-        } catch {settingsNote.stringValue=error.localizedDescription}
+        } catch {settingsNote.stringValue=error.localizedDescription;return}
+        if next != old {p.draft=next;changedDraft(old)}
+        p.address.string="";clearPreview()
+        settingsNote.stringValue=added.isEmpty ? "Новых правил нет." : "Добавлено: "+String(added.count)
+        if let last=added.last,let i=p.draft.sites.firstIndex(where:{$0.domain==last}) {p.table.scrollRowToVisible(i)}
+        settingsWindow?.makeFirstResponder(p.address)
     }
     @objc func routeStatus(){
 #if CVR_SELECTIVE_TUN
