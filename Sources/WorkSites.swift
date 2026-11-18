@@ -117,7 +117,7 @@ enum AccessPurpose {
     static func label(_ tcp:TCPPorts?,defaultPorts ports:[Int]) -> String {
         switch tcp ?? .selected(ports) {
         case .any: return "Любой TCP"
-        case .selected(let list): return list.sorted().map{label(port:$0)}.joined(separator:", ")
+        case .selected(let list): return list.sorted().map{label(port:$0).replacingOccurrences(of:" · ",with:" ")}.joined(separator:", ")
         }
     }
 }
@@ -129,6 +129,10 @@ final class PreviewItem {
     init(host:String,choices:[String],tree:Bool,alias:String?,scheme:String,port:Int) {
         self.host=host;self.choices=choices;self.tree=tree;self.alias=alias;self.scheme=scheme;self.port=port
     }
+}
+
+final class MessageLabel: NSTextField {
+    override var stringValue:String { didSet { isHidden=stringValue.isEmpty } }
 }
 
 final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
@@ -150,13 +154,16 @@ final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     var previewHeight:NSLayoutConstraint?
     var filter=""
     let search=NSSearchField(), editBox=NSStackView(), editButton=NSButton(), deleteButton=NSButton()
+    let stateLabel=NSTextField(labelWithString:""), saveButton=NSButton(), cancelButton=NSButton()
+    let more=NSPopUpButton(frame:.zero,pullsDown:true), advancedToggle=NSButton(), advanced=NSStackView()
     // Draft indexes of the rows currently listed; the search field only narrows the view.
     var rowIndexes:[Int] {
         let query=filter.lowercased()
         return draft.sites.indices.filter { query.isEmpty || draft.sites[$0].domain.contains(query) || (draft.sites[$0].alias ?? "").contains(query) }
     }
     weak var column:NSStackView?
-    let status = NSTextField(wrappingLabelWithString:""), preview = NSTextField(wrappingLabelWithString:"")
+    let status = NSTextField(wrappingLabelWithString:""), preview = MessageLabel(wrappingLabelWithString:"")
+    var noteObserver:NSKeyValueObservation?
     func numberOfRows(in tableView: NSTableView) -> Int { rowIndexes.count }
     func tableView(_ tableView: NSTableView, objectValueFor column: NSTableColumn?, row: Int) -> Any? {
         let indexes=rowIndexes
@@ -232,7 +239,7 @@ extension BetaMenu {
         if settingsWindow == nil {
             let w=makeWindow("Доступы",730,720)
             w.isRestorable=false
-            for (id,title,width) in [("host","Адрес",300),("purpose","Для чего",230),("alias","Короткое имя",130)] {
+            for (id,title,width) in [("host","Адрес",262),("purpose","Для чего",245),("alias","Короткое имя",160)] {
                 let column=NSTableColumn(identifier:NSUserInterfaceItemIdentifier(id))
                 column.title=title; column.width=CGFloat(width); p.table.addTableColumn(column)
             }
@@ -243,7 +250,8 @@ extension BetaMenu {
             p.domain.placeholderString="Полное имя"; p.ports.placeholderString="443, 22 или *"
             p.domain.widthAnchor.constraint(equalToConstant:300).isActive=true
             p.ports.widthAnchor.constraint(equalToConstant:160).isActive=true
-            p.commit.title="Готово";p.commit.target=self; p.commit.action=#selector(editSite);p.commit.bezelStyle = .rounded;p.commit.keyEquivalent="\r"
+            p.commit.title="Готово";p.commit.target=self; p.commit.action=#selector(editSite);p.commit.bezelStyle = .rounded
+            for field in [p.domain,p.ports] { field.target=self;field.action=#selector(editSite) }
             let purposes=NSPopUpButton(frame:.zero,pullsDown:true);purposes.addItem(withTitle:"Добавить назначение")
             for (name,port) in AccessPurpose.named { purposes.addItem(withTitle:name+" · \(port)");purposes.lastItem?.representedObject=port }
             purposes.addItem(withTitle:"Любой TCP");purposes.lastItem?.representedObject="*"
@@ -259,8 +267,11 @@ extension BetaMenu {
             let pasteRow=NSStackView(views:[panelButton("Разобрать",#selector(parseAddresses))])
             let addTitle=NSTextField(labelWithString:"Добавить доступ");addTitle.font = .systemFont(ofSize:13,weight:.semibold)
             let hint=NSTextField(wrappingLabelWithString:"Вставьте ссылки, имена, user@host, host:порт или строку server: из kubeconfig — по одной на строку");hint.textColor = .secondaryLabelColor;hint.preferredMaxLayoutWidth=675
+            p.preview.isHidden=true
+            p.noteObserver=settingsNote.observe(\.stringValue,options:[.new]){ [weak self] label,_ in label.isHidden=label.stringValue.isEmpty;self?.fitSettingsWindow() }
+            settingsNote.isHidden=true
             p.previewTitle.font = .systemFont(ofSize:12,weight:.medium)
-            p.addButton.target=self;p.addButton.action=#selector(addPreview);p.addButton.bezelStyle = .rounded;p.addButton.keyEquivalent="\r"
+            p.addButton.target=self;p.addButton.action=#selector(addPreview);p.addButton.bezelStyle = .rounded
             p.previewList.orientation = .vertical;p.previewList.alignment = .leading;p.previewList.spacing=6
             p.previewScroll.hasVerticalScroller=true;p.previewScroll.borderType = .bezelBorder;p.previewScroll.documentView=p.previewList
             p.previewScroll.widthAnchor.constraint(equalToConstant:675).isActive=true
@@ -270,19 +281,32 @@ extension BetaMenu {
             p.previewBox.isHidden=true
             p.editButton.title="Изменить";p.editButton.target=self;p.editButton.action=#selector(selectSite(_:))
             p.deleteButton.title="Удалить";p.deleteButton.target=self;p.deleteButton.action=#selector(removeSite)
-            let actions=NSStackView(views:[p.editButton,p.deleteButton,panelButton("Импорт…",#selector(importSites)),panelButton("Экспорт…",#selector(exportSites))])
+            let actions=NSStackView(views:[p.editButton,p.deleteButton])
             p.suffixes.placeholderString="Дополнительные суффиксы поиска через запятую"
             p.login.placeholderString="Точные имена для доступа до входа"
             for field in [p.suffixes,p.login] { field.widthAnchor.constraint(equalToConstant:460).isActive=true }
-            for field in [p.status,p.preview,settingsNote] {field.preferredMaxLayoutWidth=665}
-            var saveButtons=[panelButton("Применить правила",#selector(savePolicy)),panelButton("Предыдущие правила",#selector(undoSites))]
+            for field in [p.status,p.preview,settingsNote,p.source] {field.preferredMaxLayoutWidth=665}
+            for field in [p.login,p.suffixes] { NotificationCenter.default.addObserver(self,selector:#selector(advancedChanged),name:NSControl.textDidChangeNotification,object:field) }
+            func fieldCaption(_ text:String)->NSTextField { let l=NSTextField(labelWithString:text);l.widthAnchor.constraint(equalToConstant:130).isActive=true;return l }
+            let loginNote=NSTextField(wrappingLabelWithString:"Эти имена идут мимо туннеля, они нужны для входа.");loginNote.textColor = .secondaryLabelColor;loginNote.preferredMaxLayoutWidth=665
+            for view in [p.source,NSStackView(views:[fieldCaption("Свои суффиксы"),p.suffixes]),NSStackView(views:[fieldCaption("Доступ до входа"),p.login]),loginNote] { p.advanced.addArrangedSubview(view) }
 #if CVR_SELECTIVE_TUN
-            saveButtons.append(panelButton("Сертификаты…",#selector(certificates)))
+            p.advanced.addArrangedSubview(panelButton("Сертификаты HTTPS…",#selector(certificates)))
 #endif
-            let save=NSStackView(views:saveButtons)
+            p.advanced.addArrangedSubview(p.status)
+            p.advanced.orientation = .vertical;p.advanced.alignment = .leading;p.advanced.spacing=7;p.advanced.isHidden=true
+            p.advancedToggle.title="Дополнительно ▸";p.advancedToggle.isBordered=false;p.advancedToggle.target=self;p.advancedToggle.action=#selector(toggleAdvanced)
+            p.more.addItem(withTitle:"Ещё")
+            for (title,action) in [("Импорт…",#selector(importSites)),("Экспорт…",#selector(exportSites)),("Вернуть предыдущие правила…",#selector(undoSites))] {
+                p.more.addItem(withTitle:title);p.more.lastItem?.target=self;p.more.lastItem?.action=action
+            }
+            p.cancelButton.title="Отменить";p.cancelButton.target=self;p.cancelButton.action=#selector(cancelChanges);p.cancelButton.bezelStyle = .rounded
+            p.saveButton.title="Сохранить";p.saveButton.target=self;p.saveButton.action=#selector(savePolicy);p.saveButton.bezelStyle = .rounded;p.saveButton.keyEquivalent="\r"
+            let spacer=NSView();spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1),for:.horizontal)
+            let bar=NSStackView(views:[p.more,spacer,p.stateLabel,p.cancelButton,p.saveButton]);bar.widthAnchor.constraint(equalToConstant:675).isActive=true
             let column=makeColumn([addTitle,hint,scroll(p.address,width:675,height:56),pasteRow,p.preview,p.previewBox,
                 NSTextField(labelWithString:"Мои доступы"),p.search,scroll(p.table,width:675,height:168),actions,p.editBox,
-                p.source,NSStackView(views:[NSTextField(labelWithString:"Свои суффиксы"),p.suffixes]),NSStackView(views:[NSTextField(labelWithString:"До входа"),p.login]),save,settingsNote,p.status],spacing:7)
+                p.advancedToggle,p.advanced,settingsNote,bar],spacing:8)
             p.column=column;attachColumn(column,to:w)
             settingsWindow=w
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base
@@ -303,7 +327,42 @@ extension BetaMenu {
         p.suffixes.stringValue=(p.draft.searchDomains ?? []).joined(separator:", ")
         p.search.isHidden = p.draft.sites.count<=10 && p.filter.isEmpty
         newSite()
-        settingsNote.stringValue=p.base==p.draft ? "Сохранённые правила" : "Черновик • есть неприменённые изменения"
+        settingsNote.stringValue=""
+        refreshState()
+    }
+    func changeCount() -> Int {
+        let p=sitesPanel
+        var n=p.draft.sites.filter{!p.base.sites.contains($0)}.count+p.base.sites.filter{old in !p.draft.sites.contains{$0.domain==old.domain}}.count
+        if p.draft.beforeLogin != p.base.beforeLogin {n+=1}
+        if p.draft.searchDomains != p.base.searchDomains {n+=1}
+        return n==0 && p.draft != p.base ? 1:n
+    }
+    func refreshState() {
+        let p=sitesPanel,n=changeCount()
+        let waiting=(try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)))?.profile==p.draft && n>0
+        if n==0 { p.stateLabel.stringValue="Все изменения сохранены";p.stateLabel.textColor = .secondaryLabelColor }
+        else if waiting { p.stateLabel.stringValue="Сохранено, применится при подключении";p.stateLabel.textColor = .secondaryLabelColor }
+        else {
+            let word=n%10==1 && n%100 != 11 ? "изменение не сохранено" : ((2...4).contains(n%10) && !(12...14).contains(n%100) ? "изменения не сохранены":"изменений не сохранено")
+            p.stateLabel.stringValue="\(n) "+word;p.stateLabel.textColor = .systemOrange
+        }
+        p.cancelButton.isEnabled=n>0 || p.editing != nil
+        p.saveButton.isEnabled=p.editing==nil && !p.applying
+    }
+    @objc func advancedChanged() { readLogin();refreshState() }
+    @objc func toggleAdvanced() {
+        let p=sitesPanel
+        p.advanced.isHidden.toggle()
+        p.advancedToggle.title=p.advanced.isHidden ? "Дополнительно ▸":"Дополнительно ▾"
+        fitSettingsWindow()
+    }
+    @objc func cancelChanges() {
+        let p=sitesPanel
+        if p.editing != nil {cancelEdit();return}
+        guard changeCount()>0 else{return}
+        let old=p.draft
+        p.draft=p.base;changedDraft(old)
+        settingsNote.stringValue="Изменения отменены."
     }
     func selectedSiteIndex() -> Int? {
         let p=sitesPanel,row=p.table.selectedRow,indexes=p.rowIndexes
@@ -318,13 +377,13 @@ extension BetaMenu {
         p.editing=i;p.domain.stringValue=row.domain;p.tree.state=row.scope=="tree" ? .on:.off
         p.ports.stringValue=(row.tcp ?? .selected(p.draft.ports)).label;p.short.state=row.alias==nil ? .off:.on
         p.editBox.isHidden=false;p.table.isEnabled=false;p.editButton.isEnabled=false;p.deleteButton.isEnabled=false
-        settingsNote.stringValue="Редактируется " + row.domain;fitSettingsWindow()
+        settingsNote.stringValue="";fitSettingsWindow();refreshState()
         settingsWindow?.makeFirstResponder(p.domain)
     }
     @objc func newSite(){
         let p=sitesPanel;p.editing=nil;p.domain.stringValue="";p.ports.stringValue=TCPPorts.selected(p.draft.ports).label;p.tree.state = .off;p.short.state = .off
         p.editBox.isHidden=true;p.table.isEnabled=true;p.editButton.isEnabled=true;p.deleteButton.isEnabled=true
-        fitSettingsWindow()
+        fitSettingsWindow();if p.stateLabel.superview != nil {refreshState()}
     }
     @objc func cancelEdit(){ newSite();settingsNote.stringValue="Правка отменена." }
     @objc func pickPurpose(_ sender:NSPopUpButton) {
@@ -352,11 +411,6 @@ extension BetaMenu {
         let p=sitesPanel
         do {try JSONFile.write(PendingWork(base:p.base,profile:p.draft),to:draftURL)}
         catch {settingsNote.stringValue="Черновик в памяти. Записать его на диск не удалось."}
-    }
-    @objc func cancelDraftEdit(){
-        let p=sitesPanel
-        if p.editing != nil {newSite();return}
-        if let previous=p.history.popLast(){p.draft=previous;loadDraft();persistDraft()}
     }
     @objc func removeSite(){
         let p=sitesPanel
@@ -476,23 +530,24 @@ extension BetaMenu {
         for (title,port) in options { item.purpose.addItem(withTitle:title);item.purpose.lastItem?.representedObject=port }
         item.purpose.selectItem(at:options.firstIndex{$0.1==item.port} ?? 0)
         let main=NSStackView(views:[item.check,hostView,item.purpose])
-        if !item.tree && item.host.contains(".") || item.alias != nil {
+        if item.covered==nil && (!item.tree && item.host.contains(".") || item.alias != nil) {
             item.aliasCheck.title="Короткое имя: "+(item.alias ?? firstLabel(item.host))
             item.aliasCheck.state=item.alias==nil ? .off:.on
             main.addArrangedSubview(item.aliasCheck)
         }
         item.check.target=self;item.check.action=#selector(previewToggled)
-        hostView.widthAnchor.constraint(equalToConstant:230).isActive=true
+        hostView.widthAnchor.constraint(equalToConstant:250).isActive=true
         item.purpose.widthAnchor.constraint(equalToConstant:150).isActive=true
         guard let note else {return main}
         let text=NSTextField(labelWithString:note);text.textColor = .secondaryLabelColor
-        var views:[NSView]=[main,text]
+        var views:[NSView]=[text]
         if item.covered != nil {
             let check=NSButton(title:"Проверить подключение",target:self,action:#selector(checkCoveredRow(_:)))
-            check.identifier=NSUserInterfaceItemIdentifier(item.host+":"+String(item.port));check.controlSize = .small;check.bezelStyle = .inline
+            check.identifier=NSUserInterfaceItemIdentifier(item.host+":"+String(item.port));check.controlSize = .small;check.bezelStyle = .rounded
             views.append(check)
         }
-        return makeColumn(views,spacing:2)
+        let detail=NSStackView(views:views);detail.edgeInsets=NSEdgeInsets(top:0,left:26,bottom:0,right:0)
+        return makeColumn([main,detail],spacing:2)
     }
     @objc func previewChoice(_ sender:NSPopUpButton) {
         sitesPanel.items.first{$0.hostPopup===sender}?.check.state = sender.indexOfSelectedItem>0 ? .on:.off
@@ -601,16 +656,17 @@ extension BetaMenu {
         do{try JSONFile.write(sitesPanel.draft,to:temp)}catch{settingsNote.stringValue="Не удалось сохранить черновик.";return}
         #if CVR_SELECTIVE_TUN && CVR_UPDATES
         let validation=Self.routeCommand("check-draft",[temp.path],resources:resources)
-        guard validation.code==0 else { settingsNote.stringValue=validation.output;return }
+        guard validation.code==0 else { settingsNote.stringValue="Не сохранено: "+validation.output;return }
         let profile=sitesPanel.draft
-        guard !sitesPanel.applying,!applyingBundledRule,sitesPanel.base==storedWork() else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через экспорт.";return}
-        do {try JSONFile.write(PendingWork(base:sitesPanel.base,profile:profile),to:pendingURL)} catch {settingsNote.stringValue="Не удалось записать черновик.";return}
-        guard engine==nil && !selective.busy else {settingsNote.stringValue="Черновик сохранён до следующего подключения. Текущий сеанс продолжается.";return}
+        guard !sitesPanel.applying,!applyingBundledRule,sitesPanel.base==storedWork() else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через «Ещё → Экспорт…».";return}
+        do {try JSONFile.write(PendingWork(base:sitesPanel.base,profile:profile),to:pendingURL)} catch {settingsNote.stringValue="Не сохранено: не удалось записать черновик.";return}
+        if let first=profile.sites.firstIndex(where:{!sitesPanel.base.sites.contains($0)}) { sitesPanel.table.scrollRowToVisible(first) }
+        guard engine==nil && !selective.busy else {settingsNote.stringValue="Сохранено. Правила применятся при следующем подключении, текущий сеанс продолжается.";refreshState();return}
         applyPending(connectAfter:false)
         #else
         settingsNote.stringValue=Self.routeCommand("save",[temp.path]).output
         #endif
-        routeStatus()
+        routeStatus();refreshState()
     }
     #if CVR_SELECTIVE_TUN && CVR_UPDATES
     func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool) throws {
@@ -644,7 +700,7 @@ extension BetaMenu {
         let result=Self.routeCommand("save",[file.path],resources:resources)
         guard result.code==0 else {throw ProxyFailure(result.output)}
         if open {
-            p.base=new;p.draft=rebased ?? new;p.table.reloadData()
+            p.base=new;p.draft=rebased ?? new;p.table.reloadData();refreshState()
             if bundled {p.history.removeAll()}
         }
         if rebased==new {try? FileManager.default.removeItem(at:draftURL)}
@@ -654,7 +710,7 @@ extension BetaMenu {
         let p=sitesPanel
         guard !p.applying else{return}
         func report(_ text:String) {
-            settingsNote.stringValue=text
+            settingsNote.stringValue=text;refreshState()
             if connectAfter {
                 connectionNotice=text
                 if connectionPhase == .failed {connectionFailure=text}
