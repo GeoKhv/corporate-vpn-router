@@ -263,8 +263,16 @@ extension BetaMenu {
             p.editBox.orientation = .vertical;p.editBox.alignment = .leading;p.editBox.spacing=6;p.editBox.isHidden=true
             p.address.isRichText=false; p.address.isAutomaticQuoteSubstitutionEnabled=false
             p.address.isAutomaticDashSubstitutionEnabled=false
+            // Without a real frame and resizing rules the text view inside the scroll view takes no clicks.
+            p.address.frame=NSRect(x:0,y:0,width:660,height:56)
+            p.address.minSize=NSSize(width:0,height:56);p.address.maxSize=NSSize(width:CGFloat.greatestFiniteMagnitude,height:CGFloat.greatestFiniteMagnitude)
+            p.address.isVerticallyResizable=true;p.address.isHorizontallyResizable=false;p.address.autoresizingMask = .width
+            p.address.isEditable=true;p.address.isSelectable=true
+            p.address.font = .systemFont(ofSize:13);p.address.textColor = .labelColor;p.address.drawsBackground=true;p.address.backgroundColor = .textBackgroundColor
+            p.address.textContainerInset=NSSize(width:4,height:4)
+            p.address.textContainer?.containerSize=NSSize(width:660,height:CGFloat.greatestFiniteMagnitude)
             p.address.textContainer?.widthTracksTextView=true
-            let pasteRow=NSStackView(views:[panelButton("Разобрать",#selector(parseAddresses))])
+            let pasteRow=NSStackView(views:[panelButton("Разобрать",#selector(parseAddresses)),panelButton("Импорт…",#selector(importSites))])
             let addTitle=NSTextField(labelWithString:"Добавить доступ");addTitle.font = .systemFont(ofSize:13,weight:.semibold)
             let hint=NSTextField(wrappingLabelWithString:"Вставьте ссылки, имена, user@host, host:порт или строку server: из kubeconfig — по одной на строку");hint.textColor = .secondaryLabelColor;hint.preferredMaxLayoutWidth=675
             p.preview.isHidden=true
@@ -297,7 +305,7 @@ extension BetaMenu {
             p.advanced.orientation = .vertical;p.advanced.alignment = .leading;p.advanced.spacing=7;p.advanced.isHidden=true
             p.advancedToggle.title="Дополнительно ▸";p.advancedToggle.isBordered=false;p.advancedToggle.target=self;p.advancedToggle.action=#selector(toggleAdvanced)
             p.more.addItem(withTitle:"Ещё")
-            for (title,action) in [("Импорт…",#selector(importSites)),("Экспорт…",#selector(exportSites)),("Вернуть предыдущие правила…",#selector(undoSites))] {
+            for (title,action) in [("Экспорт…",#selector(exportSites)),("Вернуть предыдущие правила…",#selector(undoSites))] {
                 p.more.addItem(withTitle:title);p.more.lastItem?.target=self;p.more.lastItem?.action=action
             }
             p.cancelButton.title="Отменить";p.cancelButton.target=self;p.cancelButton.action=#selector(cancelChanges);p.cancelButton.bezelStyle = .rounded
@@ -485,6 +493,7 @@ extension BetaMenu {
     func fitSettingsWindow() {
         guard let w=settingsWindow,let column=sitesPanel.column else{return}
         w.contentView?.layoutSubtreeIfNeeded()
+        if let scroll=sitesPanel.address.enclosingScrollView { sitesPanel.address.setFrameSize(NSSize(width:scroll.contentSize.width,height:max(scroll.contentSize.height,sitesPanel.address.frame.height))) }
         let height=column.fittingSize.height+38
         var frame=w.frame
         let target=w.frameRect(forContentRect:NSRect(x:0,y:0,width:frame.width,height:height)).height
