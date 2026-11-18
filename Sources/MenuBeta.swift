@@ -215,6 +215,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         useCode = NSButton(title:"Войти с кодом и паролем",target:self,action:#selector(fallbackToCode))
         promptBox = makeColumn([promptTitle, promptLabel, username, secretRow, submit, leaveOfficial], spacing:12)
         primary = NSButton(title: "Подключить", target: self, action: #selector(toggle))
+        primary.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
+        primary.heightAnchor.constraint(equalToConstant: 28).isActive = true
         setupBrowser = NSButton(title: "Настроить Chrome…", target: self, action: #selector(appRouting))
         let row = NSStackView(views: [primary,
                                       NSButton(title: "Доступы…", target: self, action: #selector(settings)),
@@ -498,6 +500,18 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #else
         primary.title = engine == nil ? "Подключить" : (health == .ready ? "Отключить рабочий туннель" : "Отменить вход")
 #endif
+        // Green only while the button starts a connection; disconnect and cancel stay neutral.
+        let startsConnection = primary.title == "Подключить"
+        let title = primary.title
+        if startsConnection {
+            primary.isBordered = false; primary.wantsLayer = true
+            primary.layer?.backgroundColor = NSColor.systemGreen.cgColor; primary.layer?.cornerRadius = 6
+            primary.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 13, weight: .medium)])
+        } else {
+            primary.isBordered = true; primary.layer?.backgroundColor = nil
+            primary.attributedTitle = NSAttributedString(string: title)
+        }
+        primary.keyEquivalent = startsConnection ? "\r" : ""
         useCode.isHidden = !browserMode || engine != nil || health == .ready
         leaveOfficial.isHidden = requestKind != "switch_official"
         refreshMenuActions(); promptBox.isHidden = requestKind == nil
