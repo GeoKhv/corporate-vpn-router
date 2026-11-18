@@ -24,7 +24,7 @@ async def main():
             {'domain':full,'scope':'exact','tcp':[22,6443],'alias':'node'}],'ports':[443],'beforeLogin':[]}
         (d/'work-sites.json').write_text(json.dumps(policy))
         suggestion=await analyze('other.lab.invalid:22',d,d)
-        assert suggestion['stage'] in ('port','tcp') # installed helper may be absent in a test bundle
+        assert suggestion['stage'] == 'helper' # installed helper may be absent in a test bundle
         suggestion=await analyze('new.service.invalid:22',d,d)
         assert suggestion['stage']=='no_rule' and suggestion['host']=='new.service.invalid' and suggestion['port']==22
         async def via(name,port,resolve_only=False):

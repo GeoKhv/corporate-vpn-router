@@ -217,7 +217,7 @@ def run_ipsec(address, snapshot, username, realm, utils, cfg, adapter, request, 
                                 if not isinstance(dns, list) or not 1 <= len(dns) <= 8:
                                     raise Refused('IPSEC_CONTROL_INVALID')
                                 adapter.set_ips(str(address4), None)
-                                adapter.set_dns(dns, [])
+                                adapter.set_dns(dns, msg.get("search_domains", []))
                                 adapter.up()
                                 configured = True
                                 selector.register(parent, selectors.EVENT_READ)

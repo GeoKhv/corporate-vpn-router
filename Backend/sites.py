@@ -7,7 +7,10 @@ def hostname(s):
     return all(LABEL.fullmatch(x) for x in s.split('.'))
 
 def validate(cfg):
-    if set(cfg) != {'version','sites','beforeLogin','ports'} or type(cfg['version']) is not int or cfg['version'] not in (1,2): raise ValueError('profile format')
+    suffixes = cfg.get('searchDomains', [])
+    if not isinstance(suffixes, list) or len(suffixes) > 12 or not all(hostname(s) for s in suffixes):
+        raise ValueError('Укажите до 12 полных доменных суффиксов.')
+    if set(cfg) - {'searchDomains'} != {'version','sites','beforeLogin','ports'} or type(cfg['version']) is not int or cfg['version'] not in (1,2): raise ValueError('profile format')
     sites, before, ports = cfg['sites'], cfg['beforeLogin'], cfg['ports']
     if not isinstance(sites,list) or not 1 <= len(sites) <= 256 or not all(isinstance(r,dict) and {'domain','scope'} <= set(r) <= ({'domain','scope'} if cfg['version']==1 else {'domain','scope','tcp','alias'}) and hostname(r['domain']) and r['scope'] in ('exact','tree') for r in sites): raise ValueError('sites')
     if len({r['domain'] for r in sites}) != len(sites): raise ValueError('duplicate site')

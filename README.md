@@ -1,14 +1,16 @@
-# Corporate VPN Router · 0.3.21
+# Corporate VPN Router · 0.3.22
 
 Приложение для выборочного доступа к рабочим ресурсам Check Point на Mac с Apple Silicon. Рабочие домены идут через корпоративный туннель; остальные соединения используют обычный маршрут Mac, в том числе внешний VPN. Текущий пакет требует **macOS 26 или новее**.
 
-**[Релиз 0.3.21](https://github.com/GeoKhv/corporate-vpn-router/releases/tag/v0.3.21)** · **[Скачать ZIP](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.21/Corporate-VPN-Router-0.3.21-TCP-macOS-arm64.zip)** · [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.21/Corporate-VPN-Router-0.3.21-TCP-macOS-arm64.zip.sha256)
+**[Релиз 0.3.22](https://github.com/GeoKhv/corporate-vpn-router/releases/tag/v0.3.22)** · **[Скачать ZIP](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.22/Corporate-VPN-Router-0.3.22-TCP-macOS-arm64.zip)** · [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.22/Corporate-VPN-Router-0.3.22-TCP-macOS-arm64.zip.sha256)
 
 Установленный Router обновляется через **«Проверить обновления» → «Загрузить и установить»**. Пакет и лента Sparkle подписаны Ed25519. Перед заменой приложения сохраняется резервная копия и завершается его рабочий сеанс. Личные настройки остаются в Application Support. ZIP предназначен для обновления уже настроенной установки; для первого запуска нужен согласованный STARTER-комплект.
 
 Для уже настроенных Mac доступен тестовый выпуск с правилами для SSH, Kubernetes и других TCP-сервисов. [Настройка, ограничения и результаты проверки](docs/TCP-0.3.20.ru.md).
 
 ## Что изменилось
+
+- **0.3.22** добавляет таблицу правил, предпросмотр ссылок и поиск коротких имён. [Рабочие ресурсы, проверка и откат](docs/RESOURCES-0.3.22.ru.md).
 
 - **0.3.21** доставляет правило для рабочего сервера вместе с приложением. При первом подключении Router добавит короткое имя и TCP-порты 22 и 6443 в подходящий рабочий профиль.
 - **0.3.20** добавляет рабочие TCP-порты, короткие имена, локальную проверку адреса и импорт одного правила.

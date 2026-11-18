@@ -152,7 +152,10 @@ class PacketVNA:
     def set_routes(self, _routes):
         pass
 
-    def set_dns(self, servers, _domains):
+    def set_dns(self, servers, domains):
+        from sites import hostname
+        self.search_domains = list(dict.fromkeys(s.lower().rstrip('.') for s in (domains or [])
+                                    if isinstance(s, str) and hostname(s.lower().rstrip('.'))))[:12]
         self.dns = [str(ipaddress.IPv4Address(value)) for value in servers]
         if not self.dns:
             raise RuntimeError('CORPORATE_DNS_REQUIRED')
@@ -184,7 +187,7 @@ class PacketVNA:
         os.close(lifetime_read)
         self.dev.peer.close()
         self.is_up = True
-        status('socks_starting', socks_port=1090, corporate_dns_count=len(self.dns))
+        status('socks_starting', socks_port=1090, corporate_dns_count=len(self.dns), search_domains=getattr(self, "search_domains", []))
 
     def close(self):
         self.is_up = False

@@ -224,7 +224,7 @@ async fn run() -> anyhow::Result<()> {
          _=term.recv()=>{let _=command_tx.send(TunnelCommand::Terminate(true)).await;break Ok(());},
          event=event_rx.recv()=>{
           let event=event.context("Tunnel event pipe closed")?;
-          if let TunnelEvent::Connected(info)=&event {emit(json!({"stage":"ipsec_connected","address":info.ip_address.addr().to_string(),"dns":info.dns_servers}));}
+          if let TunnelEvent::Connected(info)=&event {emit(json!({"stage":"ipsec_connected","address":info.ip_address.addr().to_string(),"dns":info.dns_servers,"search_domains":info.search_domains.iter().map(|d| &d.name).collect::<Vec<_>>()}));}
           if let Err(e)=tokio::time::timeout(Duration::from_secs(30),connector.handle_tunnel_event(event)).await?{break Err(e);}
          }
         }

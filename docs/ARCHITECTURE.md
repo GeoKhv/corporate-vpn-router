@@ -44,3 +44,9 @@ IPsec-модуль — изолированная производная snx-rs/
 Статусы авторизации, VPN-туннеля, SOCKS, DNS и одного HTTPS-адреса независимы. Диагностический GET ограничен по времени и размеру. HTTP-ответ с проверенным TLS подтверждает транспортную доступность, а не вход пользователя в сайт. В общий отчёт экспортируются типизированные поля и коды; свободный текст ответа и секреты исключаются. Копирование отчёта использует file URL в системном буфере после успешного сохранения.
 
 Sparkle проверяет Ed25519-подписи ленты и ZIP. Установка требует явного действия, резервной копии и подтверждённой очистки текущей попытки. [Подробности обновления и отката](UPDATES.ru.md). [Архив архитектуры beta.6](archive/ARCHITECTURE-beta6.md).
+
+## Resource editor (0.3.22)
+
+The editor tracks the applied work profile, draft and deferred apply request. Deferred requests carry their base profile. Before starting routes the app validates the candidate and compares the helper grants. After authorization the controller checks the helper again before replacing the profile. A running tunnel continues to use its original policy.
+
+SSL Office Mode suffixes and IPsec search domains belong to the current transport. The editor combines them with manual suffixes for explicit lookups through the corporate SOCKS DNS operation. The existing transport gate limits those queries to approved names. The selected alias uses the existing helper and synthetic address map. HTTPS uses the requested hostname for certificate validation.

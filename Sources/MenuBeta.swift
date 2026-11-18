@@ -79,19 +79,19 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
 #if CVR_SELECTIVE_TUN
-        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router · TUN Trial", #selector(show)), ("Подключить", #selector(toggle)),
+        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router · TUN Trial", #selector(show)), ("Подключить", #selector(menuToggle)),
             ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)),
             ("Сохранить отчёт о запуске…", #selector(saveStartupReport)),
             ("Настроить помощник и рабочий ПК…", #selector(editRouteHelper)), ("Удалить помощник маршрутов…", #selector(removeRouteHelper)),
             ("Проверить службу Check Point…", #selector(checkpointDiagnostic)), ("Завершить", #selector(quit))]
 #else
-        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router", #selector(show)), ("Подключить", #selector(toggle)),
+        let entries: [(String, Selector)] = [("Открыть Corporate VPN Router", #selector(show)), ("Подключить", #selector(menuToggle)),
             ("Рабочие сайты…", #selector(settings)), ("Диагностика…", #selector(diagnose)), ("Обновления…", #selector(updateLink)), ("Вернуться к beta.5…", #selector(rollbackMenu)), ("Удалить Router…", #selector(uninstallMenu)), ("Завершить", #selector(quit))]
 #endif
         for (title, action) in entries {
             let entry = menu.addItem(withTitle: title, action: action, keyEquivalent: "")
             entry.target = self
-            if action == #selector(toggle) { menuConnect = entry }
+            if action == #selector(menuToggle) { menuConnect = entry }
         }
         item.menu = menu
 #if CVR_UPDATES
@@ -330,7 +330,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         #endif
         attachColumn(makeColumn(views, spacing: 12), to: diagnostics)
     }
-    @objc func show() { hiddenByUser = false; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil) }
+    @objc func menuToggle() {
+        if menuConnect.title == "Подключить" { show(); connect() }
+        else { toggle() }
+    }
+    @objc func show() { hiddenByUser = false; if window.isMiniaturized { window.deminiaturize(nil) }; NSApp.activate(ignoringOtherApps: true); window.makeKeyAndOrderFront(nil) }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool { show(); return true }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -574,6 +578,9 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard verifyRuntime() else {
             failConnection("Файлы запущенного Router изменились. Завершите приложение и откройте установленную копию заново.", code: "APP_CHANGED_ON_DISK"); return
         }
+        #if CVR_UPDATES
+        if FileManager.default.fileExists(atPath:pendingURL.path) {applyPending(connectAfter:true);return}
+        #endif
         guard storedWork() != nil else { note = "Добавьте рабочие сайты."; refresh(); return }
         connectionAttempt += 1; connectionFailure = nil; connectionFailureCode = nil; connectionNotice = nil
         if selective.holdingRoutes {
@@ -595,6 +602,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #endif
     }
     func startAuthentication() {
+        sitesPanel.gatewaySuffixes = []
+        updateSearchSource()
 #if CVR_SELECTIVE_TUN
         guard connectionPhase == .preparingRoutes, selective.awaitingTunnel, engine == nil else { return }
         connectionPhase = .authenticating; journal("ssl", "start")
@@ -635,7 +644,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             }
             p.waitUntilExit()
             DispatchQueue.main.async{[weak self] in guard let self=self,self.generation==g else{return}
-                self.engine=nil;try? self.input?.close();self.input=nil
+                self.engine=nil; self.sitesPanel.gatewaySuffixes=[]; self.updateSearchSource();try? self.input?.close();self.input=nil
                 self.clearPrompt(); self.pendingLogin=nil; self.attemptLogin=nil; self.stopping=false
 #if CVR_SELECTIVE_TUN
                 self.journal("ssl", "exit", code: "EXIT_" + String(p.terminationStatus))
@@ -729,7 +738,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             submit.bezelStyle = .rounded
             submit.bezelColor = switching ? .controlAccentColor : nil
             window.setContentSize(NSSize(width:570,height:switching ? 466 : 446))
-            refresh(); if !hiddenByUser { show() }
+            refresh()
             window.makeFirstResponder(kind == "username" ? username : ["trust","switch_official"].contains(kind) ? submit : secret)
             return
         }
@@ -767,6 +776,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             pendingLogin = nil
         case "ssl_dataplane_connected": mark(2,.waiting,"TLS открыт, ожидаем SLIM")
         case "socks_starting":
+            sitesPanel.gatewaySuffixes = msg["search_domains"] as? [String] ?? []
+            updateSearchSource()
             mark(2,.ready,"получены адрес и DNS"); mark(3,.waiting,"проверяется")
         case "connected":
 #if CVR_SELECTIVE_TUN

@@ -26,6 +26,7 @@ struct WorkProfile: Codable, Equatable {
     var version = 1
     var sites: [WorkSite] = []
     var beforeLogin: [String] = []
+    var searchDomains: [String]?
     var ports = [443]
     mutating func mergeExactRule(_ rule: SharedTCPRule) throws {
         guard rule.kind == "exact-tcp-rule", Configuration.validHost(rule.domain), rule.domain.contains("."),
@@ -78,16 +79,59 @@ struct WorkProfile: Codable, Equatable {
         !beforeLogin.contains(h) && sites.contains { h == $0.domain || ($0.scope == "tree" && h.hasSuffix("."+$0.domain)) }
     }
 }
-final class SitesPanel {
-    var draft = WorkProfile()
-    let list = NSPopUpButton(), scope = NSPopUpButton(), domain = NSTextField(), login = NSTextField(), address = NSTextField()
-    let ports = NSTextField(), short = NSButton(checkboxWithTitle:"Использовать короткое имя узла",target:nil,action:nil)
-    var suggestion: (String,Int,String)?
-    var requestID = UUID()
-    let applySuggestion = NSButton()
-    let status = NSTextField(wrappingLabelWithString:""), preview = NSTextField(wrappingLabelWithString:"")
+struct PortableRules: Codable {
+    let kind:String
+    let sites:[WorkSite]
+    let ports:[Int]
+    let searchDomains:[String]
+}
+struct PendingWork: Codable {
+    let base: WorkProfile
+    let profile: WorkProfile
 }
 
+final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
+    var draft = WorkProfile()
+    var base = WorkProfile()
+    var history = [WorkProfile]()
+    var editing: Int?
+    var applying = false
+    let table = NSTableView()
+    let scope = NSPopUpButton(), domain = NSTextField(), login = NSTextField(), suffixes = NSTextField()
+    let address = NSTextView(), source = NSTextField(labelWithString:"")
+    let ports = NSTextField(), short = NSButton(checkboxWithTitle:"Короткое имя",target:nil,action:nil)
+    var gatewaySuffixes = [String]()
+    let commit = NSButton()
+    var requestID = UUID()
+    let status = NSTextField(wrappingLabelWithString:""), preview = NSTextField(wrappingLabelWithString:"")
+    func numberOfRows(in tableView: NSTableView) -> Int { draft.sites.count }
+    func tableView(_ tableView: NSTableView, objectValueFor column: NSTableColumn?, row: Int) -> Any? {
+        let site = draft.sites[row]
+        switch column?.identifier.rawValue {
+        case "host": return site.domain
+        case "scope": return site.scope == "tree" ? "С поддоменами" : "Точное имя"
+        case "ports": return (site.tcp ?? .selected(draft.ports)).label
+        default: return site.alias ?? "—"
+        }
+    }
+}
+
+extension WorkProfile {
+    func matching(_ host: String) -> WorkSite? {
+        guard !beforeLogin.contains(host) else { return nil }
+        return sites.filter { $0.domain == host || ($0.scope == "tree" && host.hasSuffix("." + $0.domain)) }
+            .max { $0.domain.count < $1.domain.count }
+    }
+    func covers(_ row:WorkSite) -> WorkSite? {
+        guard let match=matching(row.domain), row.scope=="exact" || match.scope=="tree",
+              row.alias == nil || (row.domain==match.domain && row.alias==match.alias) else { return nil }
+        switch (match.tcp ?? .selected(ports),row.tcp ?? .selected(ports)) {
+        case (.any,_): return match
+        case (.selected(let old),.selected(let new)): return Set(new).isSubset(of:old) ? match : nil
+        default: return nil
+        }
+    }
+}
 extension BetaMenu {
     static func routeCommand(_ op: String, _ args: [String] = [], resources res: URL = ProductPaths().app.appendingPathComponent("Contents/Resources")) -> CommandResult {
 #if CVR_SELECTIVE_TUN
@@ -115,85 +159,149 @@ extension BetaMenu {
         return (try? JSONSerialization.jsonObject(with:Data(contentsOf:u)) as? [String:String])?["site"]
     }
     func panelButton(_ title:String,_ action:Selector)->NSButton { NSButton(title:title,target:self,action:action) }
+    var draftURL: URL { paths.data.appendingPathComponent("work-sites-draft.json") }
+    var pendingURL: URL { paths.data.appendingPathComponent("work-sites-pending.json") }
+    func updateSearchSource() {
+        let p=sitesPanel
+        p.source.stringValue = p.gatewaySuffixes.isEmpty ? "Шлюз не передал суффиксы поиска" : "Из текущего сеанса: " + p.gatewaySuffixes.joined(separator:", ")
+    }
+    func scroll(_ view:NSView, width:CGFloat, height:CGFloat) -> NSScrollView {
+        let scroll=NSScrollView()
+        scroll.hasVerticalScroller=true; scroll.borderType = .bezelBorder
+        scroll.documentView=view
+        scroll.widthAnchor.constraint(equalToConstant:width).isActive=true
+        scroll.heightAnchor.constraint(equalToConstant:height).isActive=true
+        return scroll
+    }
     @objc func settings() {
         let p=sitesPanel
         if settingsWindow == nil {
-            let w=makeWindow("Рабочие сайты",740,640)
-            w.isRestorable = false
-            p.list.target=self;p.list.action=#selector(selectSite)
-            p.scope.addItems(withTitles:["Только это имя","Имя и все поддомены"])
-            p.domain.placeholderString="wiki.company.example"; p.address.placeholderString="Адрес сайта или URL"
-            for field in [p.domain,p.address,p.login] {field.widthAnchor.constraint(equalToConstant:320).isActive=true}
-            for field in [p.status,p.preview,settingsNote] {field.preferredMaxLayoutWidth=580}
-            let row1=NSStackView(views:[p.list,panelButton("Добавить",#selector(newSite)),panelButton("Удалить строку",#selector(removeSite))])
-            let row2=NSStackView(views:[p.domain,p.scope,panelButton("В список",#selector(editSite))])
-            p.applySuggestion.title = "Добавить/изменить правило"
-            p.applySuggestion.target = self; p.applySuggestion.action = #selector(useSuggestion)
-            p.applySuggestion.isHidden = true
-            let portRow = NSStackView(views:[NSTextField(labelWithString:"TCP-порты ( * — любой TCP )"),p.ports,p.short])
-            p.ports.widthAnchor.constraint(equalToConstant:120).isActive=true
-            let row3=NSStackView(views:[p.address,panelButton("Проверить подключение",#selector(previewRoute))])
-#if CVR_SELECTIVE_TUN
-            let routeHeading = "2. Рабочие маршруты для обычных приложений"
-            let row4=NSStackView(views:[panelButton("Проверить состояние",#selector(routeStatus)),panelButton("Сертификаты HTTPS…",#selector(certificates))])
-#else
-            let routeHeading = "2. Постоянный прокси Chrome"
-            let row4=NSStackView(views:[panelButton("Настроить Chrome…",#selector(appRouting)),panelButton("Проверить состояние",#selector(routeStatus))])
-#endif
-            let row5=NSStackView(views:[panelButton("Импорт профиля…",#selector(importSites)),panelButton("Сохранить список",#selector(savePolicy)),panelButton("Вернуть прежние правила",#selector(undoSites))])
-            attachColumn(makeColumn([NSTextField(labelWithString:"1. Рабочие сайты · добавьте домен или импортируйте профиль"),row1,row2,portRow,
-                NSTextField(labelWithString:"Доступ до входа · точные имена шлюза и авторизации, через запятую"),p.login,
-                row5,row3,p.preview,p.applySuggestion,NSTextField(labelWithString:routeHeading),row4,p.status,settingsNote]),to:w)
+            let w=makeWindow("Рабочие ресурсы",730,685)
+            w.isRestorable=false
+            for (id,title,width) in [("host","Адрес",285),("scope","Охват",125),("ports","TCP",95),("alias","Алиас",135)] {
+                let column=NSTableColumn(identifier:NSUserInterfaceItemIdentifier(id))
+                column.title=title; column.width=CGFloat(width); p.table.addTableColumn(column)
+            }
+            p.table.delegate=p; p.table.dataSource=p
+            p.scope.addItems(withTitles:["Точное имя","С поддоменами"])
+            p.domain.placeholderString="Полное имя"; p.ports.placeholderString="443"
+            p.domain.widthAnchor.constraint(equalToConstant:240).isActive=true
+            p.ports.widthAnchor.constraint(equalToConstant:90).isActive=true
+            p.commit.target=self; p.commit.action=#selector(editSite)
+            let form=NSStackView(views:[p.domain,p.scope,p.ports,p.short,p.commit])
+            p.address.isRichText=false; p.address.isAutomaticQuoteSubstitutionEnabled=false
+            p.address.isAutomaticDashSubstitutionEnabled=false
+            p.address.textContainer?.widthTracksTextView=true
+            let pasteRow=NSStackView(views:[panelButton("Разобрать адреса…",#selector(parseAddresses)),panelButton("Проверить подключение",#selector(previewRoute))])
+            let actions=NSStackView(views:[panelButton("Изменить",#selector(selectSite)),panelButton("Удалить",#selector(removeSite)),panelButton("Отменить правку",#selector(cancelDraftEdit)),panelButton("Импорт…",#selector(importSites)),panelButton("Экспорт…",#selector(exportSites))])
+            p.suffixes.placeholderString="Дополнительные суффиксы поиска через запятую"
+            p.login.placeholderString="Точные имена для доступа до входа"
+            for field in [p.suffixes,p.login] { field.widthAnchor.constraint(equalToConstant:460).isActive=true }
+            for field in [p.status,p.preview,settingsNote] {field.preferredMaxLayoutWidth=665}
+            let save=NSStackView(views:[panelButton("Применить правила",#selector(savePolicy)),panelButton("Предыдущие правила",#selector(undoSites)),panelButton("Сертификаты…",#selector(certificates))])
+            attachColumn(makeColumn([NSTextField(labelWithString:"Рабочие правила"),scroll(p.table,width:675,height:118),actions,form,
+                NSTextField(labelWithString:"Вставьте ссылки или имена, по одному на строку"),scroll(p.address,width:675,height:50),pasteRow,p.preview,
+                p.source,NSStackView(views:[NSTextField(labelWithString:"Свои суффиксы"),p.suffixes]),NSStackView(views:[NSTextField(labelWithString:"До входа"),p.login]),save,settingsNote,p.status],spacing:7),to:w)
             settingsWindow=w
+            p.base=storedWork() ?? WorkProfile(); p.draft=p.base
+            if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)), saved.base==p.base { p.draft=saved.profile }
+            if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), saved.base==p.base {p.draft=saved.profile}
+            loadDraft();updateSearchSource()
+        } else if p.base != storedWork(), p.draft == p.base, p.editing == nil, p.domain.stringValue.isEmpty {
+            p.base=storedWork() ?? WorkProfile(); p.draft=p.base; loadDraft()
         }
         routeStatus()
-        p.draft=storedWork() ?? WorkProfile()
-        if let g=gateway(), !p.draft.beforeLogin.contains(g){p.draft.beforeLogin.append(g)}
-        loadDraft()
-        settingsNote.stringValue="После настройки вернитесь в главное окно и выберите способ входа."
         NSApp.activate(ignoringOtherApps:true);settingsWindow?.makeKeyAndOrderFront(nil)
     }
-    func loadDraft(_ selected:Int=0) {
-        let p=sitesPanel;p.login.stringValue=p.draft.beforeLogin.joined(separator:", ")
-        p.list.removeAllItems();p.list.addItems(withTitles:p.draft.sites.map{$0.domain});p.list.addItem(withTitle:"Новая строка")
-        p.list.selectItem(at:min(selected,p.draft.sites.count));selectSite()
+    func loadDraft(_ selected:Int = -1) {
+        let p=sitesPanel
+        p.table.reloadData()
+        if p.draft.sites.indices.contains(selected) { p.table.selectRowIndexes(IndexSet(integer:selected),byExtendingSelection:false) }
+        p.login.stringValue=p.draft.beforeLogin.joined(separator:", ")
+        p.suffixes.stringValue=(p.draft.searchDomains ?? []).joined(separator:", ")
+        newSite()
+        settingsNote.stringValue=p.base==p.draft ? "Сохранённые правила" : "Черновик • есть неприменённые изменения"
     }
-    @objc func selectSite(){let p=sitesPanel,i=p.list.indexOfSelectedItem
-        if p.draft.sites.indices.contains(i){let r=p.draft.sites[i];p.domain.stringValue=r.domain;p.scope.selectItem(at:r.scope=="tree" ? 1 : 0);p.ports.stringValue=(r.tcp ?? .selected(p.draft.ports)).label;p.short.state=r.alias == nil ? .off : .on}
-        else {p.domain.stringValue="";p.scope.selectItem(at:0);p.ports.stringValue=TCPPorts.selected(p.draft.ports).label;p.short.state = .off}
+    @objc func selectSite() {
+        let p=sitesPanel,i=p.table.selectedRow
+        guard p.draft.sites.indices.contains(i) else {settingsNote.stringValue="Выберите правило в списке.";return}
+        let row=p.draft.sites[i]
+        p.editing=i;p.domain.stringValue=row.domain;p.scope.selectItem(at:row.scope=="tree" ? 1:0)
+        p.ports.stringValue=(row.tcp ?? .selected(p.draft.ports)).label;p.short.state=row.alias==nil ? .off:.on
+        p.commit.title="Изменить"; settingsNote.stringValue="Редактируется " + row.domain
     }
-    @objc func newSite(){sitesPanel.list.selectItem(at:sitesPanel.draft.sites.count);selectSite();settingsWindow?.makeFirstResponder(sitesPanel.domain)}
-    func readLogin(){sitesPanel.draft.beforeLogin=sitesPanel.login.stringValue.lowercased().split(whereSeparator:{$0=="," || $0.isWhitespace}).map(String.init)}
-    @objc func removeSite(){let p=sitesPanel,i=p.list.indexOfSelectedItem;guard p.draft.sites.indices.contains(i) else{return};readLogin();p.draft.sites.remove(at:i);loadDraft()}
+    @objc func newSite(){let p=sitesPanel;p.editing=nil;p.domain.stringValue="";p.ports.stringValue=TCPPorts.selected(p.draft.ports).label;p.scope.selectItem(at:0);p.short.state = .off;p.commit.title="Добавить"}
+    func readLogin(){
+        let p=sitesPanel
+        func names(_ text:String)->[String]{text.lowercased().split(whereSeparator:{$0=="," || $0.isWhitespace}).map(String.init)}
+        p.draft.beforeLogin=names(p.login.stringValue)
+        let suffixes=names(p.suffixes.stringValue);p.draft.searchDomains=suffixes.isEmpty ? nil:suffixes
+    }
+    func changedDraft(_ old:WorkProfile,_ selected:Int = -1) {
+        let p=sitesPanel
+        if old != p.draft { p.history.append(old) }
+        loadDraft(selected)
+        persistDraft()
+    }
+    func persistDraft(){
+        let p=sitesPanel
+        do {try JSONFile.write(PendingWork(base:p.base,profile:p.draft),to:draftURL)}
+        catch {settingsNote.stringValue="Черновик в памяти. Записать его на диск не удалось."}
+    }
+    @objc func cancelDraftEdit(){
+        let p=sitesPanel
+        if p.editing != nil || !p.domain.stringValue.isEmpty {newSite();return}
+        if let previous=p.history.popLast(){p.draft=previous;loadDraft();persistDraft()}
+    }
+    @objc func removeSite(){
+        let p=sitesPanel,i=p.table.selectedRow
+        guard p.draft.sites.indices.contains(i) else{return}
+        readLogin();let old=p.draft;p.draft.sites.remove(at:i);changedDraft(old)
+    }
     @discardableResult @objc func editSite()->Bool {
-        let p=sitesPanel,h=p.domain.stringValue.trimmingCharacters(in:.whitespacesAndNewlines).lowercased(),i=p.list.indexOfSelectedItem
-        guard Configuration.validHost(h), h.contains("."), !p.draft.sites.enumerated().contains(where:{$0.offset != i && $0.element.domain==h}) else{
-            settingsNote.stringValue="Введите уникальное доменное имя без пути и без *.";return false }
+        let p=sitesPanel,h=p.domain.stringValue.trimmingCharacters(in:.whitespacesAndNewlines).lowercased()
+        guard Configuration.validHost(h), h.contains(".") else{settingsNote.stringValue="Введите полное DNS-имя. Для маски используйте разбор адресов.";return false}
         let raw=p.ports.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
         let tokens=raw.split(separator:",",omittingEmptySubsequences:false)
         let ports=tokens.compactMap { Int($0.trimmingCharacters(in:.whitespaces)) }
-        guard raw == "*" || (ports.count == tokens.count && (1...32).contains(ports.count) && ports.allSatisfy({(1...65535).contains($0)}))
-        else { settingsNote.stringValue="Укажите порты через запятую или * для любого TCP.";return false }
-        let r=WorkSite(domain:h,scope:p.scope.indexOfSelectedItem==1 ? "tree":"exact",
-                       tcp:raw == "*" ? .any : .selected(Array(Set(ports)).sorted()),
-                       alias:p.short.state == .on ? h.components(separatedBy:".").first : nil)
-        p.draft.version = 2
+        guard raw=="*" || (ports.count==tokens.count && (1...32).contains(ports.count) && ports.allSatisfy({(1...65535).contains($0)})) else {settingsNote.stringValue="Укажите TCP-порты через запятую или *.";return false}
         readLogin()
-        if p.draft.sites.indices.contains(i){p.draft.sites[i]=r}else{p.draft.sites.append(r)}
-        loadDraft(i);settingsNote.stringValue="Строка добавлена в черновик. Сохраните список.";return true
+        var row=WorkSite(domain:h,scope:p.scope.indexOfSelectedItem==1 ? "tree":"exact",tcp:raw=="*" ? .any:.selected(Array(Set(ports)).sorted()),alias:p.short.state == .on ? h.components(separatedBy:".").first:nil)
+        let old=p.draft
+        if p.editing==nil, let cover=old.covers(row) {
+            p.address.string=h+":" + String(ports.first ?? 443)
+            settingsNote.stringValue="Уже разрешено правилом "+cover.domain+". Можно проверить подключение.";newSite();return true
+        }
+        guard !old.beforeLogin.contains(h), !old.sites.enumerated().contains(where:{$0.offset != p.editing && ($0.element.domain==h || (row.alias != nil && row.alias==$0.element.alias))}) else {settingsNote.stringValue="Имя или алиас уже используется. Выберите правило и нажмите «Изменить».";return false}
+        if let i=p.editing {
+            if old.sites[i].tcp==nil && row.tcp == .selected(old.ports.sorted()) { row.tcp=nil }
+            p.draft.sites[i]=row
+        } else { p.draft.sites.append(row) }
+        p.draft.version=2;changedDraft(old);return true
+    }
+    @objc func exportSites(){
+        readLogin();let panel=NSSavePanel();panel.nameFieldStringValue="work-rules.json"
+        guard panel.runModal() == .OK,let url=panel.url else{return}
+        do {try JSONFile.write(PortableRules(kind:"work-rules",sites:sitesPanel.draft.sites,ports:sitesPanel.draft.ports,searchDomains:sitesPanel.draft.searchDomains ?? []),to:url)} catch {settingsNote.stringValue="Не удалось записать файл."}
     }
     @objc func importSites(){let panel=NSOpenPanel();panel.allowsMultipleSelection=false
         guard panel.runModal() == .OK, let u=panel.url else{return}
         do{let data=try Data(contentsOf:u);guard data.count<=131072 else{throw RouterError.invalidConfiguration}
+            readLogin()
+            let old=sitesPanel.draft
+            if let portable=try? JSONDecoder().decode(PortableRules.self,from:data), portable.kind=="work-rules" {
+                sitesPanel.draft=WorkProfile(version:2,sites:portable.sites,beforeLogin:old.beforeLogin,searchDomains:portable.searchDomains.isEmpty ? nil:portable.searchDomains,ports:portable.ports)
+                changedDraft(old);return
+            }
             if let rule = try? JSONDecoder().decode(SharedTCPRule.self, from:data) {
                 readLogin()
                 try sitesPanel.draft.mergeExactRule(rule)
-                loadDraft(sitesPanel.draft.sites.firstIndex { $0.domain == rule.domain } ?? 0)
+                changedDraft(old,sitesPanel.draft.sites.firstIndex { $0.domain == rule.domain } ?? 0)
                 settingsNote.stringValue="В черновике изменено одно точное правило. Проверьте адрес и порты, затем сохраните список."
                 return
             }
             let draft=try JSONDecoder().decode(WorkProfile.self,from:data); guard [1,2].contains(draft.version) && !draft.sites.isEmpty && draft.sites.count<=256 else{throw RouterError.invalidConfiguration}
-            sitesPanel.draft=draft;loadDraft();settingsNote.stringValue="Импортирован черновик. Проверьте область доменов и адреса до входа."
+            sitesPanel.draft=draft;changedDraft(old);settingsNote.stringValue="Импортирован черновик. Проверьте область доменов и адреса до входа."
         }catch{settingsNote.stringValue="Не удалось прочитать профиль рабочих сайтов."}
     }
     @objc func undoSites() {
@@ -201,53 +309,107 @@ extension BetaMenu {
         guard let data = try? Data(contentsOf:previous), let profile = try? JSONDecoder().decode(WorkProfile.self,from:data) else {
             settingsNote.stringValue="Предыдущая версия правил отсутствует.";return
         }
-        sitesPanel.draft=profile;loadDraft();settingsNote.stringValue="Предыдущие правила загружены в черновик. Проверьте и сохраните."
+        let old=sitesPanel.draft;sitesPanel.draft=profile;changedDraft(old);settingsNote.stringValue="Предыдущие правила загружены в черновик. Проверьте и сохраните."
     }
-    @objc func useSuggestion() {
-        let p=sitesPanel
-        guard let (host,port,text)=p.suggestion, text == p.address.stringValue else{return}
-        let matches=p.draft.sites.filter { host==$0.domain || ($0.scope=="tree" && host.hasSuffix("."+$0.domain)) }
-        let current=matches.max(by:{$0.domain.count<$1.domain.count})
-        var existing=[Int]()
-        if let current, case let .selected(ports) = current.tcp ?? .selected(p.draft.ports) { existing=ports }
-        if let index=p.draft.sites.firstIndex(where:{$0.domain==host}) {
-            p.list.selectItem(at:index); selectSite()
-            if p.draft.sites[index].scope == "tree" {
-                p.preview.stringValue="Это имя уже охватывает поддомены. Выберите охват и подтвердите порты вручную."
-                return
-            }
-        } else { newSite(); p.domain.stringValue=host }
-        p.ports.stringValue=TCPPorts.selected(Array(Set(existing+[port])).sorted()).label
-        if editSite() { settingsNote.stringValue="Предложение в черновике. Для применения сохраните список." }
-        p.applySuggestion.isHidden=true
-    }
-    @objc func previewRoute(){
-        let p=sitesPanel, value=p.address.stringValue, id=UUID()
-        p.requestID=id;p.applySuggestion.isHidden=true;p.suggestion=nil;p.preview.stringValue="Проверяем подключение…"
+    func analyzeInput(_ data:Data,preview:Bool,completion:@escaping ([String:Any])->Void) {
         let res=resources
         DispatchQueue.global(qos:.userInitiated).async {
-            let proc=Process(), input=Pipe(), output=Pipe()
+            let proc=Process(),input=Pipe(),output=Pipe()
             proc.executableURL=res.appendingPathComponent("Runtime/bin/python3.13")
-            proc.arguments=["-I","-B",res.appendingPathComponent("Engine/Selective/analyze.py").path]
+            proc.arguments=["-I","-B",res.appendingPathComponent("Engine/Selective/analyze.py").path] + (preview ? ["--preview"]:[])
             proc.standardInput=input;proc.standardOutput=output;proc.standardError=FileHandle.nullDevice
             var result:[String:Any]=[:]
-            if value.utf8.count<=2048, (try? proc.run()) != nil {
-                try? input.fileHandleForWriting.write(contentsOf:Data(value.utf8));try? input.fileHandleForWriting.close()
-                let data=output.fileHandleForReading.readDataToEndOfFile();proc.waitUntilExit()
-                result=(try? JSONSerialization.jsonObject(with:data) as? [String:Any]) ?? [:]
+            if (try? proc.run()) != nil {
+                try? input.fileHandleForWriting.write(contentsOf:data);try? input.fileHandleForWriting.close()
+                let bytes=output.fileHandleForReading.readDataToEndOfFile();proc.waitUntilExit()
+                result=(try? JSONSerialization.jsonObject(with:bytes) as? [String:Any]) ?? [:]
             }
-            DispatchQueue.main.async {
-                guard p.requestID==id, p.address.stringValue==value else{return}
-                p.preview.stringValue=result["message"] as? String ?? "Не удалось проверить адрес."
-                if let host=result["host"] as? String, let port=result["port"] as? Int {
-                    p.suggestion=(host,port,value);p.applySuggestion.isHidden=false
-                }
-            }
+            DispatchQueue.main.async {completion(result)}
         }
+    }
+    @objc func previewRoute(){
+        let p=sitesPanel,text=p.address.string.trimmingCharacters(in:.whitespacesAndNewlines),id=UUID()
+        guard text.utf8.count<=2048, !text.contains("\n") else {p.preview.stringValue="Для проверки выберите один адрес.";return}
+        p.requestID=id;p.preview.stringValue="Проверяем соединение…"
+        analyzeInput(Data(text.utf8),preview:false){ result in
+            guard id==p.requestID,text==p.address.string.trimmingCharacters(in:.whitespacesAndNewlines) else{return}
+            p.preview.stringValue=result["message"] as? String ?? "Проверка не завершена."
+        }
+    }
+    @objc func parseAddresses(){
+        let p=sitesPanel,text=p.address.string,id=UUID()
+        readLogin()
+        guard !text.isEmpty,text.utf8.count<=32768 else {p.preview.stringValue="Вставьте до 64 адресов (32 КБ).";return}
+        let request:[String:Any]=["text":text,"suffixes":Array(Set(p.gatewaySuffixes+(p.draft.searchDomains ?? []))).sorted()]
+        guard let data=try? JSONSerialization.data(withJSONObject:request) else{return}
+        p.requestID=id;p.preview.stringValue="Разбираем адреса…"
+        analyzeInput(data,preview:true){ result in
+            guard id==p.requestID,text==p.address.string else{return}
+            guard let rows=result["rows"] as? [[String:Any]],!rows.isEmpty else {p.preview.stringValue=result["message"] as? String ?? "Нет адресов.";return}
+            self.offerRows(rows)
+        }
+    }
+    func offerRows(_ rows:[[String:Any]]) {
+        let p=sitesPanel,alert=NSAlert()
+        var controls=[NSView](), choices=[(NSButton,NSPopUpButton,[WorkSite])]()
+        for item in rows {
+            guard let host=item["host"] as? String,let port=item["port"] as? Int else {
+                controls.append(NSTextField(labelWithString:item["error"] as? String ?? "Неизвестный формат"));continue
+            }
+            let hosts=item["choices"] as? [String] ?? [host]
+            let popup=NSPopUpButton(); popup.addItems(withTitles:hosts)
+            if hosts.count>1 { popup.insertItem(withTitle:"Выберите полное имя",at:0);popup.selectItem(at:0) }
+            let tree=item["tree"] as? Bool == true
+            let rules=hosts.map {WorkSite(domain:$0,scope:tree ? "tree":"exact",tcp:.selected([port]),alias:item["alias"] as? String)}
+            let covered=hosts.count==1 ? p.draft.covers(rules[0]):nil
+            let scheme=item["scheme"] as? String ?? "tcp"
+            var label="\(scheme.uppercased()) · \(port)" + (item["assumed"] as? Bool == true ? " по умолчанию":"")
+            if tree { label += " · домен и поддомены" }
+            if let alias=item["alias"] as? String { label += " · алиас "+alias }
+            if let covered { label += " · разрешено: "+covered.domain }
+            let check=NSButton(checkboxWithTitle:label,target:nil,action:nil)
+            check.state=covered==nil ? .on:.off;check.isEnabled=covered==nil
+            controls.append(NSStackView(views:[popup,check]));choices.append((check,popup,rules))
+        }
+        let stack=makeColumn(controls)
+        stack.frame=NSRect(origin:.zero,size:stack.fittingSize)
+        let scroll=NSScrollView(frame:NSRect(x:0,y:0,width:min(800,max(510,stack.fittingSize.width+22)),height:min(340,stack.fittingSize.height+12)))
+        scroll.hasVerticalScroller=true;scroll.hasHorizontalScroller=true;scroll.documentView=stack
+        alert.accessoryView=scroll;alert.messageText="Распознанные адреса"
+        alert.informativeText="Выберите новые назначения. Для смены портов или охвата существующего правила используйте «Изменить»."
+        alert.addButton(withTitle:"В черновик");alert.addButton(withTitle:"Отмена")
+        p.preview.stringValue="Разобрано строк: \(rows.count). Доступ можно проверить отдельно."
+        guard alert.runModal() == .alertFirstButtonReturn else{return}
+        let old=p.draft
+        var next=old
+        do {
+            for (check,popup,rules) in choices where check.state == .on {
+                let idx=popup.indexOfSelectedItem-(rules.count>1 ? 1:0)
+                guard rules.indices.contains(idx) else{throw ProxyFailure("Выберите полное имя из найденных.")}
+                var row=rules[idx]
+                if next.covers(row) != nil { continue }
+                guard !next.beforeLogin.contains(row.domain) else{throw ProxyFailure("Имя исключено для доступа до входа.")}
+                if let existing=next.sites.first(where:{$0.domain==row.domain}) {
+                    // An alias selected in the preview can be attached without changing grants.
+                    guard row.alias != nil,existing.alias==nil, next.covers(WorkSite(domain:row.domain,scope:row.scope,tcp:row.tcp)) != nil else {throw ProxyFailure("Для "+row.domain+" уже есть правило. Измените его явно.")}
+                    row=existing;row.alias=rules[idx].alias
+                    next.sites.removeAll{$0.domain==row.domain}
+                } else if let parent=next.matching(row.domain) {
+                    // A more specific row must retain inherited ports.
+                    switch parent.tcp ?? .selected(next.ports) {
+                    case .any:row.tcp = .any
+                    case .selected(let ports):if case .selected(let added)=row.tcp {row.tcp = .selected(Array(Set(ports+added)).sorted())}
+                    }
+                }
+                guard row.alias==nil || !next.sites.contains(where:{$0.alias==row.alias}) else{throw ProxyFailure("Алиас уже занят.")}
+                next.sites.append(row);next.version=2
+            }
+            if next != old {p.draft=next;changedDraft(old)}
+        } catch {settingsNote.stringValue=error.localizedDescription}
     }
     @objc func routeStatus(){
 #if CVR_SELECTIVE_TUN
-        sitesPanel.status.stringValue = selective.message
+        sitesPanel.status.stringValue = selective.helperAvailability.explanation + " · " + selective.message
 #else
         let r=Self.routeCommand("status")
         let state=r.output.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -261,38 +423,60 @@ extension BetaMenu {
     func confirmAction(_ title:String,_ msg:String,_ yes:String)->Bool{let a=NSAlert();a.messageText=title;a.informativeText=msg;a.addButton(withTitle:yes);a.addButton(withTitle:"Отмена");return a.runModal() == .alertFirstButtonReturn}
     @objc func savePolicy(){
 #if CVR_SELECTIVE_TUN
-        guard engine == nil && !selective.busy else { settingsNote.stringValue = "Сначала отключите туннель и остановите рабочие маршруты. Список пока не изменён."; return }
+
 #else
         if BrowserRouter.effective() && !activated {settingsNote.stringValue="Сначала нажмите «Настроить Chrome…» для проверки маршрута в браузере.";return}
 #endif
-        if !sitesPanel.domain.stringValue.isEmpty && !editSite(){return}
+        guard sitesPanel.domain.stringValue.isEmpty else { settingsNote.stringValue="Завершите ввод кнопкой «Добавить» или «Изменить» либо отмените правку.";return }
         readLogin()
+        persistDraft()
         let temp=paths.data.appendingPathComponent("draft-"+UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:temp)}
         do{try JSONFile.write(sitesPanel.draft,to:temp)}catch{settingsNote.stringValue="Не удалось сохранить черновик.";return}
         #if CVR_SELECTIVE_TUN && CVR_UPDATES
-        let validation=Self.routeCommand("check-draft",[temp.path])
+        let validation=Self.routeCommand("check-draft",[temp.path],resources:resources)
         guard validation.code==0 else { settingsNote.stringValue=validation.output;return }
         let profile=sitesPanel.draft
-        let status=SelectiveRouter.helperReply(resources:resources)
-        let desktop=(status?["approvedRDPHost"] as? String).flatMap { profile.work($0) ? $0 : nil } ?? ""
-        guard let enrollment=try? profile.enrollment(desktop:desktop),
-              let expected=try? JSONSerialization.jsonObject(with:enrollment) as? [String:Any] else{return}
-        if let old=status?["tcpRules"] as? NSArray, old.isEqual(expected["rules"]) {
-            settingsNote.stringValue=Self.routeCommand("save",[temp.path]).output
-        } else {
-            let pending=paths.data.appendingPathComponent("pending-"+UUID().uuidString)
-            do { try JSONFile.write(profile,to:pending) } catch { settingsNote.stringValue="Не удалось подготовить правила.";return }
-            selective.manageHelper(resources:resources,enrollment:enrollment,reconfigure:true) { success in
-                defer { try? FileManager.default.removeItem(at:pending) }
-                self.settingsNote.stringValue = success ? Self.routeCommand("save",[pending.path]).output : "Изменения не применены. Проверьте состояние помощника."
-            }
-        }
+        guard !sitesPanel.applying,sitesPanel.base==storedWork() else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через экспорт.";return}
+        do {try JSONFile.write(PendingWork(base:sitesPanel.base,profile:profile),to:pendingURL)} catch {settingsNote.stringValue="Не удалось записать черновик.";return}
+        guard engine==nil && !selective.busy else {settingsNote.stringValue="Черновик сохранён до следующего подключения. Текущий сеанс продолжается.";return}
+        applyPending(connectAfter:false)
         #else
         settingsNote.stringValue=Self.routeCommand("save",[temp.path]).output
         #endif
         routeStatus()
     }
+    #if CVR_SELECTIVE_TUN && CVR_UPDATES
+    func applyPending(connectAfter:Bool) {
+        let p=sitesPanel
+        guard !p.applying else{return}
+        func report(_ text:String){settingsNote.stringValue=text;if connectAfter {connectionNotice=text;presentConnection()}}
+        guard let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)),saved.base==storedWork() else {report("Отложенный профиль расходится с сохранённым. Проверьте рабочие правила.");return}
+        let profile=saved.profile
+        let temp=paths.data.appendingPathComponent("apply-"+UUID().uuidString)
+        do {try JSONFile.write(profile,to:temp)} catch {report("Ошибка чтения черновика.");return}
+        let validation=Self.routeCommand("check-draft",[temp.path],resources:resources)
+        guard validation.code==0 else{try? FileManager.default.removeItem(at:temp);report(validation.output);return}
+        let status=SelectiveRouter.helperReply(resources:resources)
+        let desktop=(status?["approvedRDPHost"] as? String).flatMap { profile.work($0) ? $0:nil } ?? ""
+        guard let enrollment=try? profile.enrollment(desktop:desktop),let expected=try? JSONSerialization.jsonObject(with:enrollment) as? [String:Any] else {try? FileManager.default.removeItem(at:temp);report("Не удалось подготовить разрешения.");return}
+        p.applying=true
+        func finish(_ success:Bool){
+            defer {try? FileManager.default.removeItem(at:temp)}
+            p.applying=false
+            guard success else{report("Утверждение не завершено. Черновик сохранён.");return}
+            let result=Self.routeCommand("save",[temp.path],resources:resources)
+            guard result.code==0 else{report(result.output);return}
+            try? FileManager.default.removeItem(at:pendingURL)
+            p.base=profile
+            if p.draft==profile {try? FileManager.default.removeItem(at:draftURL)}
+            report(result.output)
+            if connectAfter {connect()}
+        }
+        if let old=status?["tcpRules"] as? NSArray, old.isEqual(expected["rules"]) {finish(true)}
+        else {selective.manageHelper(resources:resources,enrollment:enrollment,reconfigure:true,completion:finish)}
+    }
+    #endif
     func closeChromeForMigration() throws -> URL? {
         let apps=NSRunningApplication.runningApplications(withBundleIdentifier:"com.google.Chrome")
         guard !apps.isEmpty else{return nil}

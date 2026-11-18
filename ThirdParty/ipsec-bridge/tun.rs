@@ -126,7 +126,7 @@ impl TunIPsecTunnel {
             transport_type: s.transport_type,
             ip_address: s.ipv4net_address(),
             dns_servers: s.dns.clone(),
-            search_domains: vec![],
+            search_domains: s.domains.iter().map(|d| crate::platform::SearchDomain::new(d, false)).collect(),
             interface_name: String::new(),
             dns_configured: false,
             routing_configured: false,

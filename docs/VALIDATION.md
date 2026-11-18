@@ -683,3 +683,7 @@ Alpha.4 is preserved for rollback. The main Mac's installed app and active
 session were not replaced; no public release, upload, commit or push occurred.
 First/repeat alpha.5 MFA, AdGuard coexistence, HTTPS and launcher icon on the
 second Mac are pending. The candidate is not represented as remotely validated.
+
+## 0.3.22
+
+[Основной Mac, проверки интерфейса, ограничения и приёмка](RESOURCES-0.3.22.ru.md).
