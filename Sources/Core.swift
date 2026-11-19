@@ -5,6 +5,11 @@ let productVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVers
 #else
 let productVersion = "0.2.0-beta.6"
 #endif
+let productDisplayVersion: String = {
+    guard let credit = Bundle.main.object(forInfoDictionaryKey: "CVRVersionCredit") as? String,
+          !credit.isEmpty else { return productVersion }
+    return "\(productVersion) by \(credit)"
+}()
 
 enum RouterError: String, Error {
     case unconfigured, invalidConfiguration, vpnUnavailable, dnsUnavailable

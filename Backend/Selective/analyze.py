@@ -241,7 +241,12 @@ if __name__ == '__main__':
         os.chdir(data)
         if '--preview' in sys.argv:
             request = json.load(sys.stdin)
-            cfg = validate(json.loads((data/'work-sites.json').read_bytes()))
+            try:
+                cfg = validate(json.loads((data/'work-sites.json').read_bytes()))
+            except FileNotFoundError:
+                # A new profile can parse full names before it has any grants.
+                # An empty rule set never authorizes a corporate DNS lookup.
+                cfg = dict(sites=[], beforeLogin=[], ports=[443])
             result = asyncio.run(asyncio.wait_for(preview(request,cfg),45))
         else:
             address = sys.stdin.readline(2049)

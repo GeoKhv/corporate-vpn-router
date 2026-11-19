@@ -223,7 +223,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                                       NSButton(title: "Диагностика…", target: self, action: #selector(diagnose))])
         let motto = NSTextField(labelWithString: "Trust me, I'm an engineer.")
         let author = NSTextField(labelWithString: "Made by @geokhv ·")
-        let version = NSTextField(labelWithString: "· v\(productVersion)")
+        let version = NSTextField(labelWithString: "· v\(productDisplayVersion)")
         for text in [motto, author, version] { text.font = .systemFont(ofSize: 10); text.textColor = .secondaryLabelColor }
         let github = NSButton(title: "GitHub", target: self, action: #selector(openProject))
         github.isBordered = false; github.bezelStyle = .inline; github.font = .systemFont(ofSize: 10)
@@ -355,7 +355,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         logsButton = NSButton(title: "Сохранить и открыть логи…", target: self, action: #selector(exportLogs))
         actions.append(logsButton)
         #endif
-        actions.append(NSTextField(labelWithString: productVersion))
+        actions.append(NSTextField(labelWithString: productDisplayVersion))
         views.append(NSStackView(views: actions))
         #if CVR_SELECTIVE_TUN
         exportStatus.font = .systemFont(ofSize: 12)

@@ -1,0 +1,12 @@
+{
+  "version": "0.3.25",
+  "build": 3025,
+  "credit": "MichaelTG",
+  "minimumSystemVersion": "26.0",
+  "architecture": "arm64",
+  "assets": {
+    "Corporate-VPN-Router-0.3.25-CLEAN-macOS-arm64.zip": "d35c9f7507d7d95198f5ee4f84359cc499e444a00577a4bdc77494029a5af979",
+    "Corporate-VPN-Router-0.3.25-STARTER-work-sites-macOS-arm64.zip": "7502d20caebb97b2a297b46531f2b19916875aa7f1470437a68e643d4b41042b"
+  },
+  "unchangedIPsecSource": "https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.22/Corporate-VPN-Router-0.3.22-IPsec-source.zip"
+}

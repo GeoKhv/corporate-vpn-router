@@ -215,6 +215,12 @@ extension BetaMenu {
         guard let old=legacyPolicy() else { return nil }
         v.ports=old.ports; v.sites=old.domains.map{ WorkSite(domain:$0,scope:"tree") };return v
     }
+    func matchesStoredBase(_ base: WorkProfile) -> Bool {
+        if let stored=storedWork() { return stored==base }
+        // A new installation starts with an empty editor. A damaged file must
+        // still be reviewed explicitly before its profile can be replaced.
+        return base==WorkProfile() && !FileManager.default.fileExists(atPath:workURL.path)
+    }
     func gateway() -> String? {
         let u=paths.data.appendingPathComponent("ssl-site.json")
         return (try? JSONSerialization.jsonObject(with:Data(contentsOf:u)) as? [String:String])?["site"]
@@ -328,7 +334,7 @@ extension BetaMenu {
             if let queued=queuedProfile(for:p.base) { p.draft=queued }
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), let latest=saved.draft(for:p.base) {p.draft=latest}
             loadDraft();updateSearchSource()
-        } else if p.base != storedWork(), p.draft == p.base, p.editing == nil {
+        } else if !matchesStoredBase(p.base), p.draft == p.base, p.editing == nil {
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base; loadDraft()
         }
         routeStatus()
@@ -690,7 +696,7 @@ extension BetaMenu {
         let validation=Self.routeCommand("check-draft",[temp.path],resources:resources)
         guard validation.code==0 else { settingsNote.stringValue="Не сохранено: "+validation.output;return }
         let profile=sitesPanel.draft
-        guard !sitesPanel.applying,!applyingBundledRule,sitesPanel.base==storedWork() else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через «Ещё → Экспорт…».";return}
+        guard !sitesPanel.applying,!applyingBundledRule,matchesStoredBase(sitesPanel.base) else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через «Ещё → Экспорт…».";return}
         guard profile != sitesPanel.base else {
             if queuedProfile(for:profile) != nil {
                 do {try FileManager.default.removeItem(at:pendingURL)}
@@ -710,7 +716,7 @@ extension BetaMenu {
     }
     #if CVR_SELECTIVE_TUN && CVR_UPDATES
     func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool) throws {
-        guard storedWork()==old else {throw ProxyFailure("Профиль изменился. Проверьте текущие правила.")}
+        guard matchesStoredBase(old) else {throw ProxyFailure("Профиль изменился. Проверьте текущие правила.")}
         let p=sitesPanel
         let open=settingsWindow != nil && p.base==old
         var edited:WorkProfile?
@@ -769,7 +775,7 @@ extension BetaMenu {
             // A previous save succeeded but the process exited before clearing pending.
             completePending();return
         }
-        guard saved.base==storedWork() else {report("Отложенный профиль расходится с сохранённым. Проверьте рабочие правила.");return}
+        guard matchesStoredBase(saved.base) else {report("Отложенный профиль расходится с сохранённым. Проверьте рабочие правила.");return}
         let profile=saved.profile
         let temp=paths.data.appendingPathComponent("apply-"+UUID().uuidString)
         do {try JSONFile.write(profile,to:temp)} catch {report("Ошибка чтения черновика.");return}

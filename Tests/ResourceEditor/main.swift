@@ -16,6 +16,7 @@ func run() throws {
     defer { try? fm.removeItem(at:root) }
     let paths = ProductPaths(root:root.path,systemApplications:root.appendingPathComponent("SystemApps"))
     try paths.createData()
+    let firstProfile = CommandLine.arguments.contains("--first-profile")
     let menu = BetaMenu(paths:paths), resources=menu.resources
     for dir in ["Runtime/bin","RouteHelper","Engine"] {
         try fm.createDirectory(at:resources.appendingPathComponent(dir),withIntermediateDirectories:true)
@@ -23,7 +24,7 @@ func run() throws {
     let engine = resources.appendingPathComponent("Engine")
     try fm.removeItem(at:engine)
     try fm.copyItem(at:payload.appendingPathComponent("Engine"),to:engine)
-    for file in ["BundledTCPRule.json","RouteHelper/RouteHelper"] {
+    for file in firstProfile ? ["RouteHelper/RouteHelper"] : ["BundledTCPRule.json","RouteHelper/RouteHelper"] {
         try fm.copyItem(at:payload.appendingPathComponent(file),to:resources.appendingPathComponent(file))
     }
     func executable(_ name:String, _ source:String) throws {
@@ -41,13 +42,12 @@ func run() throws {
     case " $* " in *" start "*) /usr/bin/touch '\(started.path)'; /bin/cat >/dev/null; exit 0;; esac
     exec '\(payload.appendingPathComponent("Runtime/bin/python3.13").path)' "$@"
     """+"\n")
-    let rule = try JSONDecoder().decode(SharedTCPRule.self,from:Data(contentsOf:resources.appendingPathComponent("BundledTCPRule.json")))
-    let suffix=rule.domain.split(separator:".").dropFirst().joined(separator:".")
+    let suffix="fixture.example"
     let original=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree"),WorkSite(domain:"mail.example",scope:"exact",tcp:.selected([8443]))], beforeLogin:["vpn.example"],ports:[443])
     var old=original; old.version=2
-    try JSONFile.write(old,to:menu.workURL)
+    if !firstProfile { try JSONFile.write(old,to:menu.workURL) }
     try JSONFile.write(["site":"vpn.example"],to:paths.data.appendingPathComponent("ssl-site.json"))
-    let desktop="desktop."+suffix
+    let desktop=firstProfile ? "" : "desktop."+suffix
     let oldRules=(try JSONSerialization.jsonObject(with:old.enrollment(desktop:desktop)) as! [String:Any])["rules"]!
     func reply(_ rules:Any) throws {
         try JSONSerialization.data(withJSONObject:["ok":true,"active":false,"cleanupPending":false,"approvedRDPHost":desktop,"tcpRules":rules]).write(to:state)
@@ -59,7 +59,8 @@ func run() throws {
     menu.item=NSStatusBar.system.statusItem(withLength:0)
     menu.updates = RouterUpdates(owner:menu)
     menu.setupMain();menu.setupDiagnostics();menu.method.selectedSegment=0
-    menu.selective.inspectHelper = { _ in .ready }
+    var approved = !firstProfile
+    menu.selective.inspectHelper = { _ in approved ? .ready : .missing }
     menu.selective.inspectCleanup = { _ in true }
     menu.selective.changed = { menu.selectiveChanged() }
     var prompts=0
@@ -71,7 +72,28 @@ func run() throws {
         let object=try! JSONSerialization.jsonObject(with:Data(base64Encoded:encoded)!) as! [String:Any]
         require(object["desktop"] as? String==desktop,"existing RDP host preserved")
         try! reply(object["rules"]!)
+        approved=true
         return nil
+    }
+    if firstProfile {
+        menu.selective.helperAvailability = .missing
+        menu.settings()
+        require(menu.storedWork()==nil && menu.sitesPanel.draft.sites.isEmpty,"fresh profile is empty")
+        menu.sitesPanel.address.string="https://first.example"
+        menu.parseAddresses()
+        waitFor("first address parsed"){!menu.sitesPanel.previewBox.isHidden}
+        menu.addPreview()
+        let draft=menu.sitesPanel.draft
+        menu.savePolicy()
+        waitFor("approval cancelled"){!menu.sitesPanel.applying}
+        require(menu.storedWork()==nil && menu.queuedProfile(for:WorkProfile())==draft,"first profile is retryable after cancellation")
+        cancel=false
+        menu.savePolicy()
+        waitFor("approval completed"){!menu.sitesPanel.applying}
+        require(menu.storedWork()==draft,"first profile saved: \(menu.settingsNote.stringValue)")
+        require(prompts==2 && !fm.fileExists(atPath:menu.pendingURL.path),"first profile installed with approved rules")
+        print("PASS empty editor, first policy, cancelled approval, successful retry")
+        return
     }
     func button(_ title:String,_ view:NSView)->NSButton? {
         if let b=view as? NSButton,b.title==title {return b}

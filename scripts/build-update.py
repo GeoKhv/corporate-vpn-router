@@ -9,8 +9,11 @@ p.add_argument('--site-pin',type=Path,help='Previously verified alternate site a
 p.add_argument('--rdp-host', help='Exact RDP destination to authorize when building from an enrolled starter')
 p.add_argument('--deployment-desktop', help='Package a fixed DNS name for distribution to this deployment')
 p.add_argument('--ipsec-bridge', type=Path, help='Explicitly opt this candidate into the reviewed unprivileged IPsec bridge')
+p.add_argument('--bundled-rules', action='store_true', help='Include the reviewed deployment-specific rule migration')
+p.add_argument('--credit', help='GitHub authors as shown in the version label, separated by comma and space')
 a=p.parse_args()
 if a.rdp_host and not a.private:p.error('--rdp-host requires --private')
+if a.credit and not re.fullmatch(r'[A-Za-z0-9-]{1,39}(, [A-Za-z0-9-]{1,39})*',a.credit):p.error('Expected GitHub logins separated by comma and space')
 assert re.fullmatch(r'\d+\.\d+\.\d+',a.version)
 assert not a.output.exists(),'Never overwrite an existing release'
 os.umask(0o077)
@@ -18,7 +21,10 @@ app=a.output/'Corporate VPN Router TUN Trial.app';res=app/'Contents/Resources'
 def run(*args):subprocess.run([str(x) for x in args],check=True)
 run('codesign','--verify','--deep','--strict',a.base_app)
 run('ditto',a.base_app,app)
-shutil.copyfile(ROOT/'packaging/updates/BundledTCPRule.json',res/'BundledTCPRule.json')
+if a.bundled_rules:
+ shutil.copyfile(ROOT/'packaging/updates/BundledTCPRule.json',res/'BundledTCPRule.json')
+else:
+ (res/'BundledTCPRule.json').unlink(missing_ok=True)
 framework=app/'Contents/Frameworks/Sparkle.framework';framework.parent.mkdir(exist_ok=True)
 if (a.sparkle/'Sparkle.framework').resolve() != (a.base_app/'Contents/Frameworks/Sparkle.framework').resolve():
  run('ditto',a.sparkle/'Sparkle.framework',framework)
@@ -117,6 +123,8 @@ if desktop:
  desktop_file.write_text(json.dumps({'desktop':desktop},sort_keys=True)+'\n')
 # No compile paths or signing private keys are included.
 info=app/'Contents/Info.plist';d=plistlib.loads(info.read_bytes())
+d.pop('CVRVersionCredit',None)
+if a.credit:d['CVRVersionCredit']=a.credit
 d.update(CFBundleShortVersionString=a.version,CFBundleVersion=str(a.build),LSMinimumSystemVersion='26.0',
  SUFeedURL='https://github.com/GeoKhv/corporate-vpn-router/releases/download/update-channel/appcast.xml',
  SUPublicEDKey=(ROOT/'packaging/updates/public-key.txt').read_text().strip(),
