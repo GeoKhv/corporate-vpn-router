@@ -11,11 +11,11 @@ python3 scripts/build-update.py \
   --base-app '/path/to/verified/Corporate VPN Router TUN Trial.app' \
   --sparkle '/path/to/verified/Corporate VPN Router TUN Trial.app/Contents/Frameworks' \
   --output '/path/to/new-output' \
-  --version 0.3.26 --build 3026 --credit MichaelTG \
+  --version 0.3.27 --build 3027 --credit MichaelTG \
   --ipsec-bridge '/path/to/source/snx-rs/target/release/cvr-ipsec'
 ```
 
-Чистая и «Красная» 0.3.26 используют один исполняемый код и одинаковые номера версии и сборки. «Красная» добавляет проверенный профиль, точечные рабочие правила, алиасы и материалы доверия. После распаковки проверяйте состав файлов и контрольную сумму. [Манифест 0.3.26](releases/0.3.26.json)
+RED и WHITE 0.3.27 используют один код и номер сборки. Параметр `--private` выбирает RED и ленту `update-channel`. Без него создаётся WHITE с лентой `update-channel-white`. После распаковки проверяйте состав файлов, контрольную сумму и адрес ленты. [Манифест 0.3.27](releases/0.3.27.json)
 
 Для подготовки «Красной» с проверенным списком алиасов используйте `--starter-https-aliases` вместе с `--private` и `--bundled-rules`. Чистая сборка удаляет ресурс алиасов развёртывания из унаследованного bundle.
 

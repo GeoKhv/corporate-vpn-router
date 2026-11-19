@@ -106,7 +106,7 @@ func run() throws {
     }
     require(!stored.sites.contains{$0.domain=="alfabank.ru" && !old.sites.contains($0)},"no parent expansion")
     require(try JSONDecoder().decode(WorkProfile.self,from:Data(contentsOf:paths.data.appendingPathComponent("previous-work-sites.json")))==old,"previous profile backed up")
-    menu.stop("done");waitFor("fixture stopped") { menu.selective.process==nil }
+    menu.stop("done");waitFor("fixture stopped") { !menu.selective.busy }
     try JSONFile.write(old,to:menu.workURL)
     require(!menu.applyBundledRuleIfNeeded(connectAfterward:false),"user removal respected")
     let receipt=paths.data.appendingPathComponent("bundled-tcp-rule-v1.applied")

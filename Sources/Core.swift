@@ -6,9 +6,15 @@ let productVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVers
 let productVersion = "0.2.0-beta.6"
 #endif
 let productDisplayVersion: String = {
-    guard let credit = Bundle.main.object(forInfoDictionaryKey: "CVRVersionCredit") as? String,
-          !credit.isEmpty else { return productVersion }
-    return "\(productVersion) by \(credit)"
+    var label = productVersion
+    if let credit = Bundle.main.object(forInfoDictionaryKey: "CVRVersionCredit") as? String, !credit.isEmpty {
+        label += " by \(credit)"
+    }
+    if let edition = Bundle.main.object(forInfoDictionaryKey: "CVRDeploymentEdition") as? String,
+       ["RED", "WHITE"].contains(edition) {
+        label += " · \(edition)"
+    }
+    return label
 }()
 
 enum RouterError: String, Error {

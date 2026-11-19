@@ -13,7 +13,11 @@ p.add_argument('--bundled-rules', action='store_true', help='Include the reviewe
 p.add_argument('--starter-https-aliases', type=Path, help='Reviewed HTTPS aliases for an enrolled starter')
 p.add_argument('--credit', help='GitHub authors as shown in the version label, separated by comma and space')
 a=p.parse_args()
+edition = 'RED' if a.private else 'WHITE'
+channel = 'update-channel' if a.private else 'update-channel-white'
 if a.rdp_host and not a.private:p.error('--rdp-host requires --private')
+if not a.private and (a.bundled_rules or a.site_pin or a.deployment_desktop):
+ p.error('Bundled work rules, site pins and deployment desktops are RED-only (--private)')
 if a.starter_https_aliases and not (a.private and a.bundled_rules):p.error('--starter-https-aliases requires --private and --bundled-rules')
 if a.credit and not re.fullmatch(r'[A-Za-z0-9-]{1,39}(, [A-Za-z0-9-]{1,39})*',a.credit):p.error('Expected GitHub logins separated by comma and space')
 assert re.fullmatch(r'\d+\.\d+\.\d+',a.version)
@@ -111,13 +115,7 @@ if not a.private:
   path=res/name
   if path.is_dir():shutil.rmtree(path)
   elif path.exists():path.unlink()
-# Never inherit a deployment-specific default from a base bundle implicitly.
-if a.site_pin and not a.private:
- from sys import path as module_path
- module_path.insert(0,str(ROOT/'Backend'))
- from trust import read_site_pin
- pin=read_site_pin(a.site_pin)
- (res/'ApprovedSitePin.json').write_text(json.dumps(pin,sort_keys=True)+'\n')
+# Never inherit a deployment-specific desktop from a base bundle implicitly.
 desktop_file = res/'DefaultDesktop.json'
 desktop_file.unlink(missing_ok=True)
 desktop = a.deployment_desktop or (a.rdp_host if a.private else None)
@@ -132,7 +130,8 @@ info=app/'Contents/Info.plist';d=plistlib.loads(info.read_bytes())
 d.pop('CVRVersionCredit',None)
 if a.credit:d['CVRVersionCredit']=a.credit
 d.update(CFBundleShortVersionString=a.version,CFBundleVersion=str(a.build),LSMinimumSystemVersion='26.0',
- SUFeedURL='https://github.com/GeoKhv/corporate-vpn-router/releases/download/update-channel/appcast.xml',
+ CVRDeploymentEdition=edition,
+ SUFeedURL=f'https://github.com/GeoKhv/corporate-vpn-router/releases/download/{channel}/appcast.xml',
  SUPublicEDKey=(ROOT/'packaging/updates/public-key.txt').read_text().strip(),
  SUEnableAutomaticChecks=True,SUAutomaticallyUpdate=False,SUAllowsAutomaticUpdates=False,
  SUScheduledCheckInterval=86400,SUEnableSystemProfiling=False,SUShowReleaseNotes=False,
