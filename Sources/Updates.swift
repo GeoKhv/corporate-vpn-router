@@ -12,6 +12,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     var changed: (() -> Void)?
     var cancelAction: (() -> Void)?
     var foundReply: ((SPUUserUpdateChoice) -> Void)?
+    private var recheckAfterDismiss = false
     var installationRequested = false
     var preparing = false
     var cleanupReady = false
@@ -31,7 +32,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         cancelItem = menu.addItem(withTitle: "Отменить обновление", action: #selector(cancel), keyEquivalent: "")
         automaticItem = menu.addItem(withTitle: "Проверять обновления автоматически", action: #selector(toggleAutomatic), keyEquivalent: "")
         for item in [checkItem, actionItem, cancelItem, automaticItem] { item.target = self }
-        button.target = self; button.action = #selector(check); button.isBordered = false
+        button.target = self; button.action = #selector(openUpdate); button.isBordered = false
         button.font = .systemFont(ofSize: 10); button.contentTintColor = .linkColor
         do {
             try updater.start()
@@ -41,11 +42,12 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         refresh()
     }
     func refresh() {
-        checkItem.title = status; checkItem.isEnabled = !installationRequested
+        checkItem.title = foundReply == nil ? status : "Проверить обновления снова"
+        checkItem.isEnabled = !installationRequested && !preparing && !recheckAfterDismiss && (foundReply != nil || updater.canCheckForUpdates)
         actionItem.isHidden = foundReply == nil; actionItem.isEnabled = !installationRequested
         cancelItem.isHidden = cancelAction == nil || preparing
         automaticItem.state = updater.automaticallyChecksForUpdates ? .on : .off
-        button.title = status; button.isEnabled = !installationRequested
+        button.title = status; button.isEnabled = checkItem.isEnabled
         changed?()
     }
     func record(_ event: String, error: Error? = nil) {
@@ -59,9 +61,31 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
             defer { try? handle.close() }; _ = try? handle.seekToEnd(); try? handle.write(contentsOf:data + Data([10]))
         }
     }
+    @objc func openUpdate() {
+        if foundReply == nil { check() } else { install() }
+    }
     @objc func check() {
-        if foundReply != nil { install(); return }
-        updater.checkForUpdates()
+        guard !installationRequested, !preparing, !recheckAfterDismiss else { return }
+        if foundReply != nil { dismissOffer(recheck: true) }
+        else if updater.canCheckForUpdates { updater.checkForUpdates() }
+    }
+    private func dismissOffer(recheck: Bool) {
+        guard let reply = foundReply else { return }
+        recheckAfterDismiss = recheck
+        foundReply = nil; version = nil
+        status = recheck ? "Проверка обновлений…" : "Проверить обновления"
+        refresh()
+        reply(.dismiss)
+    }
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        // The old offer owns a live Sparkle session until its cycle ends.
+        // Start the new check after Sparkle has finished dismissing that offer.
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.recheckAfterDismiss else { self?.refresh(); return }
+            self.recheckAfterDismiss = false
+            self.check()
+            self.refresh()
+        }
     }
     @objc func toggleAutomatic() { updater.automaticallyChecksForUpdates.toggle(); refresh(); record("automatic-checks-changed") }
     @objc func install() {
@@ -69,9 +93,15 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         let alert = NSAlert()
         alert.messageText = "Установить версию \(version ?? "")?"
         alert.informativeText = "Router загрузит и проверит обновление, завершит рабочий сеанс и перезапустится. После этого потребуется новый вход с MFA. Личный VPN останется включённым. Если папка приложения защищена, macOS запросит разрешение на замену файлов."
-        alert.addButton(withTitle:"Загрузить и установить"); alert.addButton(withTitle:"Отмена")
+        alert.addButton(withTitle:"Загрузить и установить")
+        alert.addButton(withTitle:"Проверить снова")
+        alert.addButton(withTitle:"Отмена").keyEquivalent = "\u{1b}"
         NSApp.activate(ignoringOtherApps:true)
-        guard alert.runModal() == .alertFirstButtonReturn else { record("user-declined"); return }
+        let choice = alert.runModal()
+        if choice == .alertSecondButtonReturn { check(); return }
+        guard choice == .alertFirstButtonReturn else {
+            record("user-declined"); dismissOffer(recheck: false); return
+        }
         guard owner.selective.state != "installing", !owner.terminationPending else { return }
         installationRequested = true; foundReply = nil
         record("user-authorized-download-install"); reply(.install); refresh()
@@ -83,6 +113,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     }
     // An ordinary app quit must not leave a staged install-on-quit decision.
     func cancelForQuit() {
+        recheckAfterDismiss = false
         if !preparing { cancelAction?(); cancelAction = nil; foundReply?(.dismiss); foundReply = nil }
     }
     func show(_ request: SPUUpdatePermissionRequest, reply: @escaping (SUUpdatePermissionResponse) -> Void) {
