@@ -64,7 +64,7 @@ if approved_bytes is None:
  if desktop.exists() or desktop.is_symlink():bad.append('forbidden resource: DefaultDesktop.json')
 elif not desktop.is_file() or desktop.is_symlink():
  bad.append('missing or linked DefaultDesktop.json')
-for name in ['ApprovedGateway.json','ApprovedSitePin.json','ApprovedCertificates','DefaultWorkSites.json','DefaultDomainMap.json','WorkSiteAdditions.json','CertificateEndpoints.json','RouteHelper/RouteGrants.json','RouteHelper/LocalPolicy.json']:
+for name in ['ApprovedGateway.json','ApprovedSitePin.json','ApprovedCertificates','DefaultWorkSites.json','DefaultDomainMap.json','WorkSiteAdditions.json','StarterHTTPSAliases.json','CertificateEndpoints.json','RouteHelper/RouteGrants.json','RouteHelper/LocalPolicy.json']:
  if name=='ApprovedSitePin.json' and pin_bytes is not None:
   path=a.app/pin_resource
   if not path.is_file() or path.is_symlink():bad.append('missing or linked site pin')

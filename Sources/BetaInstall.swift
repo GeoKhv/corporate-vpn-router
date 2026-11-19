@@ -46,12 +46,19 @@ enum BetaInstall {
         let target = paths.data.appendingPathComponent("work-sites.json")
         if !FileManager.default.fileExists(atPath: target.path),
            let source = Bundle.main.url(forResource: "DefaultWorkSites", withExtension: "json") {
-            let data = try Data(contentsOf: source)
-            let profile = try JSONDecoder().decode(WorkProfile.self, from: data)
+            var data = try Data(contentsOf: source)
+            var profile = try JSONDecoder().decode(WorkProfile.self, from: data)
             guard profile.version == 1, !profile.sites.isEmpty, profile.sites.count <= 256,
                   profile.sites.allSatisfy({ Configuration.validHost($0.domain) && ["tree", "exact"].contains($0.scope) }),
                   profile.beforeLogin.allSatisfy({ Configuration.validHost($0) }),
                   !profile.ports.isEmpty, profile.ports.allSatisfy({ (1...65535).contains($0) }) else { throw RouterError.invalidConfiguration }
+#if CVR_SELECTIVE_TUN && CVR_UPDATES
+            if let aliases = Bundle.main.url(forResource: "StarterHTTPSAliases", withExtension: "json") {
+                let defaults = try StarterHTTPSAliases.load(aliases)
+                guard defaults.add(to: &profile).isEmpty else { throw RouterError.invalidConfiguration }
+                data = try JSONEncoder().encode(profile)
+            }
+#endif
             try data.write(to: target, options: .withoutOverwriting)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
         }

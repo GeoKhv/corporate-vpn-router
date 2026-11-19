@@ -127,6 +127,37 @@ func run() throws {
     var legacy=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree")])
     try legacy.mergeExactRule(rule)
     require(legacy.version==2 && legacy.sites.last?.tcp == .selected([22,443,6443]),"v1 scope and ports retained")
+    let starterSource=payload.appendingPathComponent(StarterHTTPSAliases.filename)
+    if fm.fileExists(atPath:starterSource.path) {
+        try fm.copyItem(at:starterSource,to:resources.appendingPathComponent(StarterHTTPSAliases.filename))
+        let aliases=try StarterHTTPSAliases.load(starterSource)
+        let receipt=paths.data.appendingPathComponent(StarterHTTPSAliases.receipt)
+        let prior=menu.storedWork()!
+        try reply((try JSONSerialization.jsonObject(with:prior.enrollment(desktop:desktop)) as! [String:Any])["rules"]!)
+        cancel=true
+        require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"existing starter requests approval with old receipts present")
+        waitFor("starter approval cancelled"){!menu.applyingBundledRule}
+        require(menu.storedWork()==prior && !fm.fileExists(atPath:receipt.path),"cancel preserves starter profile and permits retry")
+        cancel=false
+        require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"starter retries")
+        waitFor("starter aliases applied"){!menu.applyingBundledRule && fm.fileExists(atPath:receipt.path)}
+        let updated=menu.storedWork()!
+        require(Array(updated.sites.prefix(prior.sites.count))==prior.sites,"starter preserves previously installed rules")
+        for host in aliases.hosts {
+            let alias=String(host.prefix(while:{$0 != "."}))
+            require(updated.sites.contains(WorkSite(domain:host,scope:"exact",tcp:.selected([443]),alias:alias)),"starter delivers exact HTTPS alias")
+        }
+        try JSONFile.write(prior,to:menu.workURL)
+        require(!menu.applyBundledRuleIfNeeded(connectAfterward:false),"starter respects manual removal")
+
+        let host=aliases.hosts[0]
+        let alias=String(host.prefix(while:{$0 != "."}))
+        let unrelated=WorkSite(domain:alias+".example.org",scope:"exact",tcp:.any,alias:alias)
+        var edited=prior
+        edited.sites.append(unrelated)
+        require(aliases.add(to:&edited)==[host] && edited.sites.contains(unrelated),"existing alias owner and any TCP preserved")
+        print("PASS starter alias migration with prior receipts, cancelled approval, retry, conflict and manual removal")
+    }
     print("PASS packaged rule, cancel/retry, verified save, same-click continuation, existing settings, no reapplication after deletion, unchanged v1 and v2 grants")
 }
 do { try run() } catch { fputs("FAIL: \(error)\n",stderr);exit(1) }

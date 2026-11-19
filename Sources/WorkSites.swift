@@ -928,6 +928,37 @@ extension BetaMenu {
 }
 
 #if CVR_SELECTIVE_TUN && CVR_UPDATES
+struct StarterHTTPSAliases: Decodable {
+    static let filename = "StarterHTTPSAliases.json"
+    static let receipt = "starter-https-aliases-v1.applied"
+    let hosts: [String]
+
+    static func load(_ url: URL) throws -> Self {
+        let bundle = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
+        guard (1...16).contains(bundle.hosts.count), Set(bundle.hosts).count == bundle.hosts.count,
+              Set(bundle.hosts.map { $0.split(separator: ".").first }).count == bundle.hosts.count,
+              bundle.hosts.allSatisfy({ $0.contains(".") && Configuration.validHost($0) }) else {
+            throw RouterError.invalidConfiguration
+        }
+        return bundle
+    }
+
+    func add(to profile: inout WorkProfile) -> [String] {
+        var conflicts: [String] = []
+        for host in hosts {
+            let alias = String(host.prefix(while: { $0 != "." }))
+            let row = WorkSite(domain: host, scope: "exact", tcp: .selected([443]), alias: alias)
+            if profile.covers(row) != nil { continue }
+            do {
+                try profile.mergeExactRule(SharedTCPRule(kind: "exact-tcp-rule", domain: host, ports: [443], shortName: true))
+            } catch {
+                conflicts.append(host)
+            }
+        }
+        return conflicts
+    }
+}
+
 extension BetaMenu {
     // Keep the receipt independent of app version so later updates respect manual edits.
     func applyBundledRuleIfNeeded(connectAfterward: Bool) -> Bool {
@@ -935,9 +966,13 @@ extension BetaMenu {
         let legacyReceipt = paths.data.appendingPathComponent("bundled-tcp-rule-v1.applied")
         let httpsReceipt = paths.data.appendingPathComponent("bundled-https-v1.applied")
         let fm = FileManager.default
+        let starterAliases = resources.appendingPathComponent(StarterHTTPSAliases.filename)
+        let starterReceipt = paths.data.appendingPathComponent(StarterHTTPSAliases.receipt)
+        let needsStarterAliases = fm.fileExists(atPath:starterAliases.path) && !fm.fileExists(atPath:starterReceipt.path)
         guard !applyingBundledRule, engine == nil, !selective.busy,
               selective.helperAvailability.canConnect || selective.helperAvailability.needsInstallation,
-              (!fm.fileExists(atPath:legacyReceipt.path) || !fm.fileExists(atPath:httpsReceipt.path)), fm.fileExists(atPath:resource.path),
+              (needsStarterAliases || !fm.fileExists(atPath:legacyReceipt.path) || !fm.fileExists(atPath:httpsReceipt.path)),
+              fm.fileExists(atPath:resource.path),
               fm.fileExists(atPath:workURL.path) else { return false }
         do {
             let original = try Data(contentsOf:workURL)
@@ -967,6 +1002,14 @@ extension BetaMenu {
                     try candidate.mergeExactRule(SharedTCPRule(kind:"exact-tcp-rule",domain:host,ports:[443],shortName:false))
                 }
                 if !conflict || candidate != profile {receipts.append(httpsReceipt)}
+            }
+            if needsStarterAliases {
+                let aliases = try StarterHTTPSAliases.load(starterAliases)
+                let conflicts = aliases.add(to: &candidate)
+                if !conflicts.isEmpty {
+                    connectionNotice = "Сохранены ваши правила для: " + conflicts.joined(separator: ", ")
+                }
+                receipts.append(starterReceipt)
             }
             guard !receipts.isEmpty else {return false}
             func markApplied() throws {

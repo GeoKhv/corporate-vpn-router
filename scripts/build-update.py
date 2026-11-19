@@ -10,9 +10,11 @@ p.add_argument('--rdp-host', help='Exact RDP destination to authorize when build
 p.add_argument('--deployment-desktop', help='Package a fixed DNS name for distribution to this deployment')
 p.add_argument('--ipsec-bridge', type=Path, help='Explicitly opt this candidate into the reviewed unprivileged IPsec bridge')
 p.add_argument('--bundled-rules', action='store_true', help='Include the reviewed deployment-specific rule migration')
+p.add_argument('--starter-https-aliases', type=Path, help='Reviewed HTTPS aliases for an enrolled starter')
 p.add_argument('--credit', help='GitHub authors as shown in the version label, separated by comma and space')
 a=p.parse_args()
 if a.rdp_host and not a.private:p.error('--rdp-host requires --private')
+if a.starter_https_aliases and not (a.private and a.bundled_rules):p.error('--starter-https-aliases requires --private and --bundled-rules')
 if a.credit and not re.fullmatch(r'[A-Za-z0-9-]{1,39}(, [A-Za-z0-9-]{1,39})*',a.credit):p.error('Expected GitHub logins separated by comma and space')
 assert re.fullmatch(r'\d+\.\d+\.\d+',a.version)
 assert not a.output.exists(),'Never overwrite an existing release'
@@ -25,6 +27,9 @@ if a.bundled_rules:
  shutil.copyfile(ROOT/'packaging/updates/BundledTCPRule.json',res/'BundledTCPRule.json')
 else:
  (res/'BundledTCPRule.json').unlink(missing_ok=True)
+(res/'StarterHTTPSAliases.json').unlink(missing_ok=True)
+if a.starter_https_aliases:
+ shutil.copyfile(a.starter_https_aliases,res/'StarterHTTPSAliases.json')
 framework=app/'Contents/Frameworks/Sparkle.framework';framework.parent.mkdir(exist_ok=True)
 if (a.sparkle/'Sparkle.framework').resolve() != (a.base_app/'Contents/Frameworks/Sparkle.framework').resolve():
  run('ditto',a.sparkle/'Sparkle.framework',framework)
