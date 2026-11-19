@@ -11,11 +11,11 @@ python3 scripts/build-update.py \
   --base-app '/path/to/verified/Corporate VPN Router TUN Trial.app' \
   --sparkle '/path/to/verified/Corporate VPN Router TUN Trial.app/Contents/Frameworks' \
   --output '/path/to/new-output' \
-  --version 0.3.25 --build 3025 --credit MichaelTG \
+  --version 0.3.26 --build 3026 --credit MichaelTG \
   --ipsec-bridge '/path/to/source/snx-rs/target/release/cvr-ipsec'
 ```
 
-Выпуск 0.3.25 упакован на основе проверенного публичного ZIP 0.3.24 с прежними нативными компонентами. «Красный» комплект добавляет только сверенные материалы развёртывания предыдущего STARTER и уже опубликованные точечные правила и сертификатную привязку. Проверяйте набор файлов и контрольную сумму сразу после извлечения ZIP. [Манифест 0.3.25](releases/0.3.25.json)
+Чистая и «Красная» 0.3.26 используют один исполняемый код и одинаковые номера версии и сборки. «Красная» добавляет проверенный профиль, точечные рабочие правила, алиасы и материалы доверия. После распаковки проверяйте состав файлов и контрольную сумму. [Манифест 0.3.26](releases/0.3.26.json)
 
 Для подготовки «Красной» с проверенным списком алиасов используйте `--starter-https-aliases` вместе с `--private` и `--bundled-rules`. Чистая сборка удаляет ресурс алиасов развёртывания из унаследованного bundle.
 
