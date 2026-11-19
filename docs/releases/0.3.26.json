@@ -1,11 +1,11 @@
 {
   "version": "0.3.26",
   "build": 3026,
-  "edition": "Red",
   "credit": "MichaelTG",
   "minimumSystemVersion": "26.0",
   "architecture": "arm64",
   "assets": {
-    "Corporate-VPN-Router-0.3.26-STARTER-work-sites-macOS-arm64.zip": "f744527c5c49a92bba2f5badbb69c877183df7ca505ecfd42301025e608929ae"
+    "Corporate-VPN-Router-0.3.26-STARTER-work-sites-macOS-arm64.zip": "f744527c5c49a92bba2f5badbb69c877183df7ca505ecfd42301025e608929ae",
+    "Corporate-VPN-Router-0.3.26-CLEAN-macOS-arm64.zip": "38045c926f312983a8c60ee5301c7e7f90b870d4ad04b7b732919e0a19d5d729"
   }
 }

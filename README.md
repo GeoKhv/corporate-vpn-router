@@ -2,16 +2,16 @@
 
 Corporate VPN Router направляет выбранные рабочие адреса через Check Point на Mac. Остальной трафик идёт по обычному маршруту macOS, в том числе через личный VPN. Правила действуют в браузерах, SSH-клиентах, Lens и других приложениях, которые подключаются по DNS-имени и TCP.
 
-## Скачать
+## Скачать 0.3.26 by MichaelTG
 
-Для **Mac с Apple Silicon и macOS 26+**. Обе сборки включают интерфейс MichaelTG.
+Для **Mac с Apple Silicon и macOS 26+**. Обе сборки имеют одну версию. Рабочий профиль входит в «Красную».
 
 | Сборка | Для кого |
 | --- | --- |
-| **[Чистая 0.3.25 ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.25/Corporate-VPN-Router-0.3.25-CLEAN-macOS-arm64.zip)** | Вы сами добавляете рабочие адреса и используете настроенный в официальном Check Point шлюз. В ZIP нет готового профиля, закреплённых сертификатов организации или рабочего списка. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.25/Corporate-VPN-Router-0.3.25-CLEAN-macOS-arm64.zip.sha256) |
-| **[Красная 0.3.26 ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.26/Corporate-VPN-Router-0.3.26-STARTER-work-sites-macOS-arm64.zip)** | Стартовый комплект с готовыми рабочими сайтами, включая Superset и «Метрику», и проверенными параметрами подключения. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.26/Corporate-VPN-Router-0.3.26-STARTER-work-sites-macOS-arm64.zip.sha256) |
+| **[Чистая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.26/Corporate-VPN-Router-0.3.26-CLEAN-macOS-arm64.zip)** | Вы сами добавляете рабочие адреса и используете настроенный в официальном Check Point шлюз. В ZIP нет готового профиля, закреплённых сертификатов организации или рабочего списка. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.26/Corporate-VPN-Router-0.3.26-CLEAN-macOS-arm64.zip.sha256) |
+| **[Красная ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.26/Corporate-VPN-Router-0.3.26-STARTER-work-sites-macOS-arm64.zip)** | Стартовый комплект с готовыми рабочими сайтами, включая Superset и «Метрику», и проверенными параметрами подключения. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.26/Corporate-VPN-Router-0.3.26-STARTER-work-sites-macOS-arm64.zip.sha256) |
 
-Если Router уже настроен, нажмите **«Проверить обновления» → «Загрузить и установить»**. Sparkle предлагает 0.3.25 поверх 0.3.24 и сохраняет действующий профиль, в том числе «Красной» сборки. Более ранним версиям сначала предлагается 0.3.24. Чтобы получить настройки 0.3.26, скачайте «Красную» сборку. [Установка, обновление и откат](docs/COLLEAGUES.ru.md)
+Для обновления нажмите **«Проверить обновления» → «Загрузить и установить»**. Sparkle сохраняет действующий профиль. С 0.3.24 и 0.3.25 он предлагает сразу 0.3.26. Стартовые правила, включая Superset и «Метрику», можно получить из «Красного» ZIP. [Установка, обновление и откат](docs/COLLEAGUES.ru.md)
 
 ## Как пользоваться
 
