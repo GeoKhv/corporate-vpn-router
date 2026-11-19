@@ -70,6 +70,7 @@ bundle.native(res/'Engine/ocproxy')
 run('codesign','--force','--sign','-','--timestamp=none',res/'Engine/ocproxy')
 assert (res/'ConnectionResilience.json').is_file()
 helper=res/'RouteHelper/RouteHelper'
+portable_helper = not a.private or a.starter_https_aliases is not None
 # Keep the enrolled RouteClient byte-for-byte. Its cdhash is the XPC peer identity.
 if a.private:
  from sys import path as module_path
@@ -95,10 +96,10 @@ assert adapter_hash=='6546126c1759683fe85798da92409215d53c50e0f2b346b4f74a61babc
 with tempfile.TemporaryDirectory() as scratch:
  constants=Path(scratch)/'BuildPolicy.swift'
  values=dict(helperBuild='0.3.0-alpha.3',clientCDHash=cdhash,adapterSHA256=adapter_hash,approvedPorts=[443])
- if a.private:
+ if not portable_helper:
   values.update(approvedDomains=[r['domain'] for r in policy['sites']],approvedPorts=policy['ports'],approvedRDPHost=a.rdp_host or '')
  constants.write_text('import Foundation\n'+''.join('let '+k+' = '+json.dumps(v)+'\n' for k,v in values.items()))
- flags=[] if a.private else ['-D','CVR_PORTABLE_HELPER']
+ flags=['-D','CVR_PORTABLE_HELPER'] if portable_helper else []
  run('swiftc',*flags,'-swift-version','5','-O','-target','arm64-apple-macos13.0','-module-cache-path',ROOT/'.build/module-cache',
      ROOT/'Sources/RouteHelper/Protocol.swift',ROOT/'Sources/RouteHelper/Daemon.swift',constants,'-o',helper)
 run('codesign','--force','--sign','-','--options','runtime','--timestamp=none',helper)
@@ -136,7 +137,7 @@ d.update(CFBundleShortVersionString=a.version,CFBundleVersion=str(a.build),LSMin
  SUEnableAutomaticChecks=True,SUAutomaticallyUpdate=False,SUAllowsAutomaticUpdates=False,
  SUScheduledCheckInterval=86400,SUEnableSystemProfiling=False,SUShowReleaseNotes=False,
  SUVerifyUpdateBeforeExtraction=True,SURequireSignedFeed=True,SUSignedFeedFailureExpirationInterval=0,
- CVRRouteHelperSHA256=helper_sha,CVRRouteHelperBuild='0.3.10' if a.private else '0.3.20',CVRRouteHelperProtocol='0.3.0-alpha.3')
+ CVRRouteHelperSHA256=helper_sha,CVRRouteHelperBuild='0.3.20' if portable_helper else '0.3.10',CVRRouteHelperProtocol='0.3.0-alpha.3')
 info.write_bytes(plistlib.dumps(d,sort_keys=True))
 (res/'VERSION').write_text(a.version+'\n');(res/'INSTALLER_REVISION').write_text(a.version+'\n')
 # Remove only Finder metadata from build copies; never quarantine or security policy.
