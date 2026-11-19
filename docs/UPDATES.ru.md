@@ -1,6 +1,6 @@
 # Встроенные обновления
 
-Sparkle 2.10.1, arm64. Текущий пакет 0.3.23 (build 3023) требует macOS 26+; минимальная версия ОС самого framework не определяет совместимость всего приложения. Пользователь видит обычную версию из трёх чисел. CFBundleVersion — возрастающий внутренний номер (3000, 3001, 3002, 3003).
+Sparkle 2.10.1, arm64. Текущий пакет 0.3.24 (build 3024) требует macOS 26+. Пользователь видит версию из трёх чисел. CFBundleVersion — возрастающий внутренний номер.
 
 Постоянная лента: https://github.com/GeoKhv/corporate-vpn-router/releases/download/update-channel/appcast.xml
 Пакеты: GitHub Releases, отдельный тег v0.3.x. Клиент не содержит GitHub-токенов. GitHub Actions не используются.

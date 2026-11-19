@@ -138,7 +138,6 @@ final class MessageLabel: NSTextField {
 final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     var draft = WorkProfile()
     var base = WorkProfile()
-    var history = [WorkProfile]()
     var editing: Int?
     var applying = false
     let table = NSTableView()
@@ -148,6 +147,7 @@ final class SitesPanel: NSObject, NSTableViewDataSource, NSTableViewDelegate {
     var gatewaySuffixes = [String]()
     let commit = NSButton()
     var requestID = UUID()
+    var parsedText: String?
     var items=[PreviewItem]()
     let previewBox=NSStackView(), previewTitle=NSTextField(labelWithString:""), addButton=NSButton()
     let previewList=NSStackView(), previewScroll=NSScrollView()
@@ -222,6 +222,12 @@ extension BetaMenu {
     func panelButton(_ title:String,_ action:Selector)->NSButton { NSButton(title:title,target:self,action:action) }
     var draftURL: URL { paths.data.appendingPathComponent("work-sites-draft.json") }
     var pendingURL: URL { paths.data.appendingPathComponent("work-sites-pending.json") }
+    func queuedProfile(for base: WorkProfile) -> WorkProfile? {
+        guard let data = try? Data(contentsOf: pendingURL),
+              let pending = try? JSONDecoder().decode(PendingWork.self, from: data),
+              pending.base == base else { return nil }
+        return pending.profile
+    }
     func updateSearchSource() {
         let p=sitesPanel
         p.source.stringValue = p.gatewaySuffixes.isEmpty ? "Шлюз не передал суффиксы поиска" : "Из текущего сеанса: " + p.gatewaySuffixes.joined(separator:", ")
@@ -272,7 +278,8 @@ extension BetaMenu {
             p.address.textContainerInset=NSSize(width:4,height:4)
             p.address.textContainer?.containerSize=NSSize(width:660,height:CGFloat.greatestFiniteMagnitude)
             p.address.textContainer?.widthTracksTextView=true
-            let pasteRow=NSStackView(views:[panelButton("Разобрать",#selector(parseAddresses)),panelButton("Импорт…",#selector(importSites))])
+            NotificationCenter.default.addObserver(self,selector:#selector(addressChanged),name:NSText.didChangeNotification,object:p.address)
+            let pasteRow=NSStackView(views:[panelButton("Разобрать",#selector(parseAddresses)),panelButton("Проверить",#selector(checkAddress)),panelButton("Импорт…",#selector(importSites))])
             let addTitle=NSTextField(labelWithString:"Добавить доступ");addTitle.font = .systemFont(ofSize:13,weight:.semibold)
             let hint=NSTextField(wrappingLabelWithString:"Вставьте ссылки, имена, user@host, host:порт или строку server: из kubeconfig — по одной на строку");hint.textColor = .secondaryLabelColor;hint.preferredMaxLayoutWidth=675
             p.preview.isHidden=true
@@ -309,7 +316,7 @@ extension BetaMenu {
                 p.more.addItem(withTitle:title);p.more.lastItem?.target=self;p.more.lastItem?.action=action
             }
             p.cancelButton.title="Отменить";p.cancelButton.target=self;p.cancelButton.action=#selector(cancelChanges);p.cancelButton.bezelStyle = .rounded
-            p.saveButton.title="Сохранить";p.saveButton.target=self;p.saveButton.action=#selector(savePolicy);p.saveButton.bezelStyle = .rounded;p.saveButton.keyEquivalent="\r"
+            p.saveButton.title="Сохранить";p.saveButton.target=self;p.saveButton.action=#selector(savePolicy);p.saveButton.bezelStyle = .rounded
             let spacer=NSView();spacer.setContentHuggingPriority(NSLayoutConstraint.Priority(1),for:.horizontal)
             let bar=NSStackView(views:[p.more,spacer,p.stateLabel,p.cancelButton,p.saveButton]);bar.widthAnchor.constraint(equalToConstant:675).isActive=true
             let column=makeColumn([addTitle,hint,scroll(p.address,width:675,height:56),pasteRow,p.preview,p.previewBox,
@@ -318,7 +325,7 @@ extension BetaMenu {
             p.column=column;attachColumn(column,to:w)
             settingsWindow=w
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base
-            if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)), saved.base==p.base { p.draft=saved.profile }
+            if let queued=queuedProfile(for:p.base) { p.draft=queued }
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), let latest=saved.draft(for:p.base) {p.draft=latest}
             loadDraft();updateSearchSource()
         } else if p.base != storedWork(), p.draft == p.base, p.editing == nil {
@@ -347,15 +354,21 @@ extension BetaMenu {
     }
     func refreshState() {
         let p=sitesPanel,n=changeCount()
-        let waiting=(try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)))?.profile==p.draft && n>0
-        if n==0 { p.stateLabel.stringValue="Все изменения сохранены";p.stateLabel.textColor = .secondaryLabelColor }
-        else if waiting { p.stateLabel.stringValue="Сохранено, применится при подключении";p.stateLabel.textColor = .secondaryLabelColor }
+        let queued=queuedProfile(for:p.base)
+        let saved=queued ?? p.base
+        if p.applying { p.stateLabel.stringValue="Применяем правила…";p.stateLabel.textColor = .secondaryLabelColor }
+        else if queued != nil && p.draft == saved { p.stateLabel.stringValue="Правила отложены";p.stateLabel.textColor = .secondaryLabelColor }
+        else if queued != nil { p.stateLabel.stringValue="Есть черновик и отложенные правила";p.stateLabel.textColor = .systemOrange }
+        else if n==0 { p.stateLabel.stringValue="Все изменения сохранены";p.stateLabel.textColor = .secondaryLabelColor }
         else {
             let word=n%10==1 && n%100 != 11 ? "изменение не сохранено" : ((2...4).contains(n%10) && !(12...14).contains(n%100) ? "изменения не сохранены":"изменений не сохранено")
             p.stateLabel.stringValue="\(n) "+word;p.stateLabel.textColor = .systemOrange
         }
-        p.cancelButton.isEnabled=n>0 || p.editing != nil
-        p.saveButton.isEnabled=p.editing==nil && !p.applying
+        p.cancelButton.isEnabled=p.draft != saved || p.editing != nil
+        p.saveButton.isEnabled=(n>0 || p.draft != saved) && p.editing==nil && !p.applying
+#if !(CVR_SELECTIVE_TUN && CVR_UPDATES)
+        p.saveButton.isEnabled=p.editing==nil
+#endif
     }
     @objc func advancedChanged() { readLogin();refreshState() }
     @objc func toggleAdvanced() {
@@ -367,10 +380,10 @@ extension BetaMenu {
     @objc func cancelChanges() {
         let p=sitesPanel
         if p.editing != nil {cancelEdit();return}
-        guard changeCount()>0 else{return}
-        let old=p.draft
-        p.draft=p.base;changedDraft(old)
-        settingsNote.stringValue="Изменения отменены."
+        let saved=queuedProfile(for:p.base) ?? p.base
+        guard p.draft != saved else{return}
+        p.draft=saved;changedDraft()
+        settingsNote.stringValue="Изменения черновика отменены."
     }
     func selectedSiteIndex() -> Int? {
         let p=sitesPanel,row=p.table.selectedRow,indexes=p.rowIndexes
@@ -409,9 +422,7 @@ extension BetaMenu {
         p.draft.beforeLogin=names(p.login.stringValue)
         let suffixes=names(p.suffixes.stringValue);p.draft.searchDomains=suffixes.isEmpty ? nil:suffixes
     }
-    func changedDraft(_ old:WorkProfile,_ selected:Int = -1) {
-        let p=sitesPanel
-        if old != p.draft { p.history.append(old) }
+    func changedDraft(_ selected:Int = -1) {
         loadDraft(selected)
         persistDraft()
     }
@@ -423,7 +434,7 @@ extension BetaMenu {
     @objc func removeSite(){
         let p=sitesPanel
         guard p.editing==nil,let i=selectedSiteIndex() else{return}
-        readLogin();let old=p.draft;p.draft.sites.remove(at:i);changedDraft(old)
+        readLogin();p.draft.sites.remove(at:i);changedDraft()
     }
     @discardableResult @objc func editSite()->Bool {
         let p=sitesPanel
@@ -435,44 +446,49 @@ extension BetaMenu {
         let ports=tokens.compactMap { Int($0.trimmingCharacters(in:.whitespaces)) }
         guard raw=="*" || (ports.count==tokens.count && (1...32).contains(ports.count) && ports.allSatisfy({(1...65535).contains($0)})) else {settingsNote.stringValue="Укажите TCP-порты через запятую или *.";return false}
         readLogin()
-        var row=WorkSite(domain:h,scope:p.tree.state == .on ? "tree":"exact",tcp:raw=="*" ? .any:.selected(Array(Set(ports)).sorted()),alias:p.short.state == .on ? h.components(separatedBy:".").first:nil)
         let old=p.draft
+        let previous=old.sites[editing]
+        let alias=p.short.state == .on ? (h==previous.domain ? previous.alias ?? firstLabel(h) : firstLabel(h)) : nil
+        var row=WorkSite(domain:h,scope:p.tree.state == .on ? "tree":"exact",tcp:raw=="*" ? .any:.selected(Array(Set(ports)).sorted()),alias:alias)
         guard !old.beforeLogin.contains(h), !old.sites.enumerated().contains(where:{$0.offset != editing && ($0.element.domain==h || (row.alias != nil && row.alias==$0.element.alias))}) else {settingsNote.stringValue="Имя или короткое имя уже используется в другом доступе.";return false}
         if old.sites[editing].tcp==nil && row.tcp == .selected(old.ports.sorted()) { row.tcp=nil }
         p.draft.sites[editing]=row
-        p.draft.version=2;changedDraft(old,editing);return true
+        p.draft.version=2;changedDraft(editing);return true
     }
     @objc func exportSites(){
         readLogin();let panel=NSSavePanel();panel.nameFieldStringValue="work-rules.json"
         guard panel.runModal() == .OK,let url=panel.url else{return}
         do {try JSONFile.write(PortableRules(kind:"work-rules",sites:sitesPanel.draft.sites,ports:sitesPanel.draft.ports,searchDomains:sitesPanel.draft.searchDomains ?? []),to:url)} catch {settingsNote.stringValue="Не удалось записать файл."}
     }
-    @objc func importSites(){let panel=NSOpenPanel();panel.allowsMultipleSelection=false
+    @objc func importSites(){
+        guard sitesPanel.editing==nil else {settingsNote.stringValue="Сначала завершите правку доступа.";return}
+        let panel=NSOpenPanel();panel.allowsMultipleSelection=false
         guard panel.runModal() == .OK, let u=panel.url else{return}
         do{let data=try Data(contentsOf:u);guard data.count<=131072 else{throw RouterError.invalidConfiguration}
             readLogin()
             let old=sitesPanel.draft
             if let portable=try? JSONDecoder().decode(PortableRules.self,from:data), portable.kind=="work-rules" {
                 sitesPanel.draft=WorkProfile(version:2,sites:portable.sites,beforeLogin:old.beforeLogin,searchDomains:portable.searchDomains.isEmpty ? nil:portable.searchDomains,ports:portable.ports)
-                changedDraft(old);return
+                changedDraft();return
             }
             if let rule = try? JSONDecoder().decode(SharedTCPRule.self, from:data) {
                 readLogin()
                 try sitesPanel.draft.mergeExactRule(rule)
-                changedDraft(old,sitesPanel.draft.sites.firstIndex { $0.domain == rule.domain } ?? 0)
+                changedDraft(sitesPanel.draft.sites.firstIndex { $0.domain == rule.domain } ?? 0)
                 settingsNote.stringValue="В черновике изменено одно точное правило. Проверьте адрес и порты, затем сохраните список."
                 return
             }
             let draft=try JSONDecoder().decode(WorkProfile.self,from:data); guard [1,2].contains(draft.version) && !draft.sites.isEmpty && draft.sites.count<=256 else{throw RouterError.invalidConfiguration}
-            sitesPanel.draft=draft;changedDraft(old);settingsNote.stringValue="Импортирован черновик. Проверьте область доменов и адреса до входа."
+            sitesPanel.draft=draft;changedDraft();settingsNote.stringValue="Импортирован черновик. Проверьте область доменов и адреса до входа."
         }catch{settingsNote.stringValue="Не удалось прочитать профиль рабочих сайтов."}
     }
     @objc func undoSites() {
+        guard sitesPanel.editing==nil else {settingsNote.stringValue="Сначала завершите правку доступа.";return}
         let previous = paths.data.appendingPathComponent("previous-work-sites.json")
         guard let data = try? Data(contentsOf:previous), let profile = try? JSONDecoder().decode(WorkProfile.self,from:data) else {
             settingsNote.stringValue="Предыдущая версия правил отсутствует.";return
         }
-        let old=sitesPanel.draft;sitesPanel.draft=profile;changedDraft(old);settingsNote.stringValue="Предыдущие правила загружены в черновик. Проверьте и сохраните."
+        sitesPanel.draft=profile;changedDraft();settingsNote.stringValue="Предыдущие правила загружены в черновик. Проверьте и сохраните."
     }
     func analyzeInput(_ data:Data,preview:Bool,completion:@escaping ([String:Any])->Void) {
         let res=resources
@@ -502,16 +518,19 @@ extension BetaMenu {
     }
     func checkRoute(_ text:String){
         let p=sitesPanel,id=UUID()
-        guard text.utf8.count<=2048, !text.contains("\n") else {p.preview.stringValue="Для проверки выберите один адрес.";return}
+        guard !text.isEmpty, text.utf8.count<=2048, !text.contains("\n") else {p.preview.stringValue="Для проверки укажите один адрес.";return}
         p.requestID=id;p.preview.stringValue="Проверяем соединение…"
         analyzeInput(Data(text.utf8),preview:false){ result in
             guard id==p.requestID else{return}
             p.preview.stringValue=result["message"] as? String ?? "Проверка не завершена."
         }
     }
+    @objc func checkAddress(){ checkRoute(sitesPanel.address.string.trimmingCharacters(in:.whitespacesAndNewlines)) }
+    @objc func addressChanged(){ clearPreview() }
     @objc func checkCoveredRow(_ sender:NSButton){ if let text=sender.identifier?.rawValue {checkRoute(text)} }
     @objc func parseAddresses(){
         let p=sitesPanel,text=p.address.string,id=UUID()
+        clearPreview()
         readLogin()
         guard !text.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty,text.utf8.count<=32768 else {p.preview.stringValue="Вставьте до 64 адресов (32 КБ).";return}
         let request:[String:Any]=["text":text,"suffixes":Array(Set(p.gatewaySuffixes+(p.draft.searchDomains ?? []))).sorted()]
@@ -520,7 +539,7 @@ extension BetaMenu {
         analyzeInput(data,preview:true){ result in
             guard id==p.requestID,text==p.address.string else{return}
             guard let rows=result["rows"] as? [[String:Any]],!rows.isEmpty else {p.preview.stringValue=result["message"] as? String ?? "Нет адресов.";return}
-            self.showPreview(rows)
+            p.parsedText=text;self.showPreview(rows)
         }
     }
     func firstLabel(_ host:String)->String { String(host.prefix(while:{$0 != "."})) }
@@ -535,7 +554,9 @@ extension BetaMenu {
             hostView=label
         }
         var options=AccessPurpose.named.map{(AccessPurpose.label(port:$0.1),$0.1)}
-        if !options.contains(where:{$0.1==item.port}) { options.insert((AccessPurpose.label(port:item.port,scheme:item.scheme),item.port),at:0) }
+        let detected=(AccessPurpose.label(port:item.port,scheme:item.scheme),item.port)
+        if let index=options.firstIndex(where:{$0.1==item.port}) { options[index]=detected }
+        else { options.insert(detected,at:0) }
         for (title,port) in options { item.purpose.addItem(withTitle:title);item.purpose.lastItem?.representedObject=port }
         item.purpose.selectItem(at:options.firstIndex{$0.1==item.port} ?? 0)
         let main=NSStackView(views:[item.check,hostView,item.purpose])
@@ -596,11 +617,13 @@ extension BetaMenu {
     }
     @objc func clearPreview(){
         let p=sitesPanel
+        p.requestID=UUID();p.parsedText=nil
         p.items=[];p.previewList.arrangedSubviews.forEach{$0.removeFromSuperview()}
         p.previewBox.isHidden=true;p.preview.stringValue="";fitSettingsWindow()
     }
     @objc func addPreview(){
         let p=sitesPanel,old=p.draft
+        guard p.parsedText==p.address.string else {clearPreview();return}
         guard p.editing==nil else {settingsNote.stringValue="Сначала завершите правку: «Готово» или «Отмена».";return}
         var next=old,added=[String]()
         do {
@@ -631,7 +654,7 @@ extension BetaMenu {
                 next.sites.append(row);next.version=2;added.append(row.domain)
             }
         } catch {settingsNote.stringValue=error.localizedDescription;return}
-        if next != old {p.draft=next;changedDraft(old)}
+        if next != old {p.draft=next;changedDraft()}
         p.address.string="";clearPreview()
         settingsNote.stringValue=added.isEmpty ? "Новых правил нет." : "Добавлено: "+String(added.count)
         if let last=added.last,let i=p.draft.sites.firstIndex(where:{$0.domain==last}) {p.table.scrollRowToVisible(i)}
@@ -668,6 +691,14 @@ extension BetaMenu {
         guard validation.code==0 else { settingsNote.stringValue="Не сохранено: "+validation.output;return }
         let profile=sitesPanel.draft
         guard !sitesPanel.applying,!applyingBundledRule,sitesPanel.base==storedWork() else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через «Ещё → Экспорт…».";return}
+        guard profile != sitesPanel.base else {
+            if queuedProfile(for:profile) != nil {
+                do {try FileManager.default.removeItem(at:pendingURL)}
+                catch {settingsNote.stringValue="Не удалось отменить отложенные правила.";return}
+                settingsNote.stringValue="Отложенные правила отменены."
+            }
+            refreshState();return
+        }
         do {try JSONFile.write(PendingWork(base:sitesPanel.base,profile:profile),to:pendingURL)} catch {settingsNote.stringValue="Не сохранено: не удалось записать черновик.";return}
         if let first=profile.sites.firstIndex(where:{!sitesPanel.base.sites.contains($0)}) { sitesPanel.table.scrollRowToVisible(first) }
         guard engine==nil && !selective.busy else {settingsNote.stringValue="Сохранено. Правила применятся при следующем подключении, текущий сеанс продолжается.";refreshState();return}
@@ -710,7 +741,6 @@ extension BetaMenu {
         guard result.code==0 else {throw ProxyFailure(result.output)}
         if open {
             p.base=new;p.draft=rebased ?? new;p.table.reloadData();refreshState()
-            if bundled {p.history.removeAll()}
         }
         if rebased==new {try? FileManager.default.removeItem(at:draftURL)}
     }
@@ -748,7 +778,7 @@ extension BetaMenu {
         let status=SelectiveRouter.helperReply(resources:resources)
         let desktop=(status?["approvedRDPHost"] as? String).flatMap { profile.work($0) ? $0:nil } ?? ""
         guard let enrollment=try? profile.enrollment(desktop:desktop),let expected=try? JSONSerialization.jsonObject(with:enrollment) as? [String:Any] else {try? FileManager.default.removeItem(at:temp);report("Не удалось подготовить разрешения.");return}
-        p.applying=true
+        p.applying=true;refreshState()
         func finish(_ success:Bool){
             defer {try? FileManager.default.removeItem(at:temp)}
             p.applying=false

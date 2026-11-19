@@ -96,9 +96,11 @@ func run() throws {
     pipe.fileHandleForWriting.closeFile();controller.waitUntilExit()
     menu.selective.process=nil;menu.selective.input=nil;menu.selective.state="stopped";menu.connectionPhase = .idle
     var mode="cancel"
+    let finishApproval=DispatchSemaphore(value:0)
     menu.selective.authorizeHelper = { args in
         if mode=="cancel" {return "cancelled (-128)"}
         if mode=="accept" {
+            guard finishApproval.wait(timeout:.now()+20) == .success else { return "Fixture approval timed out" }
             let encoded=args[2].components(separatedBy:"'").dropLast().last!
             let obj=try! JSONSerialization.jsonObject(with:Data(base64Encoded:encoded)!) as! [String:Any]
             try! reply(obj["rules"]!)
@@ -112,8 +114,13 @@ func run() throws {
     }
     mode="accept";menu.applyPending(connectAfter:false)
     require(panel.applying,"authorization in flight")
-    panel.domain.stringValue="c.example";require(menu.editSite(),"edit C during approval")
+    panel.address.string="c.example"
+    menu.parseAddresses()
+    waitFor("preview available during approval"){!panel.previewBox.isHidden}
+    menu.addPreview()
+    require(panel.draft.sites.contains{$0.domain=="c.example"},"edit C during approval")
     c=panel.draft
+    finishApproval.signal()
     waitFor("B applied"){!panel.applying}
     require(menu.storedWork()==b && !fm.fileExists(atPath:menu.pendingURL.path),"B applied once")
     let restarted=BetaMenu(paths:paths);restarted.settings()
@@ -122,7 +129,7 @@ func run() throws {
         print("REPRO 3022: newer C present on disk but ignored after reopening from B")
     } else {
         require(restarted.sitesPanel.draft==c && restarted.sitesPanel.base==b,"C restored against B")
-        require(restarted.settingsNote.stringValue.contains("непримен"),"pending status visible")
+        require(restarted.sitesPanel.stateLabel.stringValue.contains("не сохранен"),"draft status visible")
         // Repeat with no open editor at the time of application.
         try JSONFile.write(old,to:menu.workURL)
         try JSONFile.write(PendingWork(base:old,profile:c),to:menu.draftURL)

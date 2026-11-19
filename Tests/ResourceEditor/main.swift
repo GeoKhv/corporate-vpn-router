@@ -100,6 +100,10 @@ func run() throws {
     require(panel.draft==initial && panel.table.selectedRow==2,"covered child leaves selected parent intact")
     press("Очистить")
     require(panel.previewBox.isHidden && panel.items.isEmpty,"preview cleared")
+    paste("stale.example")
+    panel.address.string="replacement.example"
+    menu.addPreview()
+    require(panel.draft==initial && panel.previewBox.isHidden,"changing paste text invalidates an earlier preview")
     paste("first.example");panel.addButton.performClick(nil)
     require(panel.draft.sites.count==initial.sites.count+1 && panel.address.string.isEmpty && panel.previewBox.isHidden,"add clears the paste field")
     require(panel.table.selectedRow==2,"adding never replaces the selected row")
@@ -139,6 +143,12 @@ func run() throws {
     waitFor("cancelled approval"){!panel.applying}
     require(menu.storedWork()==initial,"cancel preserves applied rules")
     require(fm.fileExists(atPath:menu.pendingURL.path),"pending draft persisted")
+    let queued=panel.draft
+    require(panel.stateLabel.stringValue=="Правила отложены","cancelled approval still shows queued rules")
+    paste("newer.example");panel.addButton.performClick(nil)
+    require(panel.stateLabel.stringValue=="Есть черновик и отложенные правила","newer draft is distinct from queued rules")
+    press("Отменить")
+    require(panel.draft==queued && menu.queuedProfile(for:initial)==queued,"discarding the newer draft returns to queued rules")
     cancel=false;press("Сохранить")
     waitFor("successful apply"){menu.storedWork()==panel.draft}
     waitFor("saved state shown"){panel.stateLabel.stringValue=="Все изменения сохранены"}

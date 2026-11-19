@@ -413,7 +413,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func windowDidResignKey(_ n: Notification) { secret.hideEcho() }
     @objc func quit() {
 #if CVR_SELECTIVE_TUN
-        let active = connectionPhase == .connected || connectionPhase.pending
+        let active = connectionPhase == .connected || connectionPhase.pending || selective.holdingRoutes
 #else
         let active = engine != nil
 #endif
@@ -500,18 +500,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #else
         primary.title = engine == nil ? "Подключить" : (health == .ready ? "Отключить рабочий туннель" : "Отменить вход")
 #endif
-        // Green only while the button starts a connection; disconnect and cancel stay neutral.
-        let startsConnection = primary.title == "Подключить"
-        let title = primary.title
-        if startsConnection {
-            primary.isBordered = false; primary.wantsLayer = true
-            primary.layer?.backgroundColor = NSColor.systemGreen.cgColor; primary.layer?.cornerRadius = 6
-            primary.attributedTitle = NSAttributedString(string: title, attributes: [.foregroundColor: NSColor.white, .font: NSFont.systemFont(ofSize: 13, weight: .medium)])
-        } else {
-            primary.isBordered = true; primary.layer?.backgroundColor = nil
-            primary.attributedTitle = NSAttributedString(string: title)
-        }
-        primary.keyEquivalent = startsConnection ? "\r" : ""
+        primary.bezelColor = primary.title == "Подключить" && primary.isEnabled ? .systemGreen : nil
         useCode.isHidden = !browserMode || engine != nil || health == .ready
         leaveOfficial.isHidden = requestKind != "switch_official"
         refreshMenuActions(); promptBox.isHidden = requestKind == nil
