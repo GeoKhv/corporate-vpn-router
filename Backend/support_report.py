@@ -23,7 +23,7 @@ HOME = Path.home()
 DATA = HOME / 'Library/Application Support/Corporate VPN Router'
 LOGS = HOME / 'Library/Logs'
 LIMIT = 512 * 1024
-CHECKS = ('Шлюз и pin', 'Авторизация', 'SSL-туннель', 'VPN-туннель', 'SOCKS5 · 1090', 'DNS в туннеле', 'Корпоративный HTTPS', 'HTTPS одного сайта')
+CHECKS = ('Шлюз и pin', 'Авторизация', 'SSL-туннель', 'VPN-туннель', 'SOCKS5 · 1090', 'DNS в туннеле', 'Корпоративный HTTPS', 'HTTPS одного сайта', 'DNS macOS')
 COUNTERS = ('out_packets', 'in_packets', 'out_dns', 'in_dns', 'backpressure_events',
             'empty_liveness_messages_ignored', 'max_out_packet_bytes', 'max_in_packet_bytes')
 WORDS = ('phase', 'component', 'event', 'code', 'helper', 'role', 'error_class', 'failed_phase',

@@ -84,6 +84,9 @@ sys.stdin.read()
     menu.hiddenByUser = true; menu.window.orderOut(nil)
     until { menu.selective.helperAvailability == .ready }
     try JSONFile.write(WorkProfile(sites: [WorkSite(domain: "work.example.invalid", scope: "tree")]), to: menu.workURL)
+    try JSONFile.write(["hosts":["owa.work.example.invalid"]], to: paths.data.appendingPathComponent("certificate-endpoints.json"))
+    try "import sys\nassert sys.argv[1] == 'owa.work.example.invalid'\nprint('missing')".write(
+        to: res.appendingPathComponent("Engine/Selective/system_dns_check.py"), atomically: true, encoding: .utf8)
     menu.method.selectedSegment = 0; menu.changeMethod()
     func begin(_ scenario: String) throws {
         try scenario.write(to: res.appendingPathComponent("Engine/scenario"), atomically: true, encoding: .utf8)
@@ -93,6 +96,8 @@ sys.stdin.read()
         until { menu.requestKind == "challenge" }
         menu.secret.stringValue = "fixture-code"; menu.answer()
         until { menu.connectionPhase == .connected }
+        until { menu.findings["DNS macOS"]?.health == .error }
+        check(menu.detail.stringValue.contains("macOS не находит owa.work.example.invalid"), "confirmed DNS failure must be visible while connected")
         check(menu.settingsWindow == nil, "connection must apply the saved profile without opening work sites")
         check(menu.health == .ready && menu.setupBrowser.isHidden, "one action must reach MFA and hide separate route control")
         menu.toggle(); until { menu.connectionPhase == .idle && menu.engine == nil && menu.selective.process == nil }

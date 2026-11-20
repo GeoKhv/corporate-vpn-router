@@ -66,7 +66,7 @@ if a.ipsec_bridge:
    destination.parent.mkdir(parents=True,exist_ok=True)
    destination.write_bytes(source.read_bytes());destination.chmod(0o644)
  license_target.chmod(0o755)
-for name in ['controller.py','services.py','policy.py','sparse_dns.py','analyze.py']:
+for name in ['controller.py','services.py','policy.py','sparse_dns.py','analyze.py','system_dns_check.py']:
  shutil.copy2(ROOT/'Backend/Selective'/name,res/'Engine/Selective'/name)
 # Do not inherit a host-only proxy from an older bootstrap.
 bundle.CACHE.mkdir(parents=True,exist_ok=True)

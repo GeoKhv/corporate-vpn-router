@@ -74,7 +74,8 @@ extension BetaMenu {
             startAuthentication()
         } else if connectionPhase == .activatingRoutes && selective.ready {
             connectionPhase = .connected
-            health = .ready; stage = "Подключено"; note = "Рабочие доступы открыты."
+            health = .ready; stage = "Подключено"; note = "Рабочие маршруты подключены."
+            monitorSystemDNS(attempt: connectionAttempt)
             if FileManager.default.fileExists(atPath:pendingURL.path) {
                 note += " Отложенные правила сохранятся до подключения после полного отключения."
             }
@@ -86,6 +87,38 @@ extension BetaMenu {
         }
         if connectionPhase == .stopping && engine == nil && selective.process == nil && selective.cleanupConfirmed { connectionPhase = .idle }
         routeStatus(); presentConnection()
+    }
+
+    private func monitorSystemDNS(attempt: Int) {
+        guard connectionPhase == .connected, attempt == connectionAttempt, let profile = storedWork() else { return }
+        let url = paths.data.appendingPathComponent("certificate-endpoints.json")
+        let configured = (try? JSONDecoder().decode([String:[String]].self, from: Data(contentsOf: url)))?["hosts"] ?? []
+        let hosts = configured + profile.sites.filter { $0.scope == "exact" }.map { $0.domain }
+        guard let host = hosts.first(where: { Configuration.validHost($0) && profile.work($0) }) else {
+            mark(6, .idle, "в профиле нет сайта для проверки")
+            return
+        }
+        if findings["DNS macOS"] == nil { mark(6, .waiting, host + " — проверяется") }
+        let python = resources.appendingPathComponent("Runtime/bin/python3.13").path
+        let script = resources.appendingPathComponent("Engine/Selective/system_dns_check.py").path
+        DispatchQueue.global(qos: .utility).async { [self] in
+            let result = command(python, ["-I", script, host], timeout: 16)
+            DispatchQueue.main.async {
+                guard self.connectionPhase == .connected, self.connectionAttempt == attempt else { return }
+                let status = result.code == 0 ? result.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                switch status {
+                case "ok": self.mark(6, .ready, host + " — macOS видит адрес Router")
+                case "missing": self.mark(6, .error, "macOS не находит " + host + ", хотя DNS Router возвращает адрес.")
+                case "different": self.mark(6, .error, "Для " + host + " macOS возвращает адрес вне ответа DNS Router.")
+                case "router_unavailable": self.mark(6, .error, "DNS Router не вернул адрес для " + host + ".")
+                default: self.mark(6, .idle, host + " — проверку DNS завершить не удалось")
+                }
+                self.refresh()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
+                    self?.monitorSystemDNS(attempt: attempt)
+                }
+            }
+        }
     }
 
     func failConnection(_ message: String, code: String) {

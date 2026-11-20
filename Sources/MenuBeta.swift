@@ -67,7 +67,14 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var logsButton = NSButton()
     let exportStatus = NSTextField(wrappingLabelWithString: "")
     #endif
-    let checks = ["Шлюз и pin", "Авторизация", "VPN-туннель", "SOCKS5 · 1090", "DNS в туннеле", "HTTPS одного сайта"]
+    let checks = baseChecks
+    static var baseChecks: [String] {
+        var rows = ["Шлюз и pin", "Авторизация", "VPN-туннель", "SOCKS5 · 1090", "DNS в туннеле", "HTTPS одного сайта"]
+        #if CVR_SELECTIVE_TUN
+        rows.append("DNS macOS")
+        #endif
+        return rows
+    }
     var browserMode: Bool { method.selectedSegment == 1 }
     var book: AccountBook { AccountBook(url: paths.data.appendingPathComponent("ssl-logins.json")) }
     var policyURL: URL { paths.data.appendingPathComponent("ssl-policy.json") }
@@ -131,7 +138,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         updates.start(menu:updatesMenu)
 #endif
         window = makeWindow("Corporate VPN Router", 510, 362)
-        diagnostics = makeWindow("Диагностика Corporate VPN Router", 520, 306)
+        diagnostics = makeWindow("Диагностика Corporate VPN Router", 560, 334)
         setupMain()
         setupDiagnostics()
 #if CVR_SELECTIVE_TUN
@@ -474,7 +481,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func controlTextDidEndEditing(_ n: Notification) { secret.hideEcho() }
     func refresh() {
-        label.stringValue = stage; detail.stringValue = note; statusIcon.image = health.dot()
+        var displayedNote = note
+        #if CVR_SELECTIVE_TUN
+        if connectionPhase == .connected, let dns = findings["DNS macOS"], dns.health == .error {
+            displayedNote = dns.text
+        }
+        #endif
+        label.stringValue = stage; detail.stringValue = displayedNote; statusIcon.image = health.dot()
         let who = displayedAccount()
         let enterLogin = !browserMode && engine == nil && (who == nil || editingLogin)
         loginDraft.isHidden = !enterLogin
@@ -519,7 +532,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         checkButton.isEnabled = health == .ready && findings[checks[5]]?.health != .waiting
         let results = findings.mapValues { ["status": $0.health.rawValue, "checked": $0.checked.timeIntervalSince1970,
                                            "result": $0.text] as [String:Any] }
-        let state: [String:Any] = ["checks":results, "activeAttempt":engine != nil && !stopping, "state":stage, "message":note, "connected":health == .ready,
+        let state: [String:Any] = ["checks":results, "activeAttempt":engine != nil && !stopping, "state":stage, "message":displayedNote, "connected":health == .ready,
                                    "port":1090, "counters":counters, "httpsProbe":httpsProbe, "updated":Date().timeIntervalSince1970]
         if let data = try? JSONSerialization.data(withJSONObject: state) { try? data.write(to: runtimeState, options:.atomic) }
     }
