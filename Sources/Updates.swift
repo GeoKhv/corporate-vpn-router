@@ -160,7 +160,12 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
                 self.cleanupReady = true; self.record("backup-and-cleanup-confirmed"); reply(.install)
             case .failure(let error):
                 self.preparing = false; self.installationRequested = false
-                self.status = "Установка отменена: очистка или копия не подтверждена"
+                self.status = "Не удалось подготовить обновление"
+                let alert = NSAlert()
+                alert.messageText = self.status
+                alert.informativeText = (error as? InstallationError)?.localizedDescription ??
+                    (error is RouterError ? "Router не подтвердил завершение рабочего сеанса и очистку маршрутов." : error.localizedDescription)
+                if let window = owner.window { alert.beginSheetModal(for: window, completionHandler: nil) }
                 self.record("preparation-refused",error:error); reply(.skip); self.refresh()
             }
         }

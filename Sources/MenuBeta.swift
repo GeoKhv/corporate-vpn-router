@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import Network
 import Darwin
 import CryptoKit
 
@@ -40,6 +41,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var setupBrowser = NSButton()
 #if CVR_SELECTIVE_TUN
     let selective = SelectiveRouter()
+    let dnsPathMonitor = NWPathMonitor()
+    var pendingPathCheck: DispatchWorkItem?
+    var dnsRequest = 0
+    let siteHelpButton = NSButton()
     var applyingBundledRule = false
     var connectionPhase = ConnectionPhase.idle
     var connectionFailure: String?, connectionFailureCode: String?, connectionNotice: String?
@@ -150,6 +155,15 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
         selective.managementFinished = { [weak self] in self?.show() }
         selective.checkHelper(resources: resources)
+        dnsPathMonitor.pathUpdateHandler = { [weak self] _ in
+            guard let self, self.connectionPhase == .connected else { return }
+            self.pendingPathCheck?.cancel()
+            let attempt = self.connectionAttempt
+            let check = DispatchWorkItem { [weak self] in self?.monitorSystemDNS(attempt: attempt) }
+            self.pendingPathCheck = check
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1, execute: check)
+        }
+        dnsPathMonitor.start(queue: .main)
 #endif
         let center = NSWorkspace.shared.notificationCenter
         for notification in [NSWorkspace.willSleepNotification, NSWorkspace.didWakeNotification] {
@@ -244,7 +258,15 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #endif
         footer.alignment = .centerX
         footer.setContentHuggingPriority(.required, for: .vertical)
-        attachColumn(makeColumn([state, detail, setupBrowser, method, who, promptBox, row]), to: window, footer: footer)
+        var mainViews: [NSView] = [state, detail, setupBrowser, method, who, promptBox, row]
+        #if CVR_SELECTIVE_TUN
+        siteHelpButton.title = "Не открывается рабочий сайт? Проверить адрес…"
+        siteHelpButton.target = self
+        siteHelpButton.action = #selector(checkSiteAddress)
+        siteHelpButton.toolTip = "Укажите сайт, чтобы проверить, находит ли macOS его адрес через Router."
+        mainViews.append(siteHelpButton)
+        #endif
+        attachColumn(makeColumn(mainViews), to: window, footer: footer)
     }
 #if CVR_SELECTIVE_TUN
     func chooseGatewaySite(_ sites: [String], completion: @escaping (String?) -> Void) {
@@ -483,6 +505,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func refresh() {
         var displayedNote = note
         #if CVR_SELECTIVE_TUN
+        siteHelpButton.isHidden = connectionPhase != .connected
         if connectionPhase == .connected, let dns = findings["DNS macOS"], dns.health == .error {
             displayedNote = dns.text
         }

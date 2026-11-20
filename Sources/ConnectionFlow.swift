@@ -89,22 +89,56 @@ extension BetaMenu {
         routeStatus(); presentConnection()
     }
 
-    private func monitorSystemDNS(attempt: Int) {
-        guard connectionPhase == .connected, attempt == connectionAttempt, let profile = storedWork() else { return }
+    private func dnsCheckHost(_ profile: WorkProfile) -> String? {
         let url = paths.data.appendingPathComponent("certificate-endpoints.json")
         let configured = (try? JSONDecoder().decode([String:[String]].self, from: Data(contentsOf: url)))?["hosts"] ?? []
-        let hosts = configured + profile.sites.filter { $0.scope == "exact" }.map { $0.domain }
-        guard let host = hosts.first(where: { Configuration.validHost($0) && profile.work($0) }) else {
-            mark(6, .idle, "в профиле нет сайта для проверки")
+        return (configured + profile.sites.filter { $0.scope == "exact" }.map { $0.domain })
+            .first { Configuration.validHost($0) && profile.work($0) }
+    }
+
+    @objc func checkSiteAddress() {
+        guard connectionPhase == .connected, let profile = storedWork() else { return }
+        let alert = NSAlert()
+        alert.messageText = "Какой рабочий сайт не открывается?"
+        alert.informativeText = "Вставьте ссылку или имя сайта. Router проверит, получает ли macOS адрес этого сайта через VPN."
+        let field = NSTextField(string: dnsCheckHost(profile) ?? "")
+        field.frame.size = NSSize(width: 360, height: 24)
+        alert.accessoryView = field
+        alert.window.initialFirstResponder = field
+        alert.addButton(withTitle: "Проверить адрес")
+        alert.addButton(withTitle: "Отмена")
+        while alert.runModal() == .alertFirstButtonReturn {
+            guard connectionPhase == .connected else { return }
+            let input = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let url = URLComponents(string: input.contains("://") ? input : "https://" + input)
+            if let host = url?.host?.lowercased(), ["https", "http"].contains(url?.scheme?.lowercased() ?? ""),
+               Configuration.validHost(host), profile.work(host) || profile.sites.contains(where: { $0.alias == host }) {
+                pendingPathCheck?.cancel()
+                monitorSystemDNS(attempt: connectionAttempt, requestedHost: host)
+                diagnose()
+                return
+            }
+            alert.informativeText = "Укажите сайт из списка «Доступы» или его рабочий алиас."
+        }
+    }
+
+    func monitorSystemDNS(attempt: Int, requestedHost: String? = nil) {
+        guard connectionPhase == .connected, attempt == connectionAttempt, let profile = storedWork() else { return }
+        guard let host = requestedHost ?? dnsCheckHost(profile) else {
+            mark(6, .idle, "для проверки укажите рабочий сайт")
+            refresh()
             return
         }
-        if findings["DNS macOS"] == nil { mark(6, .waiting, host + " — проверяется") }
+        dnsRequest += 1
+        let request = dnsRequest
+        mark(6, .waiting, host + " — проверяется")
+        refresh()
         let python = resources.appendingPathComponent("Runtime/bin/python3.13").path
         let script = resources.appendingPathComponent("Engine/Selective/system_dns_check.py").path
         DispatchQueue.global(qos: .utility).async { [self] in
-            let result = command(python, ["-I", script, host], timeout: 16)
+            let result = command(python, ["-I", "-B", script, host], timeout: 16)
             DispatchQueue.main.async {
-                guard self.connectionPhase == .connected, self.connectionAttempt == attempt else { return }
+                guard self.connectionPhase == .connected, self.connectionAttempt == attempt, self.dnsRequest == request else { return }
                 let status = result.code == 0 ? result.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
                 switch status {
                 case "ok": self.mark(6, .ready, host + " — macOS видит адрес Router")
@@ -114,9 +148,7 @@ extension BetaMenu {
                 default: self.mark(6, .idle, host + " — проверку DNS завершить не удалось")
                 }
                 self.refresh()
-                DispatchQueue.main.asyncAfter(deadline: .now() + 60) { [weak self] in
-                    self?.monitorSystemDNS(attempt: attempt)
-                }
+
             }
         }
     }

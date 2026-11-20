@@ -85,19 +85,39 @@ sys.stdin.read()
     until { menu.selective.helperAvailability == .ready }
     try JSONFile.write(WorkProfile(sites: [WorkSite(domain: "work.example.invalid", scope: "tree")]), to: menu.workURL)
     try JSONFile.write(["hosts":["owa.work.example.invalid"]], to: paths.data.appendingPathComponent("certificate-endpoints.json"))
-    try "import sys\nassert sys.argv[1] == 'owa.work.example.invalid'\nprint('missing')".write(
+    try "import sys\nassert sys.flags.dont_write_bytecode\nprint({'owa.work.example.invalid':'missing', 'wiki.work.example.invalid':'ok'}[sys.argv[1]])".write(
         to: res.appendingPathComponent("Engine/Selective/system_dns_check.py"), atomically: true, encoding: .utf8)
     menu.method.selectedSegment = 0; menu.changeMethod()
     func begin(_ scenario: String) throws {
         try scenario.write(to: res.appendingPathComponent("Engine/scenario"), atomically: true, encoding: .utf8)
         menu.loginDraft.stringValue = "fixture-user"; menu.toggle()
     }
+    var testedSiteLink = false
     func finishMFA() {
         until { menu.requestKind == "challenge" }
         menu.secret.stringValue = "fixture-code"; menu.answer()
         until { menu.connectionPhase == .connected }
         until { menu.findings["DNS macOS"]?.health == .error }
         check(menu.detail.stringValue.contains("macOS не находит owa.work.example.invalid"), "confirmed DNS failure must be visible while connected")
+        check(!menu.siteHelpButton.isHidden && menu.siteHelpButton.action == #selector(BetaMenu.checkSiteAddress), "site troubleshooting is available from the connected window")
+        if !testedSiteLink {
+            testedSiteLink = true
+            let input = Timer(timeInterval: 0.1, repeats: false) { _ in
+                guard let modal = NSApp.modalWindow,
+                      let editor = modal.firstResponder as? NSTextView else {
+                    NSApp.stopModal(withCode: .alertSecondButtonReturn)
+                    return
+                }
+                editor.string = "https://wiki.work.example.invalid/project?private=ignored"
+                modal.makeFirstResponder(nil)
+                NSApp.stopModal(withCode: .alertFirstButtonReturn)
+            }
+            RunLoop.main.add(input, forMode: .modalPanel)
+            menu.siteHelpButton.performClick(nil)
+            until { menu.findings["DNS macOS"]?.health == .ready }
+            check(menu.diagRows["DNS macOS"]!.1.stringValue.contains("wiki.work.example.invalid"), "manual check uses the site from the pasted URL")
+            menu.diagnostics.orderOut(nil)
+        }
         check(menu.settingsWindow == nil, "connection must apply the saved profile without opening work sites")
         check(menu.health == .ready && menu.setupBrowser.isHidden, "one action must reach MFA and hide separate route control")
         menu.toggle(); until { menu.connectionPhase == .idle && menu.engine == nil && menu.selective.process == nil }
