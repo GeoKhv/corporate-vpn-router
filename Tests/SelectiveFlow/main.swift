@@ -42,7 +42,10 @@ else:
    emit(state='stopped',message='fixture stopped',cleanupConfirmed=True);sys.exit(0)
   elif mode=='activation_failure':emit(state='error',message='FIXTURE_PUBLISH_FAILED',code='FIXTURE_PUBLISH_FAILED',cleanupConfirmed=False)
   else:emit(state='ready',message='fixture routes ready')
-sys.stdin.read()
+for line in sys.stdin:
+ assert line == 'repair-dns owa.work.example.invalid\n'
+ (base/'repaired').touch()
+ emit(state='dnsRepairResult',message='refreshed')
 emit(state='stopped',message='Рабочие маршруты удалены.',cleanupConfirmed=True)
 """#.write(to: res.appendingPathComponent("Engine/Selective/controller.py"), atomically: true, encoding: .utf8)
     try #"""
@@ -84,8 +87,8 @@ sys.stdin.read()
     menu.hiddenByUser = true; menu.window.orderOut(nil)
     until { menu.selective.helperAvailability == .ready }
     try JSONFile.write(WorkProfile(sites: [WorkSite(domain: "work.example.invalid", scope: "tree")]), to: menu.workURL)
-    try JSONFile.write(["hosts":["owa.work.example.invalid"]], to: paths.data.appendingPathComponent("certificate-endpoints.json"))
-    try "import sys\nassert sys.flags.dont_write_bytecode\nfrom pathlib import Path\nprint({'owa.work.example.invalid':('ok' if Path(__file__).resolve().parents[1].joinpath('repaired').exists() else 'missing'), 'wiki.work.example.invalid':'ok'}[sys.argv[1]])".write(
+    try JSONFile.write(["hosts":["wiki.work.example.invalid","jira.work.example.invalid","owa.work.example.invalid"]], to: paths.data.appendingPathComponent("certificate-endpoints.json"))
+    try "import sys\nassert sys.flags.dont_write_bytecode\nfrom pathlib import Path\nprint({'owa.work.example.invalid':(('http:302' if '--https' in sys.argv else 'ok') if Path(__file__).resolve().parents[1].joinpath('repaired').exists() else 'missing'), 'wiki.work.example.invalid':'ok','jira.work.example.invalid':'http:401'}[sys.argv[1]])".write(
         to: res.appendingPathComponent("Engine/Selective/system_dns_check.py"), atomically: true, encoding: .utf8)
     menu.method.selectedSegment = 0; menu.changeMethod()
     func begin(_ scenario: String) throws {
@@ -98,6 +101,7 @@ sys.stdin.read()
         menu.secret.stringValue = "fixture-code"; menu.answer()
         until { menu.connectionPhase == .connected }
         until { menu.findings["DNS macOS"]?.health == .error }
+        check(menu.siteResults.stringValue.contains("jira.work.example.invalid") && menu.siteResults.stringValue.contains("HTTP 401") && !menu.siteResults.stringValue.contains("wiki."), "OWA and Jira are checked independently after login")
         check(menu.detail.stringValue.contains("macOS не находит owa.work.example.invalid"), "confirmed DNS failure must be visible while connected")
         check(!menu.siteHelpButton.isHidden && menu.siteHelpButton.action == #selector(BetaMenu.checkSiteAddress), "site troubleshooting is available from the connected window")
         if !testedSiteLink {
@@ -113,6 +117,12 @@ sys.stdin.read()
             until { menu.findings["DNS macOS"]?.health == .ready }
             check(calls == 1 && menu.repairDNSButton.isHidden, "repair requires one authorization and rechecks the same host")
             try! FileManager.default.removeItem(at: repaired)
+            menu.autoDNS.state = .on
+            menu.monitorSystemDNS(attempt: menu.connectionAttempt)
+            until { menu.findings["DNS macOS"]?.health == .ready && fm.fileExists(atPath: repaired.path) }
+            check(calls == 1 && menu.connectionPhase == .connected, "automatic recovery uses the session helper without prompting or disconnecting")
+            menu.autoDNS.state = .off
+            try! fm.removeItem(at: repaired)
             testedSiteLink = true
             let input = Timer(timeInterval: 0.1, repeats: false) { _ in
                 guard let modal = NSApp.modalWindow,

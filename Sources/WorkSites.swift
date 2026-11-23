@@ -73,7 +73,7 @@ struct WorkProfile: Codable, Equatable {
             if let alias = row.alias { value["alias"] = alias }
             return value
         }
-        return try JSONSerialization.data(withJSONObject:["domains":sites.map{$0.domain}, "desktop":desktop, "rules":rules])
+        return try JSONSerialization.data(withJSONObject:["domains":sites.map{$0.domain}, "desktop":desktop, "rules":rules, "allowDNSRepair":true, "allowCheckPointStart":true])
     }
     func work(_ h: String) -> Bool {
         !beforeLogin.contains(h) && sites.contains { h == $0.domain || ($0.scope == "tree" && h.hasSuffix("."+$0.domain)) }

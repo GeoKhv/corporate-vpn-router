@@ -6,6 +6,7 @@ import re
 import os
 from pathlib import Path
 import secrets
+import select
 import signal
 import subprocess
 import sys
@@ -97,6 +98,52 @@ async def check_system_dns():
     verify_dns_addresses(output.decode(errors='replace'))
 
 
+async def connection_site():
+    """A user-initiated connect is the only entry point allowed to start the service."""
+    global CLEANUP_CONFIRMED
+    import trust
+    from helper_client import RouteHelper
+    try:
+        return trust.official_info()
+    except trust.Refused as exc:
+        if str(exc) != 'OFFICIAL_SERVICE_NOT_STARTED':
+            raise
+
+    # Closing the menu's command pipe cancels preflight before the main reader exists.
+    disconnect = select.poll()
+    disconnect.register(sys.stdin.fileno(), select.POLLHUP | select.POLLERR)
+    def check_cancelled():
+        if disconnect.poll(0):
+            raise RuntimeError('INPUT_CANCELLED')
+
+    check_cancelled()
+    helper = RouteHelper(RESOURCES)
+    try:
+        status = await helper.open()
+        if not helper_is_idle(status):
+            CLEANUP_CONFIRMED = False
+            raise RuntimeError('HELPER_SESSION_PENDING')
+        if status.get('allowCheckPointStart') is not True:
+            raise RuntimeError('CHECKPOINT_START_NOT_AUTHORIZED')
+        emit('restoringCheckPoint', 'Служба Check Point недоступна. Восстанавливаем её и продолжаем подключение…')
+        check_cancelled()
+        await helper.call('ensureCheckPointService')
+    finally:
+        await helper.close()
+
+    deadline = time.monotonic() + 15
+    while True:
+        check_cancelled()
+        try:
+            return trust.official_info()
+        except trust.Refused as exc:
+            if str(exc) != 'OFFICIAL_SERVICE_NOT_STARTED':
+                raise
+            if time.monotonic() >= deadline:
+                raise RuntimeError('CHECKPOINT_SERVICE_STILL_UNAVAILABLE') from exc
+        await asyncio.sleep(0.5)
+
+
 async def start(app_pid):
     global CLEANUP_CONFIRMED
     # Signed official IPC state is checked before listeners or route mutation.
@@ -107,12 +154,12 @@ async def start(app_pid):
     from sparse_dns import serve as serve_front
     import trust
     try:
-        gateway,gateway_ip,_=official_info()
+        gateway,gateway_ip,_=await connection_site()
     except trust.Refused as exc:
         if str(exc)!='OFFICIAL_SITE_AMBIGUOUS':raise
         rows=trust.parse_sites(trust.official_output())
-        approved={p['site'] for p in (trust.approved_receipt(),trust.approved_site_pin()) if p}
-        choices=sorted(set(rows)&approved)
+        approved_sites={p['site'] for p in (trust.approved_receipt(),trust.approved_site_pin()) if p}
+        choices=sorted(set(rows)&approved_sites)
         if not choices or any(row[2]!='Idle' for row in rows.values()):raise
         selected=choices[0]
         if len(choices)>1:
@@ -139,10 +186,44 @@ async def start(app_pid):
     activation=asyncio.Event()
     held=asyncio.Event()
     published=False
-    def input_ready():
+    repair_task = None
+    async def repair_dns(host):
+        outcome = 'unconfirmed'
+        try:
+            # Check both resolvers twice in an unprivileged, time-bounded child.
+            proc = await asyncio.create_subprocess_exec(sys.executable, '-I', '-B',
+                str(Path(__file__).with_name('system_dns_check.py')), host,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            try:
+                output, _ = await asyncio.wait_for(proc.communicate(), 16)
+            finally:
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+            if proc.returncode == 0 and output.strip() in (b'missing', b'different') and not held.is_set() and not stop.is_set():
+                await helper.call('refreshDNS', name=host)
+                outcome = 'refreshed'
+            elif proc.returncode == 0 and output.strip() == b'ok':
+                outcome = 'healthy'
+        except (OSError, RuntimeError, asyncio.TimeoutError) as error:
+            outcome = 'cooldown' if str(error) == 'DNS_REPAIR_COOLDOWN' else 'failed'
+        finally:
+            emit('dnsRepairResult', outcome)
+
+    def handle_input(command):
+        nonlocal repair_task
         # The menu sends this single fixed token only after SSL and the SOCKS
         # owner were verified. EOF, cancel, or an invalid command always stops.
-        command=os.read(sys.stdin.fileno(),4096)
+        if command.startswith(b'repair-dns '):
+            name = command[11:].strip().decode('ascii', errors='replace')
+            allowed = (len(name) <= 253 and re.fullmatch(r'[a-z0-9.-]+', name)
+                       and matched_rule(cfg, name))
+            if (allowed and published and not held.is_set() and not stop.is_set()
+                    and (repair_task is None or repair_task.done())):
+                repair_task = loop.create_task(repair_dns(name))
+            else:
+                emit('dnsRepairResult', 'unconfirmed')
+            return
         if command == b'activate\n' and not activation.is_set():
             activation.set()
         elif published and command == b'hold\n':
@@ -153,6 +234,17 @@ async def start(app_pid):
         else:
             stop.set()
             activation.set()
+    incoming = bytearray()
+    def input_ready():
+        data = os.read(sys.stdin.fileno(), 4096)
+        if not data or len(incoming) + len(data) > 8192:
+            cancel()
+            return
+        incoming.extend(data)
+        while b'\n' in incoming:
+            line, _, rest = incoming.partition(b'\n')
+            incoming[:] = rest
+            handle_input(bytes(line) + b'\n')
     def cancel():
         stop.set()
         activation.set()
@@ -238,6 +330,7 @@ async def start(app_pid):
         cancelled=stop.is_set()
         stop.set()
         if reader:loop.remove_reader(sys.stdin.fileno())
+        if repair_task is not None: tasks.append(repair_task)
         for task in tasks:task.cancel()
         await asyncio.gather(*tasks,return_exceptions=True)
         if prepared:

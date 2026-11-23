@@ -90,11 +90,105 @@ extension BetaMenu {
         routeStatus(); presentConnection()
     }
 
-    private func dnsCheckHost(_ profile: WorkProfile) -> String? {
-        let url = paths.data.appendingPathComponent("certificate-endpoints.json")
-        let configured = (try? JSONDecoder().decode([String:[String]].self, from: Data(contentsOf: url)))?["hosts"] ?? []
-        return (configured + profile.sites.filter { $0.scope == "exact" }.map { $0.domain })
-            .first { Configuration.validHost($0) && profile.work($0) }
+    private func checkHosts(_ profile: WorkProfile) -> [String] {
+        func endpoints(_ url: URL) -> [String] {
+            guard let data = try? Data(contentsOf: url) else { return [] }
+            return (try? JSONDecoder().decode([String:[String]].self, from: data))?["hosts"] ?? []
+        }
+        let saved = endpoints(paths.data.appendingPathComponent("certificate-endpoints.json"))
+        let configured = saved.isEmpty ? endpoints(resources.appendingPathComponent("CertificateEndpoints.json")) : saved
+        let candidates = configured + profile.sites.filter { $0.scope == "exact" }.map { $0.domain }
+        var unique = Set<String>()
+        let allowed = candidates.filter { host in
+            guard Configuration.validHost(host), profile.work(host), unique.insert(host).inserted,
+                  let site = profile.sites.filter({ host == $0.domain || ($0.scope == "tree" && host.hasSuffix("." + $0.domain)) })
+                    .max(by: { $0.domain.count < $1.domain.count }) else { return false }
+            switch site.tcp ?? .selected(profile.ports) {
+            case .any: return true
+            case .selected(let ports): return ports.contains(443)
+            }
+        }
+        let preferred = ["owa", "jira"].compactMap { prefix in allowed.first { $0.hasPrefix(prefix + ".") } }
+        return Array((preferred + allowed.filter { !preferred.contains($0) }).prefix(2))
+    }
+
+    private func checkConnectedSites(_ hosts: [String], attempt: Int, request: Int) {
+        let python = resources.appendingPathComponent("Runtime/bin/python3.13").path
+        let script = resources.appendingPathComponent("Engine/Selective/system_dns_check.py").path
+        let group = DispatchGroup()
+        var statuses: [String:String] = [:]
+        siteResults.stringValue = hosts.joined(separator: ", ") + " — проверка DNS и HTTPS…"
+        siteResults.isHidden = false
+        for host in hosts {
+            group.enter()
+            DispatchQueue.global(qos: .utility).async {
+                let result = command(python, ["-I", "-B", script, host, "--https"], timeout: 25)
+                DispatchQueue.main.async {
+                    statuses[host] = result.code == 0 ? result.output.trimmingCharacters(in: .whitespacesAndNewlines) : "inconclusive"
+                    group.leave()
+                }
+            }
+        }
+        group.notify(queue: .main) {
+            guard self.connectionPhase == .connected, self.connectionAttempt == attempt, self.dnsRequest == request else { return }
+            self.siteResults.stringValue = hosts.map { host in
+                let status = statuses[host] ?? ""
+                let detail: String
+                if status.hasPrefix("http:"), let code = Int(status.dropFirst(5)) {
+                    switch code {
+                    case 401: detail = "доступен, требуется вход (HTTP 401)"
+                    case 403: detail = "сервер отказал в доступе (HTTP 403)"
+                    case 200..<400: detail = "доступен по HTTPS (HTTP " + String(code) + ")"
+                    default: detail = "сервер ответил HTTP " + String(code)
+                    }
+                } else {
+                    switch status {
+                    case "missing", "different": detail = "ошибка DNS macOS"
+                    case "router_unavailable": detail = "DNS Router не вернул адрес"
+                    case "tls_error": detail = "ошибка TLS"
+                    case "https_error": detail = "не удалось подключиться по HTTPS"
+                    default: detail = "проверку завершить не удалось"
+                    }
+                }
+                return host + " — " + detail
+            }.joined(separator: "\n")
+            if let host = hosts.first(where: { ["missing","different"].contains(statuses[$0]) }) {
+                self.repairTarget = (host, attempt)
+                self.mark(6, .error, statuses[host] == "missing" ? "macOS не находит " + host + ", хотя DNS Router возвращает адрес." : "Для " + host + " macOS возвращает другой адрес.")
+            } else if hosts.allSatisfy({ let s = statuses[$0] ?? ""; return s.hasPrefix("http:") || ["tls_error","https_error"].contains(s) }) {
+                self.mark(6, .ready, "адреса проверенных сайтов совпадают")
+            } else {
+                self.mark(6, .idle, "не удалось подтвердить DNS всех проверенных сайтов")
+            }
+            self.refresh()
+            self.repairIfEnabled(attempt: attempt)
+        }
+    }
+
+    private func repairIfEnabled(attempt: Int) {
+        guard let target = repairTarget, target.attempt == attempt, autoDNS.state == .on else { return }
+        let now = ProcessInfo.processInfo.systemUptime
+        guard lastAutomaticDNSRepair.map({ now - $0 >= 300 }) ?? true else { return }
+        lastAutomaticDNSRepair = now
+        performAuthorizedRepair(target.host, attempt: attempt)
+    }
+
+    private func performAuthorizedRepair(_ host: String, attempt: Int) {
+        repairingAttempt = attempt
+        mark(6, .waiting, "Помощник проверяет DNS для " + host)
+        refresh()
+        selective.repairDNS(host) { [weak self] result in
+            guard let self, self.connectionPhase == .connected, self.connectionAttempt == attempt else { return }
+            self.repairingAttempt = nil
+            if result == "refreshed" || result == "healthy" {
+                let checkGroup = self.storedWork().map { self.checkHosts($0).contains(host) } ?? false
+                self.monitorSystemDNS(attempt: attempt, requestedHost: checkGroup ? nil : host)
+            } else {
+                self.mark(6, .error, result == "cooldown" ? "DNS уже обновлялся. Повтор возможен через пять минут." :
+                    "Помощник не подтвердил восстановление DNS для " + host + ".")
+                self.refresh()
+            }
+        }
     }
 
     @objc func checkSiteAddress() {
@@ -102,7 +196,7 @@ extension BetaMenu {
         let alert = NSAlert()
         alert.messageText = "Какой рабочий сайт не открывается?"
         alert.informativeText = "Вставьте ссылку или имя сайта. Router проверит, получает ли macOS адрес этого сайта через VPN."
-        let field = NSTextField(string: dnsCheckHost(profile) ?? "")
+        let field = NSTextField(string: checkHosts(profile).first ?? "")
         field.frame.size = NSSize(width: 360, height: 24)
         alert.accessoryView = field
         alert.window.initialFirstResponder = field
@@ -127,6 +221,11 @@ extension BetaMenu {
         guard let target = repairTarget, target.attempt == connectionAttempt,
               connectionPhase == .connected, repairingAttempt == nil else { return }
         pendingPathCheck?.cancel()
+        if autoDNS.state == .on {
+            lastAutomaticDNSRepair = ProcessInfo.processInfo.systemUptime
+            performAuthorizedRepair(target.host, attempt: target.attempt)
+            return
+        }
         repairingAttempt = target.attempt
         monitorSystemDNS(attempt: target.attempt, requestedHost: target.host, authorizeRepair: true)
     }
@@ -136,7 +235,9 @@ extension BetaMenu {
         guard connectionPhase == .connected, attempt == connectionAttempt, let profile = storedWork() else { return }
         guard repairingAttempt != attempt || authorizeRepair || repairCompleted != nil else { return }
         if !authorizeRepair { repairTarget = nil }
-        guard let host = requestedHost ?? dnsCheckHost(profile) else {
+        let automaticHosts = checkHosts(profile)
+        guard let host = requestedHost ?? automaticHosts.first else {
+            siteResults.isHidden = true
             mark(6, .idle, "для проверки укажите рабочий сайт")
             refresh()
             return
@@ -145,6 +246,11 @@ extension BetaMenu {
         let request = dnsRequest
         mark(6, .waiting, host + (authorizeRepair ? " — проверка перед восстановлением" : " — проверяется"))
         refresh()
+        if requestedHost == nil {
+            checkConnectedSites(automaticHosts, attempt: attempt, request: request)
+            return
+        }
+        siteResults.isHidden = true
         let python = resources.appendingPathComponent("Runtime/bin/python3.13").path
         let script = resources.appendingPathComponent("Engine/Selective/system_dns_check.py").path
         DispatchQueue.global(qos: .utility).async { [self] in
@@ -180,7 +286,7 @@ extension BetaMenu {
                                                  : "Обновление DNS не выполнено. Проверьте разрешение macOS и повторите для " + host + ".")
                 }
                 self.refresh()
-
+                if mismatch && repairCompleted == nil { self.repairIfEnabled(attempt: attempt) }
             }
         }
     }
@@ -222,7 +328,8 @@ extension BetaMenu {
         case .installingHelper:
             health = .waiting; stage = "Настройка маршрутов"; note = selective.message
         case .preparingRoutes:
-            health = .waiting; stage = "Подключение"; note = "Проверка сайта Check Point и совместимости DNS…"
+            health = .waiting; stage = "Подключение"
+            note = selective.state == "restoringCheckPoint" ? selective.message : "Проверка сайта Check Point и совместимости DNS…"
         case .activatingRoutes:
             health = .waiting; stage = "Включение рабочих маршрутов"; note = "Корпоративный туннель готов. Подключаем рабочие сайты…"
         case .authenticating, .connected: break // Detailed SSL/MFA state owns this presentation.

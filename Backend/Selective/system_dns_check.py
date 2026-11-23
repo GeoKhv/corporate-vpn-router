@@ -46,8 +46,30 @@ def confirmed(host, probe=check, pause=time.sleep):
     return first
 
 
+def site_status(host):
+    status = confirmed(host)
+    if status != 'ok':
+        return status
+    # Pin the connection to an address that both resolvers currently agree on.
+    # Keep the hostname for certificate verification and never follow a redirect.
+    expected = router_addresses(host)
+    actual = system_addresses(host)
+    if not actual or not actual <= expected:
+        return 'inconclusive'
+    address = min(actual, key=lambda ip: (ip.version, int(ip)))
+    literal = f'[{address}]' if address.version == 6 else str(address)
+    result = subprocess.run(
+        ['/usr/bin/curl', '-q', '--noproxy', '*', '--resolve', f'{host}:443:{literal}',
+         '--head', '--silent', '--output', '/dev/null', '--write-out', '%{http_code}',
+         '--connect-timeout', '4', '--max-time', '7', f'https://{host}/'],
+        capture_output=True, text=True, timeout=8)
+    if result.returncode == 0 and result.stdout.isdigit():
+        return 'http:' + result.stdout
+    return 'tls_error' if result.returncode in (35, 51, 60) else 'https_error'
+
+
 if __name__ == '__main__':
     try:
-        print(confirmed(sys.argv[1]))
+        print(site_status(sys.argv[1]) if sys.argv[2:] == ['--https'] else confirmed(sys.argv[1]))
     except (OSError, ValueError, subprocess.SubprocessError):
         print('inconclusive')

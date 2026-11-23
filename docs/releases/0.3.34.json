@@ -1,0 +1,10 @@
+{
+  "version": "0.3.34",
+  "build": 3034,
+  "credit": "MichaelTG",
+  "minimumSystemVersion": "26.0",
+  "architecture": "arm64",
+  "assets": {
+    "Corporate-VPN-Router-0.3.34-STARTER-work-sites-macOS-arm64.zip": "19578c7328d3cc794811994b5ee2a5040baae44411de2de88d3f677da2ecd29e"
+  }
+}

@@ -23,6 +23,8 @@ struct LocalRoutePolicy: Codable {
     let domains: [String]
     let desktop: String
     let rules: [TCPGrant]?
+    let allowDNSRepair: Bool?
+    let allowCheckPointStart: Bool?
     static func decode(_ data: Data) throws -> Self {
         guard data.count <= 65536 else { throw HelperFailure("INVALID_LOCAL_POLICY") }
         let value = try JSONDecoder().decode(Self.self, from:data)
@@ -291,9 +293,81 @@ func adapterRules(ports: [Int], rdpSlot: Int?) -> [[String:Any]] {
     return rules
 }
 
+// An empty successful lookup is macOS's "no such host". Unexpected output is
+// inconclusive. Compare parsed addresses so IPv6 presentation cannot cause a flush.
+func systemDNSMismatch(_ answer: String, slot: Int) -> Bool {
+    let lines = answer.split(whereSeparator: { $0.isNewline })
+    if lines.isEmpty { return true }
+    var sawAddress = false, mismatch = false
+    for line in lines {
+        let fields = line.split(maxSplits: 1, whereSeparator: { $0.isWhitespace })
+        guard fields.count == 2 else { return false }
+        if fields[0] == "name:" || fields[0] == "alias:" { continue }
+        let family: Int32, expected: String
+        switch fields[0] {
+        case "ip_address:": family = AF_INET; expected = "198.18.75." + String(slot)
+        case "ipv6_address:": family = AF_INET6; expected = "fdc7:7652:9a10:75::" + String(slot, radix: 16)
+        default: return false
+        }
+        var actual = [UInt8](repeating: 0, count: 16), wanted = actual
+        guard inet_pton(family, String(fields[1]), &actual) == 1,
+              inet_pton(family, expected, &wanted) == 1 else { return false }
+        sawAddress = true
+        if actual != wanted { mismatch = true }
+    }
+    return sawAddress && mismatch
+}
+
+#if CVR_PORTABLE_HELPER
+enum CheckPointService {
+    static let label = "com.checkpoint.epc.service"
+    static let target = "system/" + label
+    static let plist = "/Library/LaunchDaemons/" + label + ".plist"
+    static let executable = "/Library/Application Support/Checkpoint/Endpoint Connect/TracSrvWrapper"
+
+    static func verifyInstallation() throws {
+        for path in [plist, executable] {
+            try checkParents(path)
+            try checkRootPath(path, directory: false)
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: plist))
+        let job = try PropertyListSerialization.propertyList(from: data, format: nil) as? [String:Any]
+        guard job?["Label"] as? String == label,
+              job?["ProgramArguments"] as? [String] == [executable],
+              job?["Program"] == nil || job?["Program"] as? String == executable,
+              job?["Disabled"] as? Bool != true else { throw HelperFailure("CHECKPOINT_INSTALLATION_CHANGED") }
+        let requirement = #"anchor apple generic and certificate leaf[subject.OU] = "TZ3UEPFYKD" and identifier "com.checkpoint.TracSrvWrapper""#
+        guard try command("/usr/bin/codesign", ["--verify", "--strict", "-R=" + requirement, executable]).0 == 0
+        else { throw HelperFailure("CHECKPOINT_INSTALLATION_CHANGED") }
+    }
+
+    // Only bootstrap a missing job. A concurrent vendor start wins without a restart.
+    static func restore(verify: () throws -> Void = verifyInstallation,
+                        launchctl: ([String]) throws -> (Int32,String) = { try command("/bin/launchctl", $0) }) throws {
+        let current = try launchctl(["print", target])
+        if current.0 == 0 { return }
+        guard current.0 == (113 << 8), current.1.contains("Could not find service \"" + label + "\"")
+        else { throw HelperFailure("CHECKPOINT_SERVICE_STATE_UNKNOWN") }
+        let disabled = try launchctl(["print-disabled", "system"])
+        guard disabled.0 == 0, disabled.1.contains("disabled services = {") else {
+            throw HelperFailure("CHECKPOINT_SERVICE_STATE_UNKNOWN")
+        }
+        let entry = disabled.1.split(separator: "\n").map { $0.trimmingCharacters(in: .whitespaces) }
+            .first { $0.hasPrefix("\"" + label + "\"") }
+        guard entry == nil || entry == "\"" + label + "\" => enabled" else {
+            throw HelperFailure("CHECKPOINT_SERVICE_DISABLED")
+        }
+        try verify()
+        if try launchctl(["bootstrap", "system", plist]).0 != 0,
+           try launchctl(["print", target]).0 != 0 { throw HelperFailure("CHECKPOINT_BOOTSTRAP_FAILED") }
+    }
+}
+#endif
+
 final class Broker {
     let home: String, state: String
     var journal: [String:Any] = [:]
+    var lastDNSRepair: TimeInterval?
     var registeredNames = [Int:String]()
     var usesScopedRules = false
     var adapter: Child?
@@ -523,6 +597,7 @@ final class Broker {
 #if CVR_PORTABLE_HELPER
             guard localPolicy != nil else { throw HelperFailure("LOCAL_POLICY_MISSING") }
             status["build"] = "0.3.20"
+            status["allowCheckPointStart"] = localPolicy?.allowCheckPointStart == true
             if let rules = localPolicy?.rules {
                 status["tcpRules"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(rules))
                 status.removeValue(forKey:"approvedPorts")
@@ -533,11 +608,46 @@ final class Broker {
             if let evidence=lastAdapterFailure { status["lastAdapterFailure"]=try evidence.object() }
             return status
         }
+        #if CVR_PORTABLE_HELPER
+        if op == "ensureCheckPointService" {
+            guard Set(input.keys) == ["op"], localPolicy?.allowCheckPointStart == true else {
+                throw HelperFailure("CHECKPOINT_START_NOT_AUTHORIZED")
+            }
+            guard lease == nil, journal.isEmpty, !fm.fileExists(atPath: journalPath) else {
+                throw HelperFailure("HELPER_SESSION_PENDING")
+            }
+            try CheckPointService.restore()
+            return ["ok":true]
+        }
+        #endif
         if op=="begin" { return try begin(input,owner:owner) }
         guard lease==owner else { throw HelperFailure("NO_SESSION") }
         beat=Date()
         switch op {
         #if CVR_PORTABLE_HELPER
+        case "refreshDNS":
+            guard localPolicy?.allowDNSRepair == true, Set(input.keys) == ["op", "name"], let name = input["name"] as? String,
+                  let slot = registeredNames.first(where: { $0.value == name })?.key, let domains = journal["resolvers"] as? [String],
+                  let domain = domains.first(where: { name == $0 || name.hasSuffix("." + $0) }),
+                  approvedDomains.contains(domain), adapter?.isRunning == true else {
+                throw HelperFailure("DNS_REPAIR_NOT_AUTHORIZED")
+            }
+            let path = "/private/etc/resolver/" + domain
+            try checkRootPath(path, directory: false)
+            guard try Data(contentsOf: URL(fileURLWithPath: path)) == resolverData(domain) else {
+                throw HelperFailure("DNS_RESOLVER_CHANGED")
+            }
+            let now = ProcessInfo.processInfo.systemUptime
+            guard lastDNSRepair.map({ now - $0 >= 300 }) ?? true else { throw HelperFailure("DNS_REPAIR_COOLDOWN") }
+            let lookup = try command("/usr/bin/dscacheutil", ["-q", "host", "-a", "name", name], timeout: 3)
+            guard lookup.0 == 0, systemDNSMismatch(lookup.1, slot: slot) else {
+                throw HelperFailure("DNS_REPAIR_UNCONFIRMED")
+            }
+            lastDNSRepair = now
+            guard try command("/usr/bin/dscacheutil", ["-flushcache"], timeout: 3).0 == 0,
+                  try command("/usr/bin/killall", ["-HUP", "mDNSResponder"], timeout: 3).0 == 0 else {
+                throw HelperFailure("DNS_REPAIR_FAILED")
+            }
         case "register":
             try register(input)
         #endif

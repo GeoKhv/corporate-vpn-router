@@ -44,6 +44,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let dnsPathMonitor = NWPathMonitor()
     var pendingPathCheck: DispatchWorkItem?
     var dnsRequest = 0
+    let siteResults = NSTextField(wrappingLabelWithString: "")
+    let autoDNS = NSButton(checkboxWithTitle: "Восстанавливать DNS автоматически при подтверждённом сбое", target: nil, action: nil)
+    var lastAutomaticDNSRepair: TimeInterval?
+    @objc func toggleAutoDNS() {
+        UserDefaults.standard.set(autoDNS.state == .on, forKey: "autoRepairWorkDNS")
+        if autoDNS.state == .on && connectionPhase == .connected { monitorSystemDNS(attempt: connectionAttempt) }
+    }
     let siteHelpButton = NSButton()
     let repairDNSButton = NSButton()
     var repairTarget: (host: String, attempt: Int)?
@@ -150,7 +157,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         updates.start(menu:updatesMenu)
 #endif
         window = makeWindow("Corporate VPN Router", 510, 362)
-        diagnostics = makeWindow("Диагностика Corporate VPN Router", 640, 380)
+        diagnostics = makeWindow("Диагностика Corporate VPN Router", 640, 475)
         setupMain()
         setupDiagnostics()
 #if CVR_SELECTIVE_TUN
@@ -394,6 +401,12 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         actions.append(NSTextField(labelWithString: productDisplayVersion))
         views.append(NSStackView(views: actions))
         #if CVR_SELECTIVE_TUN
+        siteResults.preferredMaxLayoutWidth = 585
+        siteResults.isHidden = true
+        views.append(siteResults)
+        autoDNS.target = self; autoDNS.action = #selector(toggleAutoDNS)
+        autoDNS.state = UserDefaults.standard.bool(forKey: "autoRepairWorkDNS") ? .on : .off
+        views.append(autoDNS)
         repairDNSButton.title = "Восстановить DNS и проверить сайт"
         repairDNSButton.target = self
         repairDNSButton.action = #selector(repairSystemDNS)

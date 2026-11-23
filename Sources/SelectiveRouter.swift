@@ -37,6 +37,13 @@ final class SelectiveRouter {
         return status["active"] as? Bool == false && status["cleanupPending"] as? Bool == false
     }
     var authorizeHelper: ([String]) -> String? = SelectiveRouter.runAuthorization
+    var dnsRepairReply: ((String) -> Void)?
+    func repairDNS(_ host: String, completion: @escaping (String) -> Void) {
+        guard ready, let input, dnsRepairReply == nil, Configuration.validHost(host) else { completion("failed"); return }
+        dnsRepairReply = completion
+        do { try input.write(contentsOf: Data(("repair-dns " + host + "\n").utf8)) }
+        catch { dnsRepairReply = nil; completion("failed") }
+    }
     var managementFinished: (() -> Void)?
     var process: Process?, input: FileHandle?
     var state = "stopped", message = "Рабочие маршруты выключены."
@@ -185,6 +192,11 @@ final class SelectiveRouter {
                        let state = event["state"] as? String, let message = event["message"] as? String {
                         DispatchQueue.main.async { [weak self] in
                             guard let self, self.process === p else { return }
+                            if state == "dnsRepairResult" {
+                                let reply = self.dnsRepairReply; self.dnsRepairReply = nil
+                                reply?(message)
+                                return
+                            }
                             self.state = state
                             if state == "selectingSite" {
                                 guard let sites = event["sites"] as? [String], let choose = self.chooseSite else { p.terminate(); return }
@@ -213,7 +225,8 @@ final class SelectiveRouter {
             DispatchQueue.main.async { [weak self] in
                 guard let self, self.process === p else { return }
                 self.process = nil; try? self.input?.close(); self.input = nil
-                if ["ready","awaitingTunnel","starting","activating","selectingSite"].contains(self.state) { self.state = "error"; self.message = "Адаптер завершился; рабочие маршруты восстанавливает независимый помощник." }
+                let reply = self.dnsRepairReply; self.dnsRepairReply = nil; reply?("failed")
+                if ["ready","awaitingTunnel","starting","activating","selectingSite","restoringCheckPoint"].contains(self.state) { self.state = "error"; self.message = "Адаптер завершился; рабочие маршруты восстанавливает независимый помощник." }
                 self.changed?()
                 if !self.cleanupConfirmed { self.verifyCleanup(resources: resources) }
             }
@@ -298,6 +311,11 @@ final class SelectiveRouter {
                 let ports = (row["anyTCP"] as? Bool == true) ? "любой TCP" : (row["ports"] as? [Int] ?? []).map(String.init).joined(separator:",")
                 return (row["scope"] as? String == "tree" ? "с поддоменами " : "точно ") + (row["domain"] as? String ?? "") + " · " + ports + ((row["alias"] as? String).map { " · короткое имя " + $0 } ?? "")
             }.joined(separator:"\n") + ((policy["desktop"] as? String).flatMap { $0.isEmpty ? nil : "\nRDP 3389: " + $0 } ?? "")
+        }
+        if !remove, let enrollment, let grant = try? JSONSerialization.jsonObject(with: enrollment) as? [String:Any], grant["allowDNSRepair"] as? Bool == true { prompt = "Разрешить помощнику Router обновлять DNS macOS при подтверждённом сбое рабочего сайта.\n" + prompt }
+        if !remove, let enrollment, let grant = try? JSONSerialization.jsonObject(with: enrollment) as? [String:Any],
+           grant["allowCheckPointStart"] as? Bool == true {
+            prompt = "Разрешить Router запускать отсутствующую службу Check Point при подключении.\n" + prompt
         }
         return ["-e", authorizationScript, cmd + policyArgument, prompt]
     }
