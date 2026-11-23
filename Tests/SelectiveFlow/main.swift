@@ -85,7 +85,7 @@ sys.stdin.read()
     until { menu.selective.helperAvailability == .ready }
     try JSONFile.write(WorkProfile(sites: [WorkSite(domain: "work.example.invalid", scope: "tree")]), to: menu.workURL)
     try JSONFile.write(["hosts":["owa.work.example.invalid"]], to: paths.data.appendingPathComponent("certificate-endpoints.json"))
-    try "import sys\nassert sys.flags.dont_write_bytecode\nprint({'owa.work.example.invalid':'missing', 'wiki.work.example.invalid':'ok'}[sys.argv[1]])".write(
+    try "import sys\nassert sys.flags.dont_write_bytecode\nfrom pathlib import Path\nprint({'owa.work.example.invalid':('ok' if Path(__file__).resolve().parents[1].joinpath('repaired').exists() else 'missing'), 'wiki.work.example.invalid':'ok'}[sys.argv[1]])".write(
         to: res.appendingPathComponent("Engine/Selective/system_dns_check.py"), atomically: true, encoding: .utf8)
     menu.method.selectedSegment = 0; menu.changeMethod()
     func begin(_ scenario: String) throws {
@@ -101,6 +101,18 @@ sys.stdin.read()
         check(menu.detail.stringValue.contains("macOS не находит owa.work.example.invalid"), "confirmed DNS failure must be visible while connected")
         check(!menu.siteHelpButton.isHidden && menu.siteHelpButton.action == #selector(BetaMenu.checkSiteAddress), "site troubleshooting is available from the connected window")
         if !testedSiteLink {
+            var calls = 0
+            let repaired = res.appendingPathComponent("Engine/repaired")
+            menu.refreshMacDNS = { false }
+            menu.repairDNSButton.performClick(nil)
+            until { menu.findings["DNS macOS"]?.text.contains("Обновление DNS не выполнено") == true }
+            check(menu.repairDNSButton.isEnabled && !menu.repairDNSButton.isHidden, "cancelled authorization offers retry")
+            menu.refreshMacDNS = { calls += 1; return FileManager.default.createFile(atPath: repaired.path, contents: nil) }
+            check(!menu.repairDNSButton.isHidden, "confirmed mismatch offers repair")
+            menu.repairDNSButton.performClick(nil)
+            until { menu.findings["DNS macOS"]?.health == .ready }
+            check(calls == 1 && menu.repairDNSButton.isHidden, "repair requires one authorization and rechecks the same host")
+            try! FileManager.default.removeItem(at: repaired)
             testedSiteLink = true
             let input = Timer(timeInterval: 0.1, repeats: false) { _ in
                 guard let modal = NSApp.modalWindow,

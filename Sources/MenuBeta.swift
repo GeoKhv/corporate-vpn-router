@@ -45,6 +45,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var pendingPathCheck: DispatchWorkItem?
     var dnsRequest = 0
     let siteHelpButton = NSButton()
+    let repairDNSButton = NSButton()
+    var repairTarget: (host: String, attempt: Int)?
+    var repairingAttempt: Int?
+    var refreshMacDNS: () -> Bool = {
+        let script = #"do shell script "/usr/bin/dscacheutil -flushcache && /usr/bin/killall -HUP mDNSResponder" with administrator privileges with prompt "Обновить DNS macOS для восстановления доступа к рабочему сайту""#
+        return command("/usr/bin/osascript", ["-e", script], timeout: 120).code == 0
+    }
     var applyingBundledRule = false
     var connectionPhase = ConnectionPhase.idle
     var connectionFailure: String?, connectionFailureCode: String?, connectionNotice: String?
@@ -143,7 +150,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         updates.start(menu:updatesMenu)
 #endif
         window = makeWindow("Corporate VPN Router", 510, 362)
-        diagnostics = makeWindow("Диагностика Corporate VPN Router", 560, 334)
+        diagnostics = makeWindow("Диагностика Corporate VPN Router", 640, 380)
         setupMain()
         setupDiagnostics()
 #if CVR_SELECTIVE_TUN
@@ -387,6 +394,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         actions.append(NSTextField(labelWithString: productDisplayVersion))
         views.append(NSStackView(views: actions))
         #if CVR_SELECTIVE_TUN
+        repairDNSButton.title = "Восстановить DNS и проверить сайт"
+        repairDNSButton.target = self
+        repairDNSButton.action = #selector(repairSystemDNS)
+        repairDNSButton.toolTip = "macOS запросит разрешение обновить системный DNS. Затем Router повторно проверит этот адрес."
+        views.append(repairDNSButton)
         exportStatus.font = .systemFont(ofSize: 12)
         exportStatus.textColor = .secondaryLabelColor
         views.append(exportStatus)
@@ -506,6 +518,9 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         var displayedNote = note
         #if CVR_SELECTIVE_TUN
         siteHelpButton.isHidden = connectionPhase != .connected
+        repairDNSButton.isHidden = connectionPhase != .connected || repairTarget?.attempt != connectionAttempt
+        repairDNSButton.isEnabled = repairingAttempt != connectionAttempt
+        siteHelpButton.isEnabled = repairingAttempt != connectionAttempt
         if connectionPhase == .connected, let dns = findings["DNS macOS"], dns.health == .error {
             displayedNote = dns.text
         }

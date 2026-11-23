@@ -2,14 +2,14 @@
 
 Corporate VPN Router направляет выбранные рабочие адреса через Check Point на Mac. Остальной трафик идёт по обычному маршруту macOS, в том числе через личный VPN. Правила действуют в браузерах, SSH-клиентах, Lens и других приложениях, которые подключаются по DNS-имени и TCP.
 
-## Скачать 0.3.30 by MichaelTG
+## Скачать 0.3.31 by MichaelTG
 
 Для **Mac с Apple Silicon и macOS 26+**. У RED и WHITE одинаковый номер версии. У каждой редакции свой канал обновлений.
 
 | Сборка | Для кого |
 | --- | --- |
-| **[WHITE · чистая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.30/Corporate-VPN-Router-0.3.30-CLEAN-macOS-arm64.zip)** | Вы сами добавляете рабочие адреса и используете настроенный в официальном Check Point шлюз. В ZIP нет готового профиля, закреплённых сертификатов организации или рабочего списка. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.30/Corporate-VPN-Router-0.3.30-CLEAN-macOS-arm64.zip.sha256) |
-| **[RED · рабочая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.30/Corporate-VPN-Router-0.3.30-STARTER-work-sites-macOS-arm64.zip)** | Стартовый комплект с готовыми рабочими сайтами, включая Superset и «Метрику», и проверенными параметрами подключения. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.30/Corporate-VPN-Router-0.3.30-STARTER-work-sites-macOS-arm64.zip.sha256) |
+| **[WHITE · чистая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.31/Corporate-VPN-Router-0.3.31-CLEAN-macOS-arm64.zip)** | Вы сами добавляете рабочие адреса и используете настроенный в официальном Check Point шлюз. В ZIP нет готового профиля, закреплённых сертификатов организации или рабочего списка. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.31/Corporate-VPN-Router-0.3.31-CLEAN-macOS-arm64.zip.sha256) |
+| **[RED · рабочая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.31/Corporate-VPN-Router-0.3.31-STARTER-work-sites-macOS-arm64.zip)** | Стартовый комплект с готовыми рабочими сайтами, включая Superset и «Метрику», и проверенными параметрами подключения. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.31/Corporate-VPN-Router-0.3.31-STARTER-work-sites-macOS-arm64.zip.sha256) |
 
 В уже установленном Router нажмите **«Проверить обновления» → «Загрузить и установить»**. Установки до разделения получат RED, включая новые правила Superset и «Метрики». Новые установки WHITE получают обновления из отдельного канала. Если Router уже нашёл версию, в окне установки можно нажать «Проверить снова». [Установка, обновление и откат](docs/COLLEAGUES.ru.md)
 
@@ -19,7 +19,7 @@ Corporate VPN Router направляет выбранные рабочие ад
 2. Откройте **«Доступы…»**, чтобы проверить рабочие правила. Чтобы добавить адреса, вставьте их списком, нажмите **«Разобрать»**, проверьте полное имя и порт, затем нажмите **«Добавить» → «Сохранить»**. При изменении разрешений macOS покажет подтверждение помощника маршрутов.
 3. Нажмите **«Подключить»** в приложении или меню. Войдите с кодом и паролем либо ключом доступа в браузере, если выбранный SSL-профиль его поддерживает.
 
-Если рабочий сайт не открывается при подключённом VPN, нажмите **«Не открывается рабочий сайт? Проверить адрес…»**. Вставьте ссылку на проблемный сайт. Результат появится в диагностике в строке «DNS macOS».
+Если рабочий сайт не открывается при подключённом VPN, нажмите **«Не открывается рабочий сайт? Проверить адрес…»**. Вставьте ссылку на проблемный сайт. Результат появится в диагностике в строке «DNS macOS». При подтверждённой ошибке DNS нажмите «Восстановить DNS и проверить сайт» в окне диагностики. Router повторно проверит адрес, запросит разрешение macOS на обновление системного DNS и покажет результат проверки того же сайта.
 
 ### Главное окно
 

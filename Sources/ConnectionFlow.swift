@@ -74,6 +74,7 @@ extension BetaMenu {
             startAuthentication()
         } else if connectionPhase == .activatingRoutes && selective.ready {
             connectionPhase = .connected
+            repairingAttempt = nil; repairTarget = nil
             health = .ready; stage = "Подключено"; note = "Рабочие маршруты подключены."
             monitorSystemDNS(attempt: connectionAttempt)
             if FileManager.default.fileExists(atPath:pendingURL.path) {
@@ -122,8 +123,19 @@ extension BetaMenu {
         }
     }
 
-    func monitorSystemDNS(attempt: Int, requestedHost: String? = nil) {
+    @objc func repairSystemDNS() {
+        guard let target = repairTarget, target.attempt == connectionAttempt,
+              connectionPhase == .connected, repairingAttempt == nil else { return }
+        pendingPathCheck?.cancel()
+        repairingAttempt = target.attempt
+        monitorSystemDNS(attempt: target.attempt, requestedHost: target.host, authorizeRepair: true)
+    }
+
+    func monitorSystemDNS(attempt: Int, requestedHost: String? = nil, authorizeRepair: Bool = false,
+                          repairCompleted: Bool? = nil) {
         guard connectionPhase == .connected, attempt == connectionAttempt, let profile = storedWork() else { return }
+        guard repairingAttempt != attempt || authorizeRepair || repairCompleted != nil else { return }
+        if !authorizeRepair { repairTarget = nil }
         guard let host = requestedHost ?? dnsCheckHost(profile) else {
             mark(6, .idle, "для проверки укажите рабочий сайт")
             refresh()
@@ -131,7 +143,7 @@ extension BetaMenu {
         }
         dnsRequest += 1
         let request = dnsRequest
-        mark(6, .waiting, host + " — проверяется")
+        mark(6, .waiting, host + (authorizeRepair ? " — проверка перед восстановлением" : " — проверяется"))
         refresh()
         let python = resources.appendingPathComponent("Runtime/bin/python3.13").path
         let script = resources.appendingPathComponent("Engine/Selective/system_dns_check.py").path
@@ -140,12 +152,32 @@ extension BetaMenu {
             DispatchQueue.main.async {
                 guard self.connectionPhase == .connected, self.connectionAttempt == attempt, self.dnsRequest == request else { return }
                 let status = result.code == 0 ? result.output.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+                let mismatch = status == "missing" || status == "different"
+                self.repairTarget = mismatch ? (host, attempt) : nil
+                if authorizeRepair && mismatch {
+                    self.mark(6, .waiting, "Подтвердите обновление DNS в системном окне macOS.")
+                    self.refresh()
+                    let refreshDNS = self.refreshMacDNS
+                    DispatchQueue.global(qos: .userInitiated).async {
+                        let completed = refreshDNS()
+                        DispatchQueue.main.async {
+                            guard self.connectionPhase == .connected, self.connectionAttempt == attempt else { return }
+                            self.monitorSystemDNS(attempt: attempt, requestedHost: host, repairCompleted: completed)
+                        }
+                    }
+                    return
+                }
+                self.repairingAttempt = nil
                 switch status {
-                case "ok": self.mark(6, .ready, host + " — macOS видит адрес Router")
+                case "ok": self.mark(6, .ready, host + (repairCompleted == true ? " — DNS восстановлен, обновите вкладку сайта." : " — macOS видит адрес Router"))
                 case "missing": self.mark(6, .error, "macOS не находит " + host + ", хотя DNS Router возвращает адрес.")
                 case "different": self.mark(6, .error, "Для " + host + " macOS возвращает адрес вне ответа DNS Router.")
                 case "router_unavailable": self.mark(6, .error, "DNS Router не вернул адрес для " + host + ".")
                 default: self.mark(6, .idle, host + " — проверку DNS завершить не удалось")
+                }
+                if mismatch, let completed = repairCompleted {
+                    self.mark(6, .error, completed ? "DNS обновлён, но адрес " + host + " всё ещё не совпадает. Сохраните логи."
+                                                 : "Обновление DNS не выполнено. Проверьте разрешение macOS и повторите для " + host + ".")
                 }
                 self.refresh()
 

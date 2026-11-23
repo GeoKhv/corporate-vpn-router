@@ -1,0 +1,15 @@
+{
+  "version": "0.3.31",
+  "build": 3031,
+  "credit": "MichaelTG",
+  "minimumSystemVersion": "26.0",
+  "architecture": "arm64",
+  "assets": {
+    "Corporate-VPN-Router-0.3.31-CLEAN-macOS-arm64.zip": "d04aaf57bef8c372ba4a1192298c2e550357fc7dce7d67bd8b71931ffafe7c4b",
+    "Corporate-VPN-Router-0.3.31-STARTER-work-sites-macOS-arm64.zip": "aa7735ece63550190eb1197177eaf6991392953deb7aaab2bfd433767f2f0291"
+  },
+  "appcasts": {
+    "WHITE": "https://github.com/GeoKhv/corporate-vpn-router/releases/download/update-channel-white/appcast.xml",
+    "RED": "https://github.com/GeoKhv/corporate-vpn-router/releases/download/update-channel/appcast.xml"
+  }
+}
