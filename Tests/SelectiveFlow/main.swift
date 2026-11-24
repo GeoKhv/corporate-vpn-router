@@ -61,6 +61,10 @@ def ask(kind,**fields):
  emit(request=kind,prompt='fixture',**fields)
  return json.loads(sys.stdin.readline())
 emit(stage='verifying_gateway')
+if mode=='handoff':
+ assert ask('switch_official')=='accept'
+ with (base/'handoffs').open('a') as f:f.write('accepted\n')
+ emit(stage='gateway_recheck')
 if mode=='first':assert ask('trust')=='accept'
 if mode=='alternate':assert ask('gateway_fingerprint')=='fixture-fingerprint'
 if mode=='gateway_failure':
@@ -181,11 +185,34 @@ sys.stdin.read()
     check(SelectiveRouter.classifyReply(["ok":false,"error":"CALLER_REJECTED"]) == .checkFailed, "caller rejection is not absence")
     check(SelectiveRouter.classifyReply(["ok":false,"error":"HELPER_UNAVAILABLE"]) == .unavailable, "XPC loss is temporary")
     menu.selective.inspectHelper = { _ in .ready }
+    let handoffs = res.appendingPathComponent("Engine/handoffs")
+    menu.method.selectedSegment = 1; menu.changeMethod()
+    try begin("handoff")
+    until { menu.requestKind == "switch_official" }
+    check(menu.detail.stringValue.contains("в браузере") && menu.submit.title=="Далее" &&
+          menu.detail.stringValue.contains("недоступны"), "explain switching and the next browser action")
+    check(menu.leaveOfficial.title=="Остаться в Check Point" && menu.leaveOfficial.keyEquivalent=="\u{1b}", "visible way to keep the active VPN")
+    menu.leaveOfficial.performClick(nil)
+    until { menu.connectionPhase == .idle && menu.engine == nil && menu.selective.process == nil }
+    check(!fm.fileExists(atPath:handoffs.path) && !menu.accountRow.isHidden && !menu.method.isHidden, "cancel preserves Check Point and restores connection controls")
+    menu.method.selectedSegment = 0; menu.changeMethod()
     try begin("first")
     until { menu.requestKind == "trust" }
     let activations = res.appendingPathComponent("Engine/activations")
     check(!fm.fileExists(atPath: activations.path), "gateway verification must precede all routing")
     menu.answer(); finishMFA()
+    try begin("handoff")
+    until { menu.requestKind == "switch_official" }
+    check(menu.detail.stringValue.contains("Код и пароль вы введёте в этом окне"), "explain where credentials will be requested")
+    check(menu.method.isHidden && menu.accountRow.isHidden && menu.mainActions.isHidden &&
+          menu.submit.keyEquivalent=="\r" && !menu.leaveOfficial.isHidden, "one focused choice during handoff")
+    menu.submit.performClick(nil)
+    check(menu.requestKind == nil && menu.stage=="Переключение на Router", "immediate switching feedback")
+    menu.answer() // A second activation before the next request must not send consent again.
+    until { menu.requestKind == "challenge" }
+    check(!menu.promptLabel.isHidden && menu.leaveOfficial.isHidden && menu.submit.keyEquivalent.isEmpty, "next prompt restores credential controls")
+    finishMFA()
+    check(try! String(contentsOf:handoffs)=="accepted\n", "one click continues the same attempt")
     try begin("alternate"); until { menu.requestKind == "gateway_fingerprint" }
     menu.secret.stringValue = "fixture-fingerprint"; menu.answer(); finishMFA()
     try begin("repeat"); finishMFA()

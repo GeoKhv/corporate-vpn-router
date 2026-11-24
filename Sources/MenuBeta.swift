@@ -31,7 +31,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     let label = NSTextField(labelWithString: ""), detail = NSTextField(wrappingLabelWithString: "")
     let account = NSTextField(labelWithString: ""), statusIcon = NSImageView()
     let method = NSSegmentedControl(labels: ["Код + пароль", "Ключ доступа в браузере"], trackingMode: .selectOne, target: nil, action: nil)
-    let promptTitle = NSTextField(wrappingLabelWithString:"")
+    var accountRow = NSStackView(), mainActions = NSStackView()
     var leaveOfficial = NSButton(), useCode = NSButton()
     let promptLabel = NSTextField(wrappingLabelWithString: "")
     let username = NSTextField(), loginDraft = NSTextField(), secret = InlineSecureField()
@@ -233,7 +233,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         loginDraft.placeholderString = "Рабочий логин"
         loginDraft.widthAnchor.constraint(equalToConstant: 250).isActive = true
         loginDraft.target = self; loginDraft.action = #selector(toggle)
-        let who = NSStackView(views: [account, loginDraft, edit])
+        accountRow = NSStackView(views: [account, loginDraft, edit])
         echo.target = self; echo.action = #selector(changeEcho)
         echo.state = UserDefaults.standard.bool(forKey: "disableCharacterEcho") ? .off : .on
         for field in [username, secret] {
@@ -244,16 +244,16 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         secretRow = NSStackView(views: [secret])
         submit = NSButton(title: "Продолжить", target: self, action: #selector(answer))
         promptLabel.preferredMaxLayoutWidth = 455
-        promptTitle.preferredMaxLayoutWidth = 510
-        promptTitle.font = .systemFont(ofSize:19,weight:.semibold)
-        leaveOfficial = NSButton(title:"Оставить Check Point",target:self,action:#selector(leaveCheckPoint))
+        leaveOfficial = NSButton(title:"Остаться в Check Point",target:self,action:#selector(leaveCheckPoint))
         useCode = NSButton(title:"Войти с кодом и паролем",target:self,action:#selector(fallbackToCode))
-        promptBox = makeColumn([promptTitle, promptLabel, username, secretRow, submit, leaveOfficial], spacing:12)
+        let promptActions = NSStackView(views: [submit, leaveOfficial])
+        promptActions.alignment = .centerY
+        promptBox = makeColumn([promptLabel, username, secretRow, promptActions], spacing:12)
         primary = NSButton(title: "Подключить", target: self, action: #selector(toggle))
         primary.widthAnchor.constraint(greaterThanOrEqualToConstant: 110).isActive = true
         primary.heightAnchor.constraint(equalToConstant: 28).isActive = true
         setupBrowser = NSButton(title: "Настроить Chrome…", target: self, action: #selector(appRouting))
-        let row = NSStackView(views: [primary,
+        mainActions = NSStackView(views: [primary,
                                       NSButton(title: "Доступы…", target: self, action: #selector(settings)),
                                       NSButton(title: "Диагностика…", target: self, action: #selector(diagnose))])
         let motto = NSTextField(labelWithString: "Trust me, I'm an engineer.")
@@ -272,7 +272,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #endif
         footer.alignment = .centerX
         footer.setContentHuggingPriority(.required, for: .vertical)
-        var mainViews: [NSView] = [state, detail, setupBrowser, method, who, promptBox, row]
+        var mainViews: [NSView] = [state, detail, setupBrowser, method, accountRow, promptBox, mainActions]
         #if CVR_SELECTIVE_TUN
         siteHelpButton.title = "Не открывается рабочий сайт? Проверить адрес…"
         siteHelpButton.target = self
@@ -530,7 +530,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         secret.echoEnabled = echo.state == .on
         secret.showTypedCharacter(event:NSApp.currentEvent)
     }
-    @objc func leaveCheckPoint() { stop("Официальное подключение сохранено.") }
+    @objc func leaveCheckPoint() {
+        guard requestKind == "switch_official" else { return }
+        stop("Вы остались в Check Point.")
+    }
     @objc func fallbackToCode() {
         guard engine == nil else { return }
         method.selectedSegment = 0; changeMethod(); connect()
@@ -554,8 +557,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         account.stringValue = enterLogin ? "Пользователь" : "Пользователь · " + (pendingLogin ?? who?.username ?? (browserMode ? "выбирается в браузере" : "ожидает проверки шлюза"))
         edit.isHidden = who == nil || enterLogin; edit.isEnabled = engine == nil || health == .ready
         method.isEnabled = engine == nil; primary.isEnabled = !stopping
-        primary.isHidden = requestKind == "switch_official"
-        echo.isHidden = requestKind == "switch_official"
+        let switching = requestKind == "switch_official"
+        method.isHidden = switching
+        accountRow.isHidden = switching
+        mainActions.isHidden = switching
+        echo.isHidden = switching
 #if CVR_SELECTIVE_TUN
         setupBrowser.isHidden = selective.helperAvailability == .ready || connectionPhase.pending || connectionPhase == .stopping
         if selective.holdingRoutes && !connectionPhase.pending { setupBrowser.isHidden = false }
@@ -575,7 +581,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
 #endif
         primary.bezelColor = primary.title == "Подключить" && primary.isEnabled ? .systemGreen : nil
         useCode.isHidden = !browserMode || engine != nil || health == .ready
-        leaveOfficial.isHidden = requestKind != "switch_official"
+        if switching { setupBrowser.isHidden = true }
+        leaveOfficial.isHidden = !switching
         refreshMenuActions(); promptBox.isHidden = requestKind == nil
         item.button?.image = health.dot()
         item.button?.title = " " + health.menuTitle; item.button?.toolTip = "Corporate VPN Router · " + stage
@@ -677,7 +684,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func clearPrompt() {
         secret.hideEcho(); _ = secret.abortEditing(); _ = username.abortEditing(); requestKind = nil; username.stringValue = ""; secret.stringValue = ""
-        promptTitle.stringValue = ""; promptTitle.isHidden = true
+        submit.keyEquivalent = ""; leaveOfficial.keyEquivalent = ""
         promptLabel.stringValue = ""; promptBox?.isHidden = true
     }
     func stop(_ reason: String) {
@@ -712,7 +719,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             value = username.stringValue.trimmingCharacters(in:.whitespacesAndNewlines)
             guard !value.isEmpty else { return }
             pendingLogin = value
-        case "trust", "switch_official": value = "accept"
+        case "switch_official":
+            stage = "Переключение на Router"
+            note = "Router отключает Check Point и готовит вход."
+            value = "accept"
+        case "trust": value = "accept"
         default: value = secret.stringValue
         }
         clearPrompt(); refresh(); reply(value)
@@ -854,7 +865,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 return
             }
             if kind == "browser", browserMode, let raw = msg["url"] as? String, let url = URL(string: raw), url.scheme == "https" {
-                stage = "Вход в браузере"; note = "Продолжите вход у провайдера. Личный ключ доступен только настроенным пользователям. Для кода и пароля отмените этот вход."
+                stage = "Вход в браузере"; note = "Завершите вход в открывшемся браузере. После этого Router продолжит подключение автоматически."
                 let ws = NSWorkspace.shared
                 let handler = ws.urlForApplication(toOpen: url)
                 refresh(); reply(ws.open(url) ? (handler?.path ?? "failed") : "failed"); return
@@ -876,19 +887,20 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             promptLabel.stringValue = (kind == "trust" ? "Подтвердите привязку к шлюзу\n" : "") + (msg["prompt"] as? String ?? "")
             username.isHidden = kind != "username"; secretRow.isHidden = ["username","trust","switch_official"].contains(kind)
             let switching = kind == "switch_official"
-            promptTitle.stringValue = switching ? "Подключить рабочие сайты через это приложение?" : ""
-            promptTitle.isHidden = !switching
+            promptLabel.isHidden = switching
             if switching {
-                stage = "Подтверждение подключения"; note = "Check Point сейчас подключён."
-                promptLabel.stringValue = "Официальный VPN отключится, GUI Check Point закроется и начнётся вход в этом приложении. Рабочие доступы временно пропадут до завершения входа."
+                stage = "Вход через Router"
+                let next = browserMode ? "Вход продолжится в браузере." : "Код и пароль вы введёте в этом окне."
+                note = "Нажмите «Далее», чтобы Router отключил и закрыл Check Point. \(next) До завершения входа рабочие сайты будут недоступны."
             }
-            submit.title = switching ? "Отключить Check Point и продолжить" : kind == "trust" ? "Подтвердить" : "Продолжить"
+            submit.title = switching ? "Далее" : kind == "trust" ? "Подтвердить" : "Продолжить"
             submit.controlSize = switching ? .large : .regular
             submit.font = .systemFont(ofSize:switching ? 15 : 13,weight:switching ? .semibold : .regular)
             submit.keyEquivalent = switching ? "\r" : ""
+            leaveOfficial.keyEquivalent = switching ? "\u{1b}" : ""
             submit.bezelStyle = .rounded
             submit.bezelColor = switching ? .controlAccentColor : nil
-            window.setContentSize(NSSize(width:570,height:switching ? 466 : 446))
+            if !switching { window.setContentSize(NSSize(width:570,height:446)) }
             refresh()
             // The gateway asks for input seconds after "Подключить"; by then the
             // window may be closed, behind Check Point's GUI or another app.
@@ -909,10 +921,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         case "ipsec_gateway_verified": note = "Шлюз IPsec проверен. Ответьте на запросы входа."
         case "ipsec_connected": mark(2,.ready,"IPsec выдал адрес и DNS")
         case "official_handoff": note = "Проверка состояния официального Check Point…"
-        case "gateway_recheck": note = "Повторная проверка шлюза перед MFA…"
+        case "gateway_recheck": note = "Проверяем шлюз перед входом…"
         case "gateway_verified":
             mark(0,.ready,"TLS и pin проверены"); mark(1,.waiting,"ожидание входа"); stage = "Ожидание входа"
-            note = browserMode ? "Запрашиваем вход в основном браузере." : "Ответьте на запросы шлюза."
+            note = browserMode ? "Готовим вход в браузере." : "Введите данные, которые запросит Check Point, в этом окне."
         case "browser_preflight": note = "Браузер проверил доступ к обработчику возврата."
         case "browser_host_refused": note = "Запрос пришёл с неверным именем локального обработчика."
         case "browser_peer_refused": note = "У запроса нет подтверждённого источника или подписи основного Chrome."
