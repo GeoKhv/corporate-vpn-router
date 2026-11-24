@@ -151,6 +151,18 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
     # A deliberate site choice works with the real native shape: Connected
     # site status can coexist with an all-Idle gateway list. Fleet enrollment
     # checks the reviewed leaf and CA instead of requiring a Connected object.
+    # Reproduce an IPv4-only inactive entry before the selected alternate.
+    # The native list reports no connected object; the provisioned leaf and
+    # CA must still be checked on a real loopback TLS handshake.
+    stale='Conn 192.0.2.99:\n gw: 192.0.2.99\n status: Idle\n active site: false\n gateway list:\n (Idle) Old\n'
+    current=f'Conn {host}:\n gw: {ip}\n status: Connected\n active site: true\n gateway list:\n (Idle) {obj}\n'
+    official.return_value=stale+current
+    with patch.object(trust,'gateway_ipv4',side_effect=lambda name,deadline: {ip if name==host else '192.0.2.1'}):
+        address,ctx=first()
+        assert address==ip and ctx.gateway_leaf_der==ssl.PEM_cert_to_DER_cert((root/'leaf0.pem').read_text())
+        official.return_value=stale+current.replace('status: Connected','status: Idle')
+        assert trust.anchor(approvals.append)[0]==ip
+    (root/'ssl-site.json').unlink()
     preference=root/'preferred-site.json'
     official.return_value=native('Idle')
     preference.write_text(json.dumps({'site':'foreign.example.invalid'}))

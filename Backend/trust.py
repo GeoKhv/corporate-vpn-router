@@ -219,6 +219,32 @@ def native_ipv4(value):
     return str(address.ipv4_mapped) if address.ipv4_mapped else None
 
 
+def native_fields(body, key):
+    return [v.strip() for v in re.findall(r'(?im)^[ \t]*'+key+r'[ \t]*:[ \t]*([^\n]*)$', body)]
+
+
+def selected_dns_endpoint(blocks):
+    """A signed snapshot can mark one named site and explicitly idle all others."""
+    from sites import hostname
+    selected = None
+    for block in blocks:
+        header, _, body = block.partition('\n')
+        flags = native_fields(body, 'active site')
+        states = native_fields(body, 'status')
+        if flags == ['false'] and states == ['Idle']:
+            if re.search(r'(?im)^[ \t]*\(Connected\)', body):
+                return None
+            continue
+        if selected or flags != ['true'] or states not in (['Connected'], ['Idle']):
+            return None
+        name = header.strip().removesuffix(':').strip().lower().removesuffix('.')
+        gateways = native_fields(body, 'gw')
+        if not hostname(name) or len(gateways) != 1 or not native_ipv4(gateways[0]):
+            return None
+        selected = native_ipv4(gateways[0])
+    return selected
+
+
 def official_records(output):
     from sites import hostname
     records = {}
@@ -237,17 +263,16 @@ def official_records(output):
         raise Refused('OFFICIAL_SITE_MISSING')
     if re.search(r'(?im)^[ \t]*(?:gw|status)[ \t]*:', blocks[0]):
         raise Refused('OFFICIAL_STATE_UNKNOWN')
+    selected_ip = selected_dns_endpoint(blocks[1:])
     for index, block in enumerate(blocks[1:],1):
         header, _, body = block.partition('\n')
         label = header.strip().removesuffix(':').strip().lower()
         if (not label or not label.isprintable() or len(label)>253 or
                 not header.strip().endswith(':') and not (hostname(label.removesuffix('.')) or native_ipv4(label))):
             raise ProfileFormatError('invalid_site_header', index)
-        def fields(key):
-            return [v.strip() for v in re.findall(r'(?im)^[ \t]*'+key+r'[ \t]*:[ \t]*([^\n]*)$', body)]
-        states = fields('status')
+        states = native_fields(body, 'status')
         name = label.removesuffix('.')
-        gateways = set(v.lower().removesuffix('.') for v in fields('gw'))
+        gateways = set(v.lower().removesuffix('.') for v in native_fields(body, 'gw'))
         if (not gateways or gateways == {''}) and states == ['Idle'] and hostname(name):
             # An idle native profile can omit its dial address. Only an already
             # provisioned exact DNS site can supply the missing endpoint.
@@ -294,11 +319,15 @@ def official_records(output):
             else:
                 seeds = {item['site'] for item in (approved_receipt(), approved_site_pin()) if item}
                 matches = [site for site in seeds if ip in resolve(site)]
-                if not matches:
-                    raise ProfileFormatError('label_has_no_matching_approved_site', index)
-                if len(matches) != 1:
+                if len(matches) > 1:
                     raise Refused('OFFICIAL_SITE_AMBIGUOUS')
-                name = matches[0]
+                if matches:
+                    name = matches[0]
+                elif selected_ip and literal == ip and ip != selected_ip and states == ['Idle']:
+                    # Inventory only. Never use an unbound IP as the TLS site.
+                    name = literal
+                else:
+                    raise ProfileFormatError('label_has_no_matching_approved_site', index)
         if name in records:
             raise ProfileFormatError('duplicate_site_identity', index)
         if len(states)!=1 or states[0] not in ('Idle','Connected','Connecting','Reconnecting'):
@@ -326,6 +355,7 @@ def selected_idle_site(output,rows):
 
 
 def choose_site(rows,output=''):
+    from sites import hostname
     path=DATA/'ssl-site.json'
     saved=None
     if path.exists():
@@ -367,10 +397,14 @@ def choose_site(rows,output=''):
         if active and active[0]!=row:raise Refused('OFFICIAL_OTHER_SITE_ACTIVE')
     elif len(rows)==1:row=next(iter(rows.values()))
     elif active and active[0][2]=='Connected':row=active[0]
+    elif not active and sum(hostname(name) for name in rows)==1:
+        row=selected_idle_site(output,rows)
+        if not row or not hostname(row[0]):raise Refused('OFFICIAL_SITE_AMBIGUOUS')
     elif not active and pin and primary:
         row=selected_idle_site(output,rows)
         if not row or row[0] not in (pin['site'],primary['site']):raise Refused('OFFICIAL_SITE_AMBIGUOUS')
     else:raise Refused('OFFICIAL_SITE_AMBIGUOUS')
+    if not hostname(row[0]):raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
     expected=os.environ.get('CVR_ATTEMPT_GATEWAY')
     if expected is not None and expected!=row[0]+'@'+row[1]:raise Refused('OFFICIAL_SELECTION_CHANGED')
     if primary and row[0]!=primary['site'] and not saved and row[2]!='Connected' and not (pin and row[0]==pin['site']):
@@ -473,7 +507,7 @@ def private_gateway_binding(host, ip, cn, sans, leaf_der):
     if saved is not None and 'gateway_object' not in saved:raise Refused('SAVED_SITE_OR_PIN_CHANGED')
     reference=private_reference(sans)
     output=official_output()
-    site_name,dial,state=choose_site(parse_sites(output))
+    site_name,dial,state=choose_site(parse_sites(output),output)
     if (site_name,dial)!=(host,ip):raise Refused('OFFICIAL_SELECTION_CHANGED')
     if state=='Connected':
         name=connected_object(output,host)
