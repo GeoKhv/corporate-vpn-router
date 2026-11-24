@@ -115,14 +115,10 @@ def official_info():
 
 def connected_object(output, host):
     """Only the Connected row in the one selected site's gateway list is eligible."""
-    chunks=re.split(r'(?im)^[ \t]*Conn[ \t]+',output.replace('\r\n','\n'))
-    blocks=[]
-    for chunk in chunks[1:]:
-        header,_,body=chunk.partition('\n')
-        if header.strip().lower()==host+':':
-            blocks.append(body)
-    if len(blocks)!=1: raise Refused('OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED')
-    lists=re.split(r'(?im)^[ \t]*gateway list:[ \t]*\n',blocks[0])
+    records = official_records(output)
+    if host not in records:
+        raise Refused('OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED')
+    lists=re.split(r'(?im)^[ \t]*gateway list:[ \t]*\n', records[host][2])
     if len(lists)!=2: raise Refused('OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED')
     names=[]
     for line in lists[1].splitlines():
@@ -136,37 +132,97 @@ def connected_object(output, host):
     if len(names)!=1:raise Refused('OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED')
     return names[0]
 
-def parse_sites(output):
-    # Group by Conn before reading fields: no borrowing another site's status/IP.
+def native_ipv4(value):
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError:
+        return None
+    if address.version == 4:
+        return str(address)
+    return str(address.ipv4_mapped) if address.ipv4_mapped else None
+
+
+def official_records(output):
     from sites import hostname
-    rows={}
-    chunks=re.split(r'(?im)^[ \t]*Conn[ \t]+',output.replace('\r\n','\n'))
-    if len(chunks)==1:raise Refused('OFFICIAL_SITE_MISSING')
-    if re.search(r'(?im)^[ \t]*(?:gw|status):',chunks[0]):raise Refused('OFFICIAL_STATE_UNKNOWN')
-    for chunk in chunks[1:]:
-        header,_,body=chunk.partition('\n')
-        site=header.strip().removesuffix(':').lower()
-        if not header.strip().endswith(':') or not hostname(site) or site in rows:
+    records = {}
+    addresses = {}
+    deadline = time.monotonic() + 8
+    def resolve(name):
+        if name not in addresses:
+            try:
+                addresses[name] = gateway_ipv4(name, deadline)
+            except socket.gaierror as error:
+                raise Refused('GATEWAY_DNS_UNRESOLVED') from error
+        return addresses[name]
+
+    blocks = re.split(r'(?im)^[ \t]*Conn[ \t]+', output.replace('\r\n','\n'))
+    if len(blocks) == 1:
+        raise Refused('OFFICIAL_SITE_MISSING')
+    if re.search(r'(?im)^[ \t]*(?:gw|status)[ \t]*:', blocks[0]):
+        raise Refused('OFFICIAL_STATE_UNKNOWN')
+    for block in blocks[1:]:
+        header, _, body = block.partition('\n')
+        label = header.strip().removesuffix(':').strip().lower()
+        if not header.strip().endswith(':') or not label or not label.isprintable() or len(label)>253:
             raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
-        def fields(key):return re.findall(r'(?im)^[ \t]*'+key+r':[ \t]*([^\n]*)$',body)
-        states=[v.strip() for v in fields('status')]
+        def fields(key):
+            return [v.strip() for v in re.findall(r'(?im)^[ \t]*'+key+r'[ \t]*:[ \t]*([^\n]*)$', body)]
+        states = fields('status')
+        name = label.removesuffix('.')
+        gateways = set(v.lower().removesuffix('.') for v in fields('gw'))
+        if (not gateways or gateways == {''}) and states == ['Idle'] and hostname(name):
+            # An idle native profile can omit its dial address. Only an already
+            # provisioned exact DNS site can supply the missing endpoint.
+            approved = (approved_receipt(), approved_site_pin())
+            if any(seed and seed['site'] == name for seed in approved):
+                gateways = {name}
+        if len(gateways) != 1:
+            raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+        gateway = gateways.pop()
+        ip = native_ipv4(gateway)
+        if not ip:
+            if not hostname(gateway):
+                raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+            candidates = resolve(gateway)
+            if len(candidates) != 1:
+                raise Refused('OFFICIAL_SITE_AMBIGUOUS')
+            ip = next(iter(candidates))
+        if not hostname(name):
+            # The signed client can label a site with a display name or its IP.
+            # Never treat that label as a hostname or use the first known site.
+            literal = native_ipv4(label)
+            if literal and literal != ip:
+                raise Refused('SITE_ADDRESS_MISMATCH')
+            if hostname(gateway):
+                name = gateway
+            else:
+                seeds = {item['site'] for item in (approved_receipt(), approved_site_pin()) if item}
+                matches = [site for site in seeds if ip in resolve(site)]
+                if not matches:
+                    raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+                if len(matches) != 1:
+                    raise Refused('OFFICIAL_SITE_AMBIGUOUS')
+                name = matches[0]
+        if name in records:
+            raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
         if len(states)!=1 or states[0] not in ('Idle','Connected','Connecting','Reconnecting'):
             raise Refused('OFFICIAL_STATE_UNKNOWN')
-        ips=fields('gw')
-        try:
-            if len(ips)!=1:raise ValueError()
-            ip=str(ipaddress.IPv4Address(ips[0].strip()))
-        except ValueError:raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED') from None
-        rows[site]=(site,ip,states[0])
-    return rows
+        records[name] = (ip, states[0], body)
+    return records
+
+
+def parse_sites(output):
+    return {name:(name, ip, state) for name,(ip,state,_) in official_records(output).items()}
+
 
 def selected_idle_site(output,rows):
-    # "active site: true" selects a profile only. Certificate pins below are
-    # still mandatory. Reject partial/malformed selections rather than guessing.
+    # parse_sites preserves native block order, including display-name records.
+    blocks = re.split(r'(?im)^[ \t]*Conn[ \t]+',output.replace('\r\n','\n'))[1:]
+    if len(blocks) != len(rows):
+        return None
     choices=[]
-    for block in re.split(r'(?im)^[ \t]*Conn[ \t]+',output.replace('\r\n','\n'))[1:]:
-        header,_,body=block.partition('\n')
-        name=header.strip().removesuffix(':').lower()
+    for name, block in zip(rows, blocks):
+        _,_,body=block.partition('\n')
         flags=re.findall(r'(?im)^[ \t]*active site:[ \t]*([^\n]*)$',body)
         if len(flags)!=1 or flags[0].strip() not in ('true','false'):return None
         if flags[0].strip()=='true':choices.append(name)

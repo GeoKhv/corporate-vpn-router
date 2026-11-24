@@ -158,6 +158,33 @@ func run() throws {
         require(aliases.add(to:&edited)==[host] && edited.sites.contains(unrelated),"existing alias owner and any TCP preserved")
         print("PASS starter alias migration with prior receipts, cancelled approval, retry, conflict and manual removal")
     }
+    // Fresh helper installation must finish even when no live site is readable.
+    for name in ["ssl-site.json", "bundled-tcp-rule-v1.applied", "bundled-https-v1.applied", StarterHTTPSAliases.receipt] {
+        let path=paths.data.appendingPathComponent(name)
+        if fm.fileExists(atPath:path.path) { try fm.removeItem(at:path) }
+    }
+    try fm.removeItem(at:state)
+    try JSONFile.write(old,to:menu.workURL)
+    try executable("Runtime/bin/python3.13", """
+    #!/bin/sh
+    export HOME='\(root.path)'
+    case " $* " in *" check-draft "*|*" save "*|*" start "*) exit 87;; esac
+    exec '\(payload.appendingPathComponent("Runtime/bin/python3.13").path)' "$@"
+    """+"\n")
+    menu.selective.helperAvailability = .missing
+    menu.selective.inspectHelper = { _ in fm.fileExists(atPath:state.path) ? .ready : .missing }
+    var firstApprovals = 0
+    menu.selective.authorizeHelper = { args in
+        firstApprovals += 1
+        let encoded=args[2].components(separatedBy:"'").dropLast().last!
+        let policy=try! JSONSerialization.jsonObject(with:Data(base64Encoded:encoded)!) as! [String:Any]
+        try! reply(policy["rules"]!)
+        return nil
+    }
+    menu.appRouting()
+    waitFor("first setup finishes offline") { fm.fileExists(atPath:httpsReceipt.path) && !menu.applyingBundledRule }
+    require(firstApprovals==1 && menu.engine==nil && menu.selective.process==nil, "one authorization, no network session")
+    print("PASS first-install button enrolls and saves fresh rules with no live Check Point command")
     print("PASS packaged rule, cancel/retry, verified save, same-click continuation, existing settings, no reapplication after deletion, unchanged v1 and v2 grants")
 }
 do { try run() } catch { fputs("FAIL: \(error)\n",stderr);exit(1) }

@@ -42,7 +42,7 @@ run('swiftc','-D','CVR_MENU_BETA','-D','CVR_DEMO_SINGLE','-D','CVR_SELECTIVE_TUN
 assert (ROOT/'Backend/connection_trace.py').read_bytes()==(res/'Engine/connection_trace.py').read_bytes()
 from report_terms import write_terms
 write_terms(ROOT,res/'ReportTerms.json')
-for name in ['trust.py','session.py','official_handoff.py','tls_policy.py','connection_resilience.py','browser_auth.py','sites.py','proxy_supervisor.py','support_report.py','http_router.py','gateway_disconnect.py','ipsec_session.py']:
+for name in ['trust.py','session.py','official_handoff.py','tls_policy.py','connection_resilience.py','browser_auth.py','sites.py','proxy_supervisor.py','support_report.py','checkpoint_diagnostic.py','http_router.py','gateway_disconnect.py','ipsec_session.py']:
  shutil.copy2(ROOT/'Backend'/name,res/'Engine'/name)
 # Never silently inherit a test transport in a later normal build.
 (res/'Engine/cvr-ipsec').unlink(missing_ok=True)
@@ -138,6 +138,7 @@ d.update(CFBundleShortVersionString=a.version,CFBundleVersion=str(a.build),LSMin
  SUVerifyUpdateBeforeExtraction=True,SURequireSignedFeed=True,SUSignedFeedFailureExpirationInterval=0,
  CVRRouteHelperSHA256=helper_sha,CVRRouteHelperBuild='0.3.20' if portable_helper else '0.3.10',CVRRouteHelperProtocol='0.3.0-alpha.3')
 info.write_bytes(plistlib.dumps(d,sort_keys=True))
+bundle.runtime_landmark(res/'Runtime')
 (res/'VERSION').write_text(a.version+'\n');(res/'INSTALLER_REVISION').write_text(a.version+'\n')
 # Remove only Finder metadata from build copies; never quarantine or security policy.
 subprocess.run(['xattr','-dr','com.apple.FinderInfo',str(app)],check=False)

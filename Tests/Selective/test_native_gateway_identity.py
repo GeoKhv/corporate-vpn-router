@@ -87,6 +87,7 @@ with tempfile.TemporaryDirectory() as tmp, ExitStack() as stack:
         refuses('OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED',first)
     assert not (root/'ssl-site.json').exists()
     official.return_value=native()
+    official.return_value=native().replace('Conn '+host+':', 'Conn Corporate VPN:').replace('gw: '+ip, 'gw: '+host)
     address,ctx=first()
     assert address==ip and len(approvals)==1
     receipt=json.loads((root/'ssl-site.json').read_text())

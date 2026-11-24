@@ -375,10 +375,27 @@ async def start(app_pid):
         if stage:(stage/'trial-input.json').unlink(missing_ok=True)
 
 
-def save(path):
-    cfg=validate_selective(json.loads(Path(path).read_text()))
-    from routing import verify_gateway,put
-    verify_gateway(cfg)
+def check_profile(path, first_enrollment=False):
+    cfg = validate_selective(json.loads(Path(path).read_text()))
+    if first_enrollment and not (DATA/'ssl-site.json').exists():
+        # Installing an idle helper grants policy only. start() checks the live
+        # selected site against this same policy before opening the helper.
+        import trust
+        for seed in (trust.approved_receipt(), trust.approved_site_pin()):
+            if seed:
+                validate_selective(cfg, seed['site'])
+    else:
+        from routing import verify_gateway
+        saved = DATA/'ssl-site.json'
+        if saved.exists():
+            validate_selective(cfg, json.loads(saved.read_text()).get('site'))
+        verify_gateway(cfg)
+    return cfg
+
+
+def save(path, first_enrollment=False):
+    cfg = check_profile(path, first_enrollment)
+    from routing import put
     # The menu only permits edits with both network session and SSL stopped.
     if (STATE/'last-session.txt').exists():
         session=Path((STATE/'last-session.txt').read_text())
@@ -405,10 +422,9 @@ if __name__=='__main__':
     os.umask(0o077)
     try:
         if sys.argv[1]=='save':save(sys.argv[2])
-        elif sys.argv[1]=='check-draft':
-            from routing import verify_gateway
-            candidate=validate_selective(json.loads(Path(sys.argv[2]).read_text()), policy()[1] if (DATA/'work-sites.json').exists() else None)
-            verify_gateway(candidate)
+        elif sys.argv[1]=='save-enrollment':save(sys.argv[2], first_enrollment=True)
+        elif sys.argv[1] in ('check-draft', 'check-enrollment'):
+            check_profile(sys.argv[2], first_enrollment=sys.argv[1]=='check-enrollment')
         elif sys.argv[1]=='validate':policy();print('Список поддерживается.')
         elif sys.argv[1]=='start':asyncio.run(start(int(sys.argv[2])))
         else:raise ValueError('Unknown operation')

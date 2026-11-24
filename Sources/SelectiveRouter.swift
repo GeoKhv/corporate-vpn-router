@@ -32,6 +32,7 @@ final class SelectiveRouter {
     var helperAvailability = RouteHelperAvailability.checking
     private var probeNumber = 0
     var inspectHelper: (URL) -> RouteHelperAvailability = SelectiveRouter.helperStatus
+    var confirmAbsent: () -> Bool = SelectiveRouter.confirmHelperAbsent
     var inspectCleanup: (URL) -> Bool = { resources in
         guard let status = SelectiveRouter.helperReply(resources: resources) else { return false }
         return status["active"] as? Bool == false && status["cleanupPending"] as? Bool == false
@@ -74,6 +75,21 @@ final class SelectiveRouter {
         case .unavailable, .checkFailed, .previousSession: return "Повторить проверку помощника"
         case .desktopAvailable: return "Включить ПУРМС…"
         case .ready: return "Включить рабочие маршруты"
+        }
+    }
+    static func confirmHelperAbsent() -> Bool {
+        let label = "com.geokhv.corporate-vpn-router.routes"
+        let paths = ["/Library/LaunchDaemons/" + label + ".plist",
+                     "/Library/Application Support/Corporate VPN Router Route Helper",
+                     "/private/var/db/" + label]
+        let job = command("/bin/launchctl", ["print", "system/" + label])
+        return absentInstallation(paths:paths, job:job, label:label)
+    }
+    static func absentInstallation(paths: [String], job: CommandResult, label: String) -> Bool {
+        guard job.code == 113, job.output.contains("Could not find service \"" + label + "\"") else { return false }
+        return paths.allSatisfy { path in
+            var info = stat()
+            return lstat(path, &info) != 0 && errno == ENOENT
         }
     }
     static func helperStatus(resources: URL) -> RouteHelperAvailability {

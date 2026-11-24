@@ -300,6 +300,9 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     @objc func installRouteHelper() { setupRouteHelper(edit: false) }
     @objc func editRouteHelper() { setupRouteHelper(edit: true) }
     private func setupRouteHelper(edit: Bool) {
+        #if CVR_UPDATES
+        guard updates?.preparing != true, !terminationPending else { return }
+        #endif
         guard engine == nil, !selective.busy else { return }; show()
         #if CVR_UPDATES
         if !edit && applyBundledRuleIfNeeded(connectAfterward:false) { return }
@@ -362,7 +365,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         }
     }
     #endif
-    @objc func removeRouteHelper() { guard engine == nil else { return }; show(); selective.manageHelper(resources: resources, remove: true) }
+    @objc func removeRouteHelper() {
+        #if CVR_UPDATES
+        guard updates?.preparing != true, !terminationPending else { return }
+        #endif
+        guard engine == nil else { return }
+        show(); selective.manageHelper(resources: resources, remove: true)
+    }
     @objc func checkpointDiagnostic() { NSWorkspace.shared.open(resources.appendingPathComponent("Check Check Point.command")) }
     @objc func certificates() {
         if certificateWizard == nil {

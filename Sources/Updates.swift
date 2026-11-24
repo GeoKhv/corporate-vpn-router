@@ -166,7 +166,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
                 alert.informativeText = (error as? InstallationError)?.localizedDescription ??
                     (error is RouterError ? "Router не подтвердил завершение рабочего сеанса и очистку маршрутов." : error.localizedDescription)
                 if let window = owner.window { alert.beginSheetModal(for: window, completionHandler: nil) }
-                self.record("preparation-refused",error:error); reply(.skip); self.refresh()
+                self.record("preparation-refused",error:error); reply(.dismiss); self.refresh()
             }
         }
     }
@@ -200,14 +200,18 @@ extension BetaMenu {
         }
     }
     func stopAndConfirmCleanup(completion: @escaping (Result<Void, Error>) -> Void) {
-        stop("Обновление: рабочий сеанс завершён. После запуска войдите снова.")
+        let idleBeforeStop = engine == nil && selective.process == nil && selective.cleanupConfirmed &&
+            !connectionPhase.pending && connectionPhase != .connected && !selective.checkingCleanup &&
+            selective.state != "installing" && selective.state != "stopping"
+        stop("Подготовка к выходу. Проверяем состояние рабочих маршрутов.")
         let deadline = Date().addingTimeInterval(45)
         func poll() {
             if self.engine == nil && self.selective.process == nil && self.selective.state != "installing" {
                 DispatchQueue.global().async {
-                    let clean = self.selective.inspectCleanup(self.resources)
+                    let clean = self.selective.inspectCleanup(self.resources) ||
+                        (idleBeforeStop && self.selective.confirmAbsent())
                     DispatchQueue.main.async {
-                        if clean { self.clearPrompt(); completion(.success(())) }
+                        if clean && self.engine == nil && self.selective.process == nil && self.selective.state != "installing" { self.clearPrompt(); completion(.success(())) }
                         else if Date() >= deadline { completion(.failure(RouterError.staleNetwork)) }
                         else { DispatchQueue.main.asyncAfter(deadline:.now()+0.5,execute:poll) }
                     }

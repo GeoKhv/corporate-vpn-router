@@ -196,7 +196,7 @@ extension WorkProfile {
 extension BetaMenu {
     static func routeCommand(_ op: String, _ args: [String] = [], resources res: URL = ProductPaths().app.appendingPathComponent("Contents/Resources")) -> CommandResult {
 #if CVR_SELECTIVE_TUN
-        if op == "save" || op == "validate" || op == "check-draft" {
+        if ["save", "validate", "check-draft", "check-enrollment", "save-enrollment"].contains(op) {
             return command(res.appendingPathComponent("Runtime/bin/python3.13").path,
                 ["-I", "-B", res.appendingPathComponent("Engine/Selective/controller.py").path, op] + args, timeout: 20)
         }
@@ -715,7 +715,7 @@ extension BetaMenu {
         routeStatus();refreshState()
     }
     #if CVR_SELECTIVE_TUN && CVR_UPDATES
-    func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool) throws {
+    func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool, firstEnrollment:Bool = false) throws {
         guard matchesStoredBase(old) else {throw ProxyFailure("Профиль изменился. Проверьте текущие правила.")}
         let p=sitesPanel
         let open=settingsWindow != nil && p.base==old
@@ -743,7 +743,7 @@ extension BetaMenu {
         if let edited, let rebased {
             try JSONFile.write(PendingWork(base:old,profile:edited,nextBase:new,nextDraft:rebased),to:draftURL)
         }
-        let result=Self.routeCommand("save",[file.path],resources:resources)
+        let result=Self.routeCommand(firstEnrollment ? "save-enrollment" : "save",[file.path],resources:resources)
         guard result.code==0 else {throw ProxyFailure(result.output)}
         if open {
             p.base=new;p.draft=rebased ?? new;p.table.reloadData();refreshState()
@@ -1028,10 +1028,11 @@ extension BetaMenu {
             }
             let pending = paths.data.appendingPathComponent("pending-" + UUID().uuidString)
             try JSONFile.write(candidate,to:pending)
-            let validation = Self.routeCommand("check-draft",[pending.path],resources:resources)
+            let firstEnrollment = selective.helperAvailability == .missing && !fm.fileExists(atPath:paths.data.appendingPathComponent("ssl-site.json").path)
+            let validation = Self.routeCommand(firstEnrollment ? "check-enrollment" : "check-draft",[pending.path],resources:resources)
             guard validation.code == 0 else {
                 try? fm.removeItem(at:pending)
-                throw ProxyFailure(validation.output)
+                throw ProxyFailure(gatewaySetupMessage(validation.output.trimmingCharacters(in:.whitespacesAndNewlines)) ?? validation.output)
             }
             applyingBundledRule = true
             if connectAfterward { connectionPhase = .installingHelper; presentConnection() }
@@ -1049,7 +1050,7 @@ extension BetaMenu {
                         throw ProxyFailure("Помощник ещё не подтвердил рабочее правило. Повторите подключение.")
                     }
                     if candidate != profile {
-                        try self.saveAppliedProfile(pending,from:profile,to:candidate,bundled:true)
+                        try self.saveAppliedProfile(pending,from:profile,to:candidate,bundled:true,firstEnrollment:firstEnrollment)
                     }
                     try markApplied()
                     if resume {

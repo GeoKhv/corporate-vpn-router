@@ -16,6 +16,7 @@ import tempfile
 
 CP=Path('/Library/Application Support/Checkpoint/Endpoint Connect')
 LABEL='com.checkpoint.epc.service'
+sys.path.insert(0, str(Path(__file__).resolve().parent))  # The launcher uses python -I.
 
 
 def run(argv, timeout=12):
@@ -101,14 +102,13 @@ def main():
     os.umask(0o077)
     folder=Path(tempfile.mkdtemp(prefix='CVR-CheckPoint-',dir=str(Path.home()/'Desktop')))
     print('Проверка только читает состояние. Пароль администратора и подключение VPN не нужны.')
-    print('Завершите Router через его меню. В Check Point оставьте VPN отключённым.')
+    print('Первый снимок можно сделать при работающем VPN. Сохраните текущее состояние подключения.')
     if '--snapshot' not in sys.argv:input('Нажмите Enter для исходного снимка: ')
     before=snapshot();(folder/'01-before.json').write_text(json.dumps(before,ensure_ascii=False,indent=2))
     print('Исходное состояние:',before['classification'])
-    if '--snapshot' in sys.argv or not before['classification'].startswith('service_responding_vpn_'):
-        print('Состояние службы не подтверждено. Маршруты Router не включайте для этой проверки.')
-        print('Если это первый сбой после долгого перерыва: сохраните отчёт, перезагрузите Mac штатно и повторите ту же проверку до запуска Router.')
-    else:
+    if before['classification']=='probe_unavailable_or_timeout':
+        print('Не удалось выполнить проверку. Подробности сохранены в полях signature и official_info файла 01-before.json.')
+    elif '--snapshot' not in sys.argv and re.fullmatch(r'service_responding_vpn_idle(?:,idle)*', before['classification']):
         print('Служба отвечает. Теперь запустите Router и включите только рабочие маршруты, без авторизации VPN.')
         answer=input('Enter — снимок с маршрутами; q — закончить: ')
         if answer.strip().lower()!='q':

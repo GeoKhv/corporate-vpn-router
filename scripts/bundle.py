@@ -10,6 +10,11 @@ def check(path,expected):
     if hashlib.sha256(path.read_bytes()).hexdigest()!=expected: raise RuntimeError('Hash mismatch: '+path.name)
 def run(*cmd,cwd=None,env=None):
     subprocess.run(cmd,cwd=cwd,env=env,check=True,stdout=subprocess.DEVNULL)
+def runtime_landmark(runtime):
+    # CPython locates exec_prefix with this directory. Preserve it in ZIPs.
+    directory = runtime/'lib/python3.13/lib-dynload'
+    directory.mkdir(exist_ok=True)
+    (directory/'README.txt').write_text('Runtime library search directory.\n')
 def native(dest):
     files=[('ocproxy.tar.gz','a617cb9f47e36cb2d68b81f7edf5148646ee6e3374f985763afc5945101fe88c'),('libevent-2.1.12-stable.tar.gz','92e6de1be9ec176428fd2367677e61ceffc2ee1cb119035037a27d346b0403bb')]
     key=hashlib.sha256((TP/'ocproxy-policy.patch').read_bytes()+Path(__file__).read_bytes()).hexdigest()
@@ -57,7 +62,7 @@ def main():
             rel=p.relative_to(std)
             if any(k in rel.parts for k in ('test','tests','ensurepip','idlelib','site-packages','tkinter','turtledemo','__pycache__','_pyrepl')):continue
             target=dst/'lib/python3.13'/rel;target.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,target)
-        (dst/'lib/python3.13/lib-dynload').mkdir(exist_ok=True)
+        runtime_landmark(dst)
     for p in [engine/'ocproxy',dst/'bin/python3.13']:
         run('/usr/bin/codesign','--force','-s','-','--timestamp=none',str(p))
 if __name__=='__main__': main()

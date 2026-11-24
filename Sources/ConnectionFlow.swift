@@ -293,7 +293,7 @@ extension BetaMenu {
 
     func failConnection(_ message: String, code: String) {
         // Latch the first failure before cleanup causes synchronous callbacks.
-        if connectionFailure == nil { connectionFailure = message; connectionFailureCode = code }
+        if connectionFailure == nil { connectionFailure = gatewaySetupMessage(code) ?? message; connectionFailureCode = code }
         let keepRoutes = selective.holdingRoutes || (connectionPhase == .connected && selective.holdRoutes())
         connectionPhase = .failed; journal("ui", "failure", code: code)
         shutdownConnection(keepRoutes: keepRoutes); presentConnection()
