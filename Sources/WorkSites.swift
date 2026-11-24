@@ -1028,11 +1028,18 @@ extension BetaMenu {
             }
             let pending = paths.data.appendingPathComponent("pending-" + UUID().uuidString)
             try JSONFile.write(candidate,to:pending)
-            let firstEnrollment = selective.helperAvailability == .missing && !fm.fileExists(atPath:paths.data.appendingPathComponent("ssl-site.json").path)
+            // An earlier installation may already have enrolled the idle helper before the first VPN login.
+            let firstEnrollment = !fm.fileExists(atPath:paths.data.appendingPathComponent("ssl-site.json").path)
             let validation = Self.routeCommand(firstEnrollment ? "check-enrollment" : "check-draft",[pending.path],resources:resources)
             guard validation.code == 0 else {
                 try? fm.removeItem(at:pending)
-                throw ProxyFailure(gatewaySetupMessage(validation.output.trimmingCharacters(in:.whitespacesAndNewlines)) ?? validation.output)
+                let reason = validation.output.trimmingCharacters(in:.whitespacesAndNewlines)
+                if connectAfterward, let message = gatewaySetupMessage(reason) {
+                    journal("routes", "bundled_rule_validation", code: reason)
+                    failConnection(message, code: reason)
+                    return true
+                }
+                throw ProxyFailure(gatewaySetupMessage(reason) ?? validation.output)
             }
             applyingBundledRule = true
             if connectAfterward { connectionPhase = .installingHelper; presentConnection() }

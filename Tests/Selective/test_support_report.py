@@ -1,5 +1,6 @@
 """Verify the shareable artifact, including redaction, missing sources and partial history."""
 import json
+import os
 from pathlib import Path
 import plistlib
 import stat
@@ -77,4 +78,18 @@ with tempfile.TemporaryDirectory(dir='/private/tmp') as folder:
         assert secret not in text and str(home) not in text
         assert '"server_code": -123' in text and '"server_words": ["office", "mode", "allocation", "failed"]' in text
         assert stat.S_IMODE(path.stat().st_mode)==0o600
+        failing = f'Conn {secret}:\n gw: {secret}:{1234}\n status: Connected\n active site: true\n (Connected) {secret}\n'
+        with patch.object(trust,'DATA',data), patch.object(trust,'official_output',return_value=failing), patch.dict(os.environ,CVR_CONNECTION_ATTEMPT='17'):
+            try: trust.official_info()
+            except trust.ProfileFormatError as error: assert error.reason=='unsupported_gateway_address'
+            else: raise AssertionError('invalid profile accepted')
+            with history.open('a') as stream:
+                stream.write(json.dumps(dict(time=200,pid=os.getppid(),attempt=17,component='ui',event='failure',
+                    code='OFFICIAL_SITE_FORMAT_UNSUPPORTED',failed_phase='preparingRoutes'))+'\n')
+            report.save(path)
+            assert '"reason": "unsupported_gateway_address"' in path.read_text().split('## Попытки')[0]
+        report.save(path)  # Current probe now fails independently, history still describes the actual refusal.
+        result=path.read_text()
+        assert '"profile_index": 1' in result and '"state": "Connected"' in result and '"active_site": "true"' in result
+        assert secret not in result and secret not in (data/'last-checkpoint-refusal.json').read_text()
 print('PASS: TXT with prior/current attempts, partial sources, typed redaction, summary and private file permissions')

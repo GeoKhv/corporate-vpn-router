@@ -117,6 +117,7 @@ class Report:
         self.terms = set(terms)
         self.lines = []
         self.last_failure = None
+        self.official_failure = None
 
     def section(self, title, collect):
         self.lines.extend(['', '## '+title])
@@ -140,6 +141,8 @@ class Report:
 
     def event(self, row):
         out = {k:self.term(row[k]) for k in WORDS if row.get(k) is not None}
+        if row.get('auth_method') in ('browser','code_password'):
+            out['auth_method']=row['auth_method']
         out.update({k:row[k] for k in NUMBERS if number(row.get(k))})
         words = row.get('server_words')
         if isinstance(words, list):
@@ -147,6 +150,11 @@ class Report:
         for k in ('appVersion','updateVersion','python'):
             if version(row.get(k)):
                 out[k]=row[k]
+        if 'errorDomain' in row:
+            domain=row['errorDomain']
+            known=('NSCocoaErrorDomain','NSPOSIXErrorDomain','NSURLErrorDomain','SUSparkleErrorDomain',
+                   'SUErrorDomain','NSOSStatusErrorDomain')
+            out['errorDomain'] = domain if domain in known else 'RouterError' if isinstance(domain,str) and domain.rsplit('.',1)[-1]=='RouterError' else 'unknown'
         stamp=utc(row.get('time'))
         if stamp:
             out['UTC']=stamp
@@ -173,8 +181,15 @@ class Report:
                 result=self.event(event)
                 if result:
                     self.row(result)
+                    if connection and result.get('event')=='official_profile_refusal' and isinstance(event.get('official_profile'),dict):
+                        detail=event['official_profile']
+                        self.profile_details(detail)
+                        self.official_failure=(result.get('pid'),result.get('attempt'),result.get('code'),self.term(detail.get('reason')))
                     if connection and result.get('event') in ('failed','failure','error') and result.get('code'):
-                        if (not self.last_failure or result.get('failed_phase') or
+                        if self.official_failure and self.official_failure[:3]==tuple(result.get(k) for k in ('pid','attempt','code')) and self.official_failure[3]!='unknown':
+                            result['reason']=self.official_failure[3]
+                        if (not self.last_failure or (result.get('failed_phase') and
+                            (not self.last_failure.get('failed_phase') or result.get('component')=='ssl')) or
                             (result.get('pid'),result.get('attempt'),result.get('code')) !=
                             tuple(self.last_failure.get(k) for k in ('pid','attempt','code'))):
                             self.last_failure=result
@@ -242,7 +257,7 @@ class Report:
         self.lines.append('Запрос status: '+status)
         reply=json.loads(text)
         if not isinstance(reply,dict):raise ValueError()
-        item={k:reply[k] for k in ('ok','active','cleanupPending') if isinstance(reply.get(k),bool)}
+        item={k:reply[k] for k in ('ok','active','cleanupPending','allowCheckPointStart') if isinstance(reply.get(k),bool)}
         for k in ('version','build'):
             item[k]=version(reply.get(k))
         if reply.get('error'):
@@ -269,13 +284,42 @@ class Report:
                          'childPID','childRunning','waitStatus','waitErrno','processState','processInfoErrno')
                          if number(failure.get(k))}})
 
+    def profile_details(self, data):
+        counts=('profile_count','profile_index','parent_pid','attempt')
+        row={k:data[k] for k in counts if type(data.get(k)) is int and 0<=data[k]<=2**31-1}
+        for key in ('reason','code','operation'):
+            if key in data: row[key]=self.term(data[key])
+        if 'time' in data: row['UTC']=utc(data['time'])
+        self.row(row)
+        profiles=data.get('profiles')
+        if not isinstance(profiles,list): return
+        for index,profile in enumerate(profiles[:32],1):
+            if not isinstance(profile,dict): continue
+            safe={'profile':index}
+            for key in ('label_kind','gateway_kind','state','active_site'):
+                safe[key]=self.term(profile.get(key))
+            if type(profile.get('header_delimiter')) is bool:
+                safe['header_delimiter']=profile['header_delimiter']
+            for key in ('label_id','gateway_id','status_fields','gateway_fields','distinct_gateways','connected_objects'):
+                if type(profile.get(key)) is int and 0<=profile[key]<=2**31-1:
+                    safe[key]=profile[key]
+            self.row(safe)
+
     def checkpoint(self):
         import trust
         try:
             raw=trust.official_output()
-            rows=trust.parse_sites(raw)
         except trust.Refused as exc:
             self.row({'official_status':self.term(str(exc))})
+            return
+        try:
+            rows=trust.parse_sites(raw)
+        except trust.Refused as exc:
+            details=trust.profile_shape(raw)
+            if isinstance(exc,trust.ProfileFormatError):
+                details.update(reason=exc.reason,profile_index=exc.index)
+            self.row({'official_status':self.term(str(exc))})
+            self.profile_details(details)
             return
         try:
             saved=document(DATA/'ssl-site.json')
@@ -293,6 +337,22 @@ class Report:
         for i,(host,ip,state) in enumerate(rows.values(),1):
             self.row({'profile':i,'state':state,'selected':host==selected,'primary':host==primary.get('site'),
                       'saved':host==saved.get('site'),'gateway_route':route_interface(['-inet',ip])})
+
+    def installation(self):
+        self.row({'saved_site_binding':(DATA/'ssl-site.json').is_file(),
+                  'preferred_site':(DATA/'preferred-site.json').is_file(),
+                  'work_profile':(DATA/'work-sites.json').is_file(),
+                  'tcp_rule_applied':(DATA/'bundled-tcp-rule-v1.applied').is_file(),
+                  'https_rules_applied':(DATA/'bundled-https-v1.applied').is_file(),
+                  'starter_rules_applied':(DATA/'starter-https-aliases-v1.applied').is_file()})
+        for label, name in [('endpoint_vpn','Endpoint Security VPN'),('endpoint_security','Endpoint Security')]:
+            path=Path('/Applications')/(name+'.app')/'Contents/Info.plist'
+            try:
+                meta=plistlib.loads(path.read_bytes())
+            except (OSError,ValueError,plistlib.InvalidFileException):
+                continue
+            self.row({'client':label,'version':version(meta.get('CFBundleShortVersionString')),
+                      'build':version(meta.get('CFBundleVersion'))})
 
     def network(self):
         for name,args in [('default_ipv4',['-inet','default']),('default_ipv6',['-inet6','default']),
@@ -402,6 +462,7 @@ def render():
         'В журнале попыток события одного запуска связаны полями pid и attempt. Начните с последнего failure или failed и предшествующего этапа.',
         'Неизвестные текстовые значения обозначены unknown. Интерфейс utun сам по себе не указывает владельца VPN.']
     report.row({'UTC':utc(time.time()),'version':version(info.get('CFBundleShortVersionString')),
+                'edition':info.get('CVRDeploymentEdition') if info.get('CVRDeploymentEdition') in ('RED','WHITE') else 'unknown',
                 'build':version(info.get('CFBundleVersion')),'macOS':version(platform.mac_ver()[0]),
                 'arch':platform.machine() if platform.machine() in ('arm64','x86_64') else 'unknown'})
     summary_position=len(report.lines)
@@ -411,7 +472,9 @@ def render():
     summary=(json.dumps(report.last_failure,ensure_ascii=False) if report.last_failure else
              'В прочитанной части журнала попыток нет ошибки с кодом.')
     report.lines[summary_position:summary_position]=['','Последняя записанная ошибка подключения:',summary]
-    for title,method in [('Последнее состояние Router и проверки',report.status),
+    for title,method in [('Установка и применение правил',report.installation),
+            ('Последний сохранённый отказ Check Point в момент проверки',lambda:report.profile_details(document(DATA/'last-checkpoint-refusal.json'))),
+            ('Последнее состояние Router и проверки',report.status),
             ('Штатный Check Point и выбор сайта',report.checkpoint),('Помощник маршрутов',report.helper),
             ('Маршруты, DNS, прокси и другие VPN сейчас',report.network),('DNS и SOCKS последнего сеанса',report.services),
             ('Трассировки соединений (до 6 последних)',report.traces),('История запусков',report.startup),

@@ -181,7 +181,7 @@ final class SelectiveRouter {
             }
         }
     }
-    func start(resources: URL) {
+    func start(resources: URL, attempt: Int) {
         guard !busy else { return }
         guard helperAvailability.canConnect else { message = "Сначала используйте кнопку «\(setupTitle)» в этом окне."; changed?(); return }
         failureCode = nil; attemptGateway = nil
@@ -192,6 +192,7 @@ final class SelectiveRouter {
         p.executableURL = resources.appendingPathComponent("Runtime/bin/python3.13")
         p.arguments = ["-I", "-B", "-u", resources.appendingPathComponent("Engine/Selective/controller.py").path, "start", String(getpid())]
         p.environment = ["HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"]
+        p.environment?["CVR_CONNECTION_ATTEMPT"] = String(attempt)
         p.standardInput = tx; p.standardOutput = rx; p.standardError = FileHandle.nullDevice
         process = p; input = tx.fileHandleForWriting; state = "starting"; cleanupConfirmed = false; message = "Подготовка рабочих маршрутов…"; changed?()
         do { try p.run() } catch { process = nil; input = nil; cleanupConfirmed = true; state = "error"; message = "Не удалось запустить встроенный адаптер: \(error.localizedDescription)"; changed?(); return }

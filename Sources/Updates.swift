@@ -186,17 +186,33 @@ extension BetaMenu {
         let source = paths.app
         let backup = paths.data.appendingPathComponent("UpdateBackups/" + productVersion + "-" + UUID().uuidString)
         DispatchQueue.global(qos:.userInitiated).async {
+            var failureEvent = "backup-directory-failed"
             do {
                 try AppInstallation.rejectLink(backup)
                 try FileManager.default.createDirectory(at:backup,withIntermediateDirectories:true,attributes:[.posixPermissions:0o700])
+                failureEvent = "backup-source-verification-failed"
                 try AppInstallation.verify(source)
                 let copy = backup.appendingPathComponent(source.lastPathComponent)
+                failureEvent = "backup-copy-failed"
                 _ = try AppInstallation.run("/usr/bin/ditto",["--rsrc","--extattr","--acl",source.path,copy.path],step:"Резервная копия обновления")
+                failureEvent = "backup-verification-failed"
                 try AppInstallation.verify(copy)
                 let info:[String:String] = ["originalPath":source.path,"version":productVersion]
+                failureEvent = "backup-receipt-failed"
                 try JSONSerialization.data(withJSONObject:info,options:.sortedKeys).write(to:backup.appendingPathComponent("restore.json"),options:.atomic)
-                DispatchQueue.main.async { self.stopAndConfirmCleanup(completion:completion) }
-            } catch { DispatchQueue.main.async { completion(.failure(error)) } }
+                DispatchQueue.main.async {
+                    self.updates?.record("backup-verified")
+                    self.stopAndConfirmCleanup { result in
+                        if case .failure(let error) = result {
+                            self.updates?.record((error as? RouterError) == .timeout ? "process-stop-timeout" : "route-cleanup-unconfirmed",error:error)
+                        }
+                        completion(result)
+                    }
+                }
+            } catch {
+                let event = failureEvent
+                DispatchQueue.main.async { self.updates?.record(event,error:error); completion(.failure(error)) }
+            }
         }
     }
     func stopAndConfirmCleanup(completion: @escaping (Result<Void, Error>) -> Void) {

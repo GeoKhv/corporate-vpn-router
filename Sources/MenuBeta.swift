@@ -769,6 +769,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             failConnection("Не удалось подтвердить выбранный сайт Check Point.", code: "OFFICIAL_SELECTION_CHANGED"); return
         }
         p.environment?["CVR_ATTEMPT_GATEWAY"] = target
+        p.environment?["CVR_CONNECTION_ATTEMPT"] = String(connectionAttempt)
         p.environment?["CVR_RDP_HOST"] = selective.attemptRDPHost
 #endif
         p.standardInput=tx;p.standardOutput=rx;p.standardError=FileHandle.nullDevice

@@ -32,7 +32,9 @@ with tempfile.TemporaryDirectory() as temp, patch.object(trust, 'approved_receip
         patch.object(trust, 'gateway_ipv4', side_effect=lambda name, deadline: addresses[name]), \
         patch.object(trust,'DATA',Path(temp)), patch.object(controller,'DATA',Path(temp)):
     for label, gw in [('Work VPN', ip), (ip,ip), ('Work VPN', primary), (primary+'.',ip),
-                      (primary,'::ffff:'+ip), (primary,primary)]:
+                      (primary,'::ffff:'+ip), (primary,primary), (primary,ip+':443'),
+                      ('Work VPN',primary+':443'), (primary,'[::ffff:'+ip+']:443'),
+                      ('Work VPN',primary+' ('+ip+')')]:
         raw = native(label, gw)
         with patch.object(trust, 'official_output', return_value=raw):
             assert trust.official_info() == (primary,ip,'Connected')
@@ -47,6 +49,9 @@ with tempfile.TemporaryDirectory() as temp, patch.object(trust, 'approved_receip
         assert trust.connected_object(raw, primary) == 'Object'
     assert list(trust.parse_sites(native(primary,None,'Idle')).values()) == [(primary,ip,'Idle')]
     refused(native(primary,None),'OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+    assert trust.parse_sites(native(primary,ip).replace(primary+':',primary))[primary][1]==ip
+    refused(native(primary,ip+':444'),'OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+    refused(native(primary,primary+' ('+ip2+')'),'SITE_ADDRESS_MISMATCH')
     refused(native('foreign.example.invalid',None,'Idle'),'OFFICIAL_SITE_FORMAT_UNSUPPORTED')
     refused(native('Work VPN','192.0.2.99'),'OFFICIAL_SITE_FORMAT_UNSUPPORTED')
     refused(native(ip2,ip),'SITE_ADDRESS_MISMATCH')

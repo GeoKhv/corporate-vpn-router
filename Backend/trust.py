@@ -3,6 +3,7 @@ Candidate certificates are public discovery data. No CCC or credentials are
 sent until a separate authenticated connection succeeds."""
 import hashlib, ipaddress, json, os, re, socket, ssl, stat, subprocess, tempfile
 import threading
+import sys
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeout
 from pathlib import Path
@@ -14,6 +15,47 @@ APPROVED_GATEWAY = DATA/'Provisioning/ApprovedGateway.json'
 if not APPROVED_GATEWAY.exists():
     APPROVED_GATEWAY = Path(__file__).resolve().parent.parent/'ApprovedGateway.json'
 class Refused(RuntimeError): pass
+
+class ProfileFormatError(Refused):
+    def __init__(self, reason, index):
+        super().__init__('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+        self.reason = reason
+        self.index = index
+
+
+def profile_shape(output):
+    from sites import hostname
+    def kind(value):
+        if not value: return 'empty'
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            if hostname(value.lower().removesuffix('.')): return 'dns'
+            if re.fullmatch(r'(?:\[[^\]]+\]|[^:\s]+):[0-9]+',value):
+                return 'endpoint_https' if value.endswith(':443') else 'endpoint_other_port'
+            if re.fullmatch(r'[^()]+\s+\([^()]+\)',value): return 'name_and_address'
+            return 'composite' if any(c in value for c in ' :()[]') else 'label'
+        return 'ipv4' if address.version == 4 else 'ipv4_mapped' if address.ipv4_mapped else 'ipv6'
+    profiles = []
+    blocks = re.split(r'(?im)^[ \t]*Conn[ \t]+', output.replace('\r\n','\n'))[1:]
+    labels = {}
+    endpoints = {}
+    for block in blocks[:32]:
+        header, _, body = block.partition('\n')
+        def fields(key):
+            return [v.strip() for v in re.findall(r'(?im)^[ \t]*'+key+r'[ \t]*:[ \t]*([^\n]*)$',body)]
+        gateways, states, active = fields('gw'), fields('status'), fields('active site')
+        label=header.strip().removesuffix(':').strip().lower()
+        endpoint=gateways[0].lower() if gateways and gateways[0] else ''
+        profiles.append(dict(label_kind=kind(label), label_id=labels.setdefault(label,len(labels)+1),
+            gateway_id=endpoints.setdefault(endpoint,len(endpoints)+1) if endpoint else 0,
+            header_delimiter=header.strip().endswith(':'), status_fields=len(states),
+            gateway_kind=kind(gateways[0]) if gateways else 'absent', gateway_fields=len(gateways),
+            distinct_gateways=len(set(gateways)), state=states[0] if len(states)==1 and states[0] in
+            ('Idle','Connected','Connecting','Reconnecting') else 'unknown',
+            active_site=active[0] if active in (['true'],['false']) else 'unknown',
+            connected_objects=len(re.findall(r'(?im)^[ \t]*\(Connected\)[ \t]+',body))))
+    return dict(profile_count=len(blocks), profiles=profiles)
 
 
 def binding_matches(saved, verified):
@@ -109,8 +151,43 @@ def official_output():
 
 
 def official_info():
-    output=official_output()
-    return choose_site(parse_sites(output),output)
+    output=''
+    try:
+        output=official_output()
+        return choose_site(parse_sites(output),output)
+    except Refused as error:
+        # Capture the failing read. The official client may change before export.
+        try:
+            command = sys.argv[1] if len(sys.argv)>1 else ''
+            snapshot = dict(time=time.time(), parent_pid=os.getppid(), code=str(error),
+                            operation=command if command in ('start','save','check-draft','validate') else 'site_check',
+                            **profile_shape(output))
+            if isinstance(error, ProfileFormatError):
+                snapshot.update(reason=error.reason, profile_index=error.index)
+            attempt=os.environ.get('CVR_CONNECTION_ATTEMPT','')
+            if re.fullmatch(r'[1-9][0-9]{0,8}',attempt): snapshot['attempt']=int(attempt)
+            with tempfile.NamedTemporaryFile('w',dir=DATA,delete=False) as stream:
+                path=Path(stream.name)
+                try:
+                    json.dump(snapshot,stream); stream.flush()
+                    os.replace(path,DATA/'last-checkpoint-refusal.json')
+                finally:
+                    path.unlink(missing_ok=True)
+            if 'attempt' in snapshot:
+                # The UI creates and rotates this journal. Bind the original read
+                # to its attempt even if the client recovers before export.
+                fd=os.open(DATA/'Selective/connection-events.jsonl',os.O_WRONLY|os.O_APPEND|os.O_NOFOLLOW|os.O_NONBLOCK)
+                try:
+                    meta=os.fstat(fd)
+                    if stat.S_ISREG(meta.st_mode) and meta.st_uid==os.getuid() and meta.st_size<524288:
+                        event=dict(time=snapshot['time'],pid=snapshot['parent_pid'],attempt=snapshot['attempt'],
+                                   component='routes' if command=='start' else 'ssl',event='official_profile_refusal',
+                                   code=str(error),official_profile=snapshot)
+                        os.write(fd,(json.dumps(event)+'\n').encode())
+                finally: os.close(fd)
+        except OSError:
+            pass
+        raise
 
 
 def connected_object(output, host):
@@ -160,11 +237,12 @@ def official_records(output):
         raise Refused('OFFICIAL_SITE_MISSING')
     if re.search(r'(?im)^[ \t]*(?:gw|status)[ \t]*:', blocks[0]):
         raise Refused('OFFICIAL_STATE_UNKNOWN')
-    for block in blocks[1:]:
+    for index, block in enumerate(blocks[1:],1):
         header, _, body = block.partition('\n')
         label = header.strip().removesuffix(':').strip().lower()
-        if not header.strip().endswith(':') or not label or not label.isprintable() or len(label)>253:
-            raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+        if (not label or not label.isprintable() or len(label)>253 or
+                not header.strip().endswith(':') and not (hostname(label.removesuffix('.')) or native_ipv4(label))):
+            raise ProfileFormatError('invalid_site_header', index)
         def fields(key):
             return [v.strip() for v in re.findall(r'(?im)^[ \t]*'+key+r'[ \t]*:[ \t]*([^\n]*)$', body)]
         states = fields('status')
@@ -176,13 +254,31 @@ def official_records(output):
             approved = (approved_receipt(), approved_site_pin())
             if any(seed and seed['site'] == name for seed in approved):
                 gateways = {name}
+        if not gateways or gateways == {''}:
+            raise ProfileFormatError('missing_gateway', index)
         if len(gateways) != 1:
-            raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+            raise ProfileFormatError('conflicting_gateway_fields', index)
         gateway = gateways.pop()
+        # Some clients spell out the HTTPS port. Keep IPv6 literals intact.
+        explicit = re.fullmatch(r'(?:\[([^\]]+)\]|([^:\s]+)):443', gateway)
+        if explicit:
+            endpoint = explicit[1] or explicit[2]
+            if explicit[1] and not native_ipv4(endpoint):
+                raise ProfileFormatError('unsupported_gateway_address', index)
+            gateway = endpoint
+        named = re.fullmatch(r'([^\s()]+)[ \t]+\(([^()\s]+)\)',gateway)
+        if named and hostname(named[1]) and native_ipv4(named[2]):
+            if native_ipv4(named[2]) not in resolve(named[1]):
+                raise Refused('SITE_ADDRESS_MISMATCH')
+            if not hostname(name):
+                if native_ipv4(label) and native_ipv4(label) != native_ipv4(named[2]):
+                    raise Refused('SITE_ADDRESS_MISMATCH')
+                name = named[1]
+            gateway = native_ipv4(named[2])
         ip = native_ipv4(gateway)
         if not ip:
             if not hostname(gateway):
-                raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+                raise ProfileFormatError('unsupported_gateway_address', index)
             candidates = resolve(gateway)
             if len(candidates) != 1:
                 raise Refused('OFFICIAL_SITE_AMBIGUOUS')
@@ -199,12 +295,12 @@ def official_records(output):
                 seeds = {item['site'] for item in (approved_receipt(), approved_site_pin()) if item}
                 matches = [site for site in seeds if ip in resolve(site)]
                 if not matches:
-                    raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+                    raise ProfileFormatError('label_has_no_matching_approved_site', index)
                 if len(matches) != 1:
                     raise Refused('OFFICIAL_SITE_AMBIGUOUS')
                 name = matches[0]
         if name in records:
-            raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+            raise ProfileFormatError('duplicate_site_identity', index)
         if len(states)!=1 or states[0] not in ('Idle','Connected','Connecting','Reconnecting'):
             raise Refused('OFFICIAL_STATE_UNKNOWN')
         records[name] = (ip, states[0], body)

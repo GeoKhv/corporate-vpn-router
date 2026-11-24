@@ -184,6 +184,17 @@ func run() throws {
     menu.appRouting()
     waitFor("first setup finishes offline") { fm.fileExists(atPath:httpsReceipt.path) && !menu.applyingBundledRule }
     require(firstApprovals==1 && menu.engine==nil && menu.selective.process==nil, "one authorization, no network session")
+    // A colleague who installed the old helper first still has no site binding.
+    for name in ["bundled-tcp-rule-v1.applied","bundled-https-v1.applied",StarterHTTPSAliases.receipt] {
+        let path=paths.data.appendingPathComponent(name)
+        if fm.fileExists(atPath:path.path) {try fm.removeItem(at:path)}
+    }
+    try JSONFile.write(old,to:menu.workURL)
+    try reply(oldRules)
+    menu.selective.helperAvailability = .ready
+    require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"already installed helper enrolls without a site binding")
+    waitFor("ready helper completes offline migration"){fm.fileExists(atPath:httpsReceipt.path) && !menu.applyingBundledRule}
+    require(firstApprovals==2 && menu.engine==nil && menu.selective.process==nil,"no VPN session during enrollment")
     print("PASS first-install button enrolls and saves fresh rules with no live Check Point command")
     print("PASS packaged rule, cancel/retry, verified save, same-click continuation, existing settings, no reapplication after deletion, unchanged v1 and v2 grants")
 }

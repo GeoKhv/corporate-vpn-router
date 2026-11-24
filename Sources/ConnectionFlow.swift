@@ -26,6 +26,7 @@ extension BetaMenu {
                                       "component": component, "event": event, "phase": connectionPhase.rawValue,
                                       "pid": getpid(), "appVersion": productVersion,
                                       "helper": selective.helperAvailability.rawValue]
+            if event == "connect" { row["auth_method"] = browserMode ? "browser" : "code_password" }
             if let code, code.range(of: "^[A-Za-z_][A-Za-z_0-9]{0,79}$", options: .regularExpression) != nil { row["code"] = code }
             if let errorNumber { row["errno"] = errorNumber }
             if let transport {
@@ -35,7 +36,7 @@ extension BetaMenu {
                     }
                 }
             }
-            if let failedPhase, failedPhase.range(of: "^[a-z_]{1,64}$", options: .regularExpression) != nil { row["failed_phase"] = failedPhase }
+            if let failedPhase, failedPhase.range(of: "^[A-Za-z_]{1,64}$", options: .regularExpression) != nil { row["failed_phase"] = failedPhase }
             let data = try JSONSerialization.data(withJSONObject: row, options: [.sortedKeys]) + Data([10])
             let fd = open(url.path, O_WRONLY | O_CREAT | O_APPEND | O_NOFOLLOW | O_CLOEXEC, 0o600)
             guard fd >= 0 else { return }; defer { close(fd) }
@@ -56,7 +57,7 @@ extension BetaMenu {
             return
         }
         connectionPhase = .preparingRoutes; journal("ui", "prepare_routes")
-        selective.start(resources: resources)
+        selective.start(resources: resources, attempt: connectionAttempt)
         presentConnection()
     }
 
@@ -293,9 +294,12 @@ extension BetaMenu {
 
     func failConnection(_ message: String, code: String) {
         // Latch the first failure before cleanup causes synchronous callbacks.
-        if connectionFailure == nil { connectionFailure = gatewaySetupMessage(code) ?? message; connectionFailureCode = code }
+        let firstFailure = connectionFailure == nil
+        let failedPhase = connectionPhase.rawValue
+        if firstFailure { connectionFailure = gatewaySetupMessage(code) ?? message; connectionFailureCode = code }
         let keepRoutes = selective.holdingRoutes || (connectionPhase == .connected && selective.holdRoutes())
-        connectionPhase = .failed; journal("ui", "failure", code: code)
+        connectionPhase = .failed
+        journal("ui", firstFailure ? "failure" : "cleanup_after_failure", code: code, failedPhase: failedPhase)
         shutdownConnection(keepRoutes: keepRoutes); presentConnection()
     }
 
