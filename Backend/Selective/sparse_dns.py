@@ -26,8 +26,7 @@ def allowed(name,policy):
     return (name not in policy['beforeLogin'] and any(
         name==r['domain'] or (r['scope']=='tree' and name.endswith('.'+r['domain'])) for r in policy['sites']))
 
-async def serve(policy,stage,stop,route_installer=None):
-    log=(stage/'dns-front.jsonl').open('a',buffering=1)
+async def serve(policy,stage,stop,route_installer=None,*,ready=None):
     routes=set();lock=asyncio.Lock()
     cfg=json.loads((stage/'trial-input.json').read_text())
     stable=cfg.get('mode')=='stable-map'
@@ -64,33 +63,36 @@ async def serve(policy,stage,stop,route_installer=None):
         return response
     async def install_routes(addresses, name):
         async with lock:
-            for ip in addresses:
-                if not any(ip.version == pool.version and ip in pool for pool in pools):
-                    raise ValueError('non-synthetic route')
-                if str(ip) in routes: continue
-                family = '-inet' if ip.version == 4 else '-inet6'
+            if any(not any(ip.version == pool.version and ip in pool for pool in pools) for ip in addresses):
+                raise ValueError('non-synthetic route')
+            pending = [ip for ip in dict.fromkeys(addresses) if str(ip) not in routes]
+            batch_size = 2 if route_installer is not None else 1
+            for offset in range(0, len(pending), batch_size):
+                batch = pending[offset:offset + batch_size]
+                new_routes = routes.union(map(str, batch))
                 # Journal intent before mutation. Removal verifies interface ownership.
-                routes.add(str(ip))
                 temp = stage/'host-routes.next'
-                temp.write_text(json.dumps(sorted(routes)))
+                temp.write_text(json.dumps(sorted(new_routes)))
                 temp.replace(stage/'host-routes.json')
                 if route_installer is not None:
-                    try:await route_installer([ip])
-                    except BaseException:
-                        routes.discard(str(ip));raise
+                    await route_installer(batch)
                     error=''
                 else:
                     # Legacy laboratory tests only. The private application
                     # always supplies the authenticated native route broker.
+                    ip = batch[0]
+                    family = '-inet' if ip.version == 4 else '-inet6'
                     proc=await asyncio.create_subprocess_exec('/sbin/route','-n','add',family,'-host',str(ip),'-interface','utun73',
                          stdout=asyncio.subprocess.PIPE,stderr=asyncio.subprocess.PIPE)
                     out,err=await proc.communicate()
                     check=await asyncio.create_subprocess_exec('/sbin/route','-n','get',family,str(ip),stdout=asyncio.subprocess.PIPE)
                     actual,_=await check.communicate()
                     if b'interface: utun73' not in actual:
-                        routes.discard(str(ip));raise OSError('host route missing')
+                        raise OSError('host route missing')
                     error=err.decode()
-                log.write(json.dumps(dict(time=time.time(),event='host_route',name=name,address=str(ip),stderr=error))+'\n')
+                routes.update(map(str, batch))
+                for ip in batch:
+                    log.write(json.dumps(dict(time=time.time(),event='host_route',name=name,address=str(ip),stderr=error))+'\n')
     class UDP(asyncio.DatagramProtocol):
         def connection_made(self,t):self.t=t
         def datagram_received(self,p,addr):asyncio.create_task(self.reply(p,addr))
@@ -129,14 +131,25 @@ async def serve(policy,stage,stop,route_installer=None):
     # reassigned or fall through to Life. The current SOCKS gate rejects them.
     retained=cfg.get('retained_addresses',[])
     if not isinstance(retained,list) or len(retained)>506:raise ValueError('retained addresses')
-    await install_routes([ipaddress.ip_address(a) for a in retained], 'retained')
-    log.write(json.dumps(dict(time=time.time(),event='retained_routes_ready',routes=len(routes)))+'\n')
-    udp,_=await asyncio.get_running_loop().create_datagram_endpoint(UDP,local_addr=('127.0.0.1',cfg['dns_port']))
-    server=await asyncio.start_server(tcp,'127.0.0.1',cfg['dns_port'])
-    (stage/'dns-ready').touch()
-    try:
-        while not stop():await asyncio.sleep(.1)
-    finally:udp.close();server.close();log.close()
+    retained = [ipaddress.ip_address(address) for address in retained]
+    with (stage/'dns-front.jsonl').open('a',buffering=1) as log:
+        # Keep the IPv4/IPv6 pair in one helper request and let it finish
+        # before handling a disconnect, so a pending reply cannot cross cleanup.
+        for offset in range(0, len(retained), 2):
+            if stop():return
+            await install_routes(retained[offset:offset + 2], 'retained')
+        if stop():return
+        log.write(json.dumps(dict(time=time.time(),event='retained_routes_ready',routes=len(routes)))+'\n')
+        udp,_=await asyncio.get_running_loop().create_datagram_endpoint(UDP,local_addr=('127.0.0.1',cfg['dns_port']))
+        try:
+            server=await asyncio.start_server(tcp,'127.0.0.1',cfg['dns_port'])
+            async with server:
+                (stage/'dns-ready').touch()
+                if ready is not None:
+                    ready.set()
+                while not stop():await asyncio.sleep(.1)
+        finally:
+            udp.close()
 
 if __name__=='__main__':
     from pathlib import Path

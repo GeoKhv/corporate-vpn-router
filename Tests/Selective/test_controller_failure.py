@@ -115,8 +115,13 @@ async def test(mode):
             (stage / 'services.pid').touch()
             await stop_event.wait()
 
-        async def front(cfg, stage, *args, **kwargs):
+        async def front(cfg, stage, stop, *, route_installer, ready):
+            if mode == 'slow_dns_start':
+                for _ in range(200):
+                    await original_sleep(0)
+                assert 'publish' not in calls
             (stage / 'dns-ready').touch()
+            ready.set()
             await asyncio.Event().wait()
 
         class Registry:
@@ -162,6 +167,8 @@ async def test(mode):
                 assert 'publish' not in calls
             if mode == 'dns_live':
                 assert 'publish' in calls and cause == 'SYSTEM_DNS_ADDRESS_CONFLICT'
+            if mode == 'slow_dns_start':
+                assert 'publish' in calls and cause == 'FIXTURE_TRANSPORT_LOST'
             confirmed = mode not in ('cleanup_pending', 'missing_status')
             assert controller.CLEANUP_CONFIRMED == confirmed
             assert (stage / 'cleanup.json').exists() == confirmed
@@ -169,7 +176,7 @@ async def test(mode):
 
 
 test_dns_addresses()
-for mode in ('pending_on_open', 'cancel_login', 'recover_then_cancel', 'dns_preflight', 'dns_after_mfa', 'dns_before_publish', 'dns_live',
+for mode in ('pending_on_open', 'cancel_login', 'recover_then_cancel', 'dns_preflight', 'dns_after_mfa', 'dns_before_publish', 'dns_live', 'slow_dns_start',
              'partial_begin', 'publish_failure', 'transport_failure', 'cleanup_pending', 'missing_status'):
     asyncio.run(test(mode))
 print('PASS DNS overlap IPv4/IPv6 and scoped resolvers, no routes on cancellation or preflight failure, '

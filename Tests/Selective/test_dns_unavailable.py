@@ -29,15 +29,23 @@ async def main():
     stopped=False
     with tempfile.TemporaryDirectory(prefix='cvr-dns-refusal-') as tmp:
         directory=Path(tmp)
+        retained = [(f'198.18.75.{slot}', f'fdc7:7652:9a10:75::{slot:x}') for slot in range(2, 21)]
         (directory/'trial-input.json').write_text(json.dumps(dict(
-            mode='stable-map',dns_port=port,dns_backend_port=backend)))
-        task=asyncio.create_task(serve(policy,directory,lambda:stopped))
+            mode='stable-map',dns_port=port,dns_backend_port=backend,
+            retained_addresses=[address for pair in retained for address in pair])))
+        ready = asyncio.Event()
+        installed = []
+        async def install(addresses):
+            assert not ready.is_set() and not (directory/'dns-ready').exists()
+            installed.append(tuple(map(str, addresses)))
+        task=asyncio.create_task(serve(policy,directory,lambda:stopped,route_installer=install,ready=ready))
         try:
             for _ in range(100):
                 if (directory/'dns-ready').exists():break
                 if task.done():await task
                 await asyncio.sleep(.01)
             else:raise AssertionError('DNS did not become ready')
+            assert ready.is_set() and installed == retained
             for name in ('alpha.work.cvr-fixture.invalid','outside.cvr-fixture.invalid'):
                 packet=struct.pack('!6H',42,0x100,1,0,0,0)+b''.join(
                     bytes([len(x)])+x.encode() for x in name.split('.'))+b'\0'+struct.pack('!HH',1,1)
@@ -56,8 +64,9 @@ async def main():
                     reply=await loop.sock_recv(sock,4096)
                     assert reply[:2]==packet[:2] and reply[3]&15==3
                 finally:sock.close()
-            assert not (directory/'host-routes.json').exists()
-            print('PASS actual UDP/TCP NXDOMAIN with missing backend and outside name; no route changes')
+            assert installed == retained
+            assert set(json.loads((directory/'host-routes.json').read_text())) == {address for pair in retained for address in pair}
+            print('PASS 38 retained routes in 19 requests before UDP/TCP readiness; unavailable DNS adds no routes')
         finally:
             stopped=True
             await task

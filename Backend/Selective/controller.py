@@ -299,12 +299,21 @@ async def start(app_pid):
                     if name and matched_rule(cfg, name):
                         await helper.call('register', name=name, slot=slot)
             await helper.call('route',addresses=[str(a) for a in addresses])
-        front=asyncio.create_task(serve_front(cfg,stage,stop.is_set,route_installer=install));tasks.append(front)
-        for _ in range(150):
-            if front.done():await front;raise RuntimeError('Локальный DNS остановился.')
-            if (stage/'dns-ready').exists():break
-            await asyncio.sleep(.1)
-        else:raise RuntimeError('Локальный DNS не готов.')
+        dns_ready = asyncio.Event()
+        front = asyncio.create_task(serve_front(cfg, stage, stop.is_set, route_installer=install, ready=dns_ready))
+        tasks.append(front)
+        ready_wait = asyncio.create_task(dns_ready.wait())
+        try:
+            # Each helper call is bounded. A fixed startup deadline would cut
+            # off valid progress on larger durable maps.
+            await asyncio.wait((front, ready_wait), return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            ready_wait.cancel()
+            await asyncio.gather(ready_wait, return_exceptions=True)
+        if front.done():
+            await front
+            if not stop.is_set():
+                raise RuntimeError('Локальный DNS остановился.')
         if stop.is_set():return
         await check_system_dns()
         if stop.is_set():return
