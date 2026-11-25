@@ -75,7 +75,7 @@ struct WorkProfile: Codable, Equatable {
         }
         return try JSONSerialization.data(withJSONObject:["domains":sites.map{$0.domain}, "desktop":desktop, "rules":rules, "allowDNSRepair":true, "allowCheckPointStart":true])
     }
-    func helperUpdateEnrollment(_ status: [String:Any]?) throws -> Data {
+    func helperUpdateEnrollment(_ status: [String:Any]?, defaultDesktop: String? = nil) throws -> Data {
         guard let status, status["ok"] as? Bool == true,
               status["active"] as? Bool == false, status["cleanupPending"] as? Bool == false,
               let domains = status["approvedDomains"] as? [String], !domains.isEmpty,
@@ -83,7 +83,8 @@ struct WorkProfile: Codable, Equatable {
               status["approvedRDPHost"] == nil || status["approvedRDPHost"] is String
         else { throw RouterError.invalidConfiguration }
         // The helper omits this key when no separate Windows desktop was approved.
-        let desktop = status["approvedRDPHost"] as? String ?? ""
+        let current = status["approvedRDPHost"] as? String ?? ""
+        let desktop = current.isEmpty ? (defaultDesktop.flatMap { work($0) ? $0 : nil } ?? "") : current
         guard desktop.isEmpty || (Configuration.validHost(desktop) &&
             domains.contains { desktop == $0 || desktop.hasSuffix("." + $0) })
         else { throw RouterError.invalidConfiguration }
@@ -816,7 +817,7 @@ extension BetaMenu {
         let validation=validateDraft(temp)
         guard validation.code==0 else{try? FileManager.default.removeItem(at:temp);report(validation.output);return}
         let status=SelectiveRouter.helperReply(resources:resources)
-        let desktop=(status?["approvedRDPHost"] as? String).flatMap { profile.work($0) ? $0:nil } ?? ""
+        let desktop=Provisioning.enrollmentDesktop(status:status,resources:resources,paths:paths,profile:profile)
         guard let enrollment=try? profile.enrollment(desktop:desktop),let expected=try? JSONSerialization.jsonObject(with:enrollment) as? [String:Any] else {try? FileManager.default.removeItem(at:temp);report("Не удалось подготовить разрешения.");return}
         p.applying=true;refreshState()
         func finish(_ success:Bool){
@@ -827,7 +828,7 @@ extension BetaMenu {
             catch {report(error.localizedDescription);return}
             completePending()
         }
-        if let old=status?["tcpRules"] as? NSArray, old.isEqual(expected["rules"]) {finish(true)}
+        if Provisioning.matchesEnrollment(status, expected) {finish(true)}
         else {selective.manageHelper(resources:resources,enrollment:enrollment,reconfigure:true,completion:finish)}
     }
     #endif
@@ -1040,7 +1041,8 @@ extension BetaMenu {
             }
             let retirementReceipt = paths.data.appendingPathComponent(StarterHTTPSAliases.retiredTreeReceipt)
             let retired = fm.fileExists(atPath:retirementReceipt.path) ? nil : aliases?.retiredTreeHost
-            guard retired != nil || needsStarterAliases || !pendingHTTP.isEmpty ||
+            let needsDesktop = selective.helperAvailability == .desktopAvailable
+            guard needsDesktop || retired != nil || needsStarterAliases || !pendingHTTP.isEmpty ||
                   !fm.fileExists(atPath:legacyReceipt.path) || !fm.fileExists(atPath:httpsReceipt.path) else { return false }
             let original = try Data(contentsOf:workURL)
             let profile = try JSONDecoder().decode(WorkProfile.self,from:original)
@@ -1085,27 +1087,28 @@ extension BetaMenu {
                 }
             }
             let status = SelectiveRouter.helperReply(resources:resources)
-            let desktop = status?["approvedRDPHost"] as? String ??
-                Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile) ?? ""
+            let desktop = Provisioning.enrollmentDesktop(status:status,resources:resources,paths:paths,profile:candidate)
             if let retired {
                 let legacy = WorkSite(domain:retired,scope:"tree")
                 if candidate.sites.count > 1 && !(desktop == retired || desktop.hasSuffix("." + retired)) {
                     candidate.sites.removeAll { $0 == legacy }
                 }
-                if candidate == profile && receipts.isEmpty {
+                if !needsDesktop && candidate == profile && receipts.isEmpty {
                     try Data("applied\n".utf8).write(to:retirementReceipt,options:.atomic)
                     return false
                 }
                 receipts.append(retirementReceipt)
             }
-            guard !receipts.isEmpty else {return false}
+            guard needsDesktop || !receipts.isEmpty else {return false}
             func markApplied() throws {
                 for receipt in receipts {try Data("applied\n".utf8).write(to:receipt,options:.atomic)}
             }
-            let enrollment = try candidate.enrollment(desktop:desktop)
+            let enrollment = try needsDesktop && candidate == profile
+                ? profile.helperUpdateEnrollment(status, defaultDesktop:desktop)
+                : candidate.enrollment(desktop:desktop)
             let expected = try JSONSerialization.jsonObject(with:enrollment) as? [String:Any]
             let authorized = selective.helperAvailability.canConnect &&
-                (status?["tcpRules"] as? NSArray)?.isEqual(expected?["rules"]) == true
+                Provisioning.matchesEnrollment(status, expected)
             if authorized && candidate == profile {
                 try markApplied()
                 return false
@@ -1136,7 +1139,7 @@ extension BetaMenu {
                         throw ProxyFailure("Список рабочих сайтов изменился во время подтверждения. Повторите подключение с актуальным списком.")
                     }
                     let confirmed = SelectiveRouter.helperReply(resources:self.resources)
-                    guard (confirmed?["tcpRules"] as? NSArray)?.isEqual(expected?["rules"]) == true else {
+                    guard Provisioning.matchesEnrollment(confirmed, expected) else {
                         throw ProxyFailure("Помощник ещё не подтвердил рабочее правило. Повторите подключение.")
                     }
                     if candidate != profile {

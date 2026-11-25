@@ -62,8 +62,8 @@ func run() throws {
     try JSONFile.write(["site":"vpn.example"],to:paths.data.appendingPathComponent("ssl-site.json"))
     let desktop="desktop."+suffix
     let oldRules=(try JSONSerialization.jsonObject(with:old.enrollment(desktop:desktop)) as! [String:Any])["rules"]!
-    func reply(_ rules:Any) throws {
-        try JSONSerialization.data(withJSONObject:["ok":true,"active":false,"cleanupPending":false,"approvedRDPHost":desktop,"tcpRules":rules]).write(to:state)
+    func reply(_ rules:Any, approvedDesktop:String? = nil) throws {
+        try JSONSerialization.data(withJSONObject:["ok":true,"active":false,"cleanupPending":false,"approvedRDPHost":approvedDesktop ?? desktop,"tcpRules":rules]).write(to:state)
     }
     try reply(oldRules)
     let app=NSApplication.shared
@@ -235,12 +235,18 @@ func run() throws {
     """+"\n")
     menu.selective.helperAvailability = .missing
     menu.selective.inspectHelper = { _ in fm.fileExists(atPath:state.path) ? .ready : .missing }
+    let presetURL=payload.appendingPathComponent("DefaultDesktop.json")
+    if fm.fileExists(atPath:presetURL.path) {
+        try fm.copyItem(at:presetURL,to:resources.appendingPathComponent("DefaultDesktop.json"))
+    }
+    let freshDesktop=Provisioning.defaultDesktop(resources:resources,paths:paths,profile:old) ?? ""
     var firstApprovals = 0
     menu.selective.authorizeHelper = { args in
         firstApprovals += 1
         let encoded=args[2].components(separatedBy:"'").dropLast().last!
         let policy=try! JSONSerialization.jsonObject(with:Data(base64Encoded:encoded)!) as! [String:Any]
-        try! reply(policy["rules"]!)
+        if firstApprovals == 1 { require(policy["desktop"] as? String == freshDesktop,"first helper setup receives packaged desktop without typing") }
+        try! reply(policy["rules"]!, approvedDesktop:policy["desktop"] as? String)
         return nil
     }
     menu.appRouting()
@@ -258,6 +264,48 @@ func run() throws {
     waitFor("ready helper completes offline migration"){fm.fileExists(atPath:httpsReceipt.path) && !menu.applyingBundledRule}
     require(firstApprovals==2 && menu.engine==nil && menu.selective.process==nil,"no VPN session during enrollment")
     print("PASS first-install button enrolls and saves fresh rules with no live Check Point command")
+    if fm.fileExists(atPath:presetURL.path) {
+        let host=(try JSONDecoder().decode([String:String].self,from:Data(contentsOf:presetURL)))["desktop"]!
+        var profile=menu.storedWork()!
+        if !profile.work(host) { profile.sites.append(WorkSite(domain:host,scope:"exact",tcp:.selected([443]))) }
+        try JSONFile.write(profile,to:menu.workURL)
+        let policy=try JSONSerialization.jsonObject(with:profile.enrollment(desktop:"")) as! [String:Any]
+        var rules=policy["rules"] as! [[String:Any]]
+        rules.append(["domain":"approved-only.example","scope":"exact","anyTCP":false,"ports":[8443]])
+        let initial:[String:Any]=["ok":true,"active":false,"cleanupPending":false,"approvedDomains":rules.map{$0["domain"]!},"tcpRules":rules]
+        try JSONSerialization.data(withJSONObject:initial).write(to:state)
+        var restored=false, accepted=false
+        menu.selective.inspectHelper = { _ in restored ? .ready : .desktopAvailable }
+        menu.selective.helperAvailability = .desktopAvailable
+        menu.selective.authorizeHelper = { args in
+            if !accepted { return "cancelled (-128)" }
+            let encoded=args[2].components(separatedBy:"'").dropLast().last!
+            let policy=try! JSONSerialization.jsonObject(with:Data(base64Encoded:encoded)!) as! [String:Any]
+            require(policy["desktop"] as? String == host && (policy["rules"] as? NSArray)?.isEqual(rules)==true,"enroll default without typing and retain extra grants")
+            var installed=initial;installed["approvedRDPHost"]=host
+            try! JSONSerialization.data(withJSONObject:installed).write(to:state)
+            restored=true
+            return nil
+        }
+        let connectedAfterEnrollment=root.appendingPathComponent("started-with-preset")
+        try executable("Runtime/bin/python3.13", """
+        #!/bin/sh
+        export HOME='\(root.path)'
+        case " $* " in *" start "*) /usr/bin/touch '\(connectedAfterEnrollment.path)'; /bin/cat >/dev/null; exit 0;; esac
+        exec '\(payload.appendingPathComponent("Runtime/bin/python3.13").path)' "$@"
+        """+"\n")
+        connect()
+        waitFor("desktop cancelled"){ menu.connectionPhase == .failed && !menu.applyingBundledRule }
+        require(!restored && !fm.fileExists(atPath:connectedAfterEnrollment.path),"cancel leaves desktop untouched")
+        accepted=true
+        connect()
+        waitFor("same connect action starts routes with PURMS"){ fm.fileExists(atPath:connectedAfterEnrollment.path) && restored }
+        menu.stop("done");waitFor("fixture stopped after PURMS enrollment") { !menu.selective.busy }
+        require(!menu.applyBundledRuleIfNeeded(connectAfterward:false),"no repeat after desktop approval")
+        let custom=try JSONSerialization.jsonObject(with:profile.helperUpdateEnrollment(initial.merging(["approvedRDPHost":desktop]) { _,new in new },defaultDesktop:host)) as! [String:Any]
+        require(custom["desktop"] as? String == desktop,"explicit desktop retained at helper upgrade")
+        print("PASS packaged PURMS preset, existing receipts, same TCP rules, cancel/retry, separate grants and custom desktop")
+    }
     print("PASS packaged rule, cancel/retry, verified save, same-click continuation, existing settings, no reapplication after deletion, unchanged v1 and v2 grants")
 }
 do { try run() } catch { fputs("FAIL: \(error)\n",stderr);exit(1) }

@@ -2,16 +2,16 @@
 
 Corporate VPN Router направляет выбранные рабочие адреса через Check Point на Mac. Остальной трафик идёт по обычному маршруту macOS, в том числе через личный VPN. Правила действуют в браузерах, SSH-клиентах, Lens и других приложениях, которые подключаются по DNS-имени и TCP.
 
-## Скачать 0.3.42 by MichaelTG
+## Скачать 0.3.43 by MichaelTG
 
-Исправлена кнопка проверки обновлений после фонового опроса Sparkle. В WHITE можно сохранить первый рабочий адрес при остановленной службе Check Point. Router проверяет DNS выбранного сайта и повторно сверяет выбор после временной ошибки DNS. При обновлении помощника сохраняются утверждённые TCP-правила и имя Windows-ПК. Установщик предлагает переход между RED и WHITE с одинаковым номером сборки. В RED VMware Horizon использует обычный маршрут macOS, если в профиле оставалось стандартное правило. Изменённое вручную правило сохраняется.
+В RED доступ к ПУРМС настраивается при подключении. Router использует готовый адрес и сохраняет ранее настроенный рабочий ПК. При первом подключении или обновлении разрешений достаточно подтвердить запрос macOS. Ввод имени ПК остаётся доступен при ручном редактировании. VDI через VMware Horizon открывается по обычному маршруту macOS.
 
 Для **Mac с Apple Silicon и macOS 26+**. У RED и WHITE одинаковый номер версии. У каждой редакции свой канал обновлений.
 
 | Сборка | Для кого |
 | --- | --- |
-| **[WHITE · чистая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.42/Corporate-VPN-Router-0.3.42-CLEAN-macOS-arm64.zip)** | Вы сами добавляете рабочие адреса и используете настроенный в официальном Check Point шлюз. В ZIP нет готового профиля, закреплённых сертификатов организации или рабочего списка. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.42/Corporate-VPN-Router-0.3.42-CLEAN-macOS-arm64.zip.sha256) |
-| **[RED · рабочая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.42/Corporate-VPN-Router-0.3.42-STARTER-work-sites-macOS-arm64.zip)** | Стартовый комплект с готовыми рабочими сайтами, включая Superset и «Метрику», и проверенными параметрами подключения. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.42/Corporate-VPN-Router-0.3.42-STARTER-work-sites-macOS-arm64.zip.sha256) |
+| **[WHITE · чистая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.43/Corporate-VPN-Router-0.3.43-CLEAN-macOS-arm64.zip)** | Вы сами добавляете рабочие адреса и используете настроенный в официальном Check Point шлюз. В ZIP нет готового профиля, закреплённых сертификатов организации или рабочего списка. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/v0.3.43/Corporate-VPN-Router-0.3.43-CLEAN-macOS-arm64.zip.sha256) |
+| **[RED · рабочая ↓](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.43/Corporate-VPN-Router-0.3.43-STARTER-work-sites-macOS-arm64.zip)** | Стартовый комплект с готовыми рабочими сайтами, включая Superset и «Метрику», и проверенными параметрами подключения. [SHA-256](https://github.com/GeoKhv/corporate-vpn-router/releases/download/starter-v0.3.43/Corporate-VPN-Router-0.3.43-STARTER-work-sites-macOS-arm64.zip.sha256) |
 
 Если 0.3.34 или 0.3.35 сообщает об ошибке подготовки обновления, завершите отключённый Router, распакуйте ZIP своей редакции и откройте приложение из архива. Штатный Check Point может продолжать работу.
 

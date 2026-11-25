@@ -43,6 +43,14 @@ enum Provisioning {
             }
         }
     }
+    static func enrollmentDesktop(status: [String:Any]?, resources: URL, paths: ProductPaths, profile: WorkProfile) -> String {
+        if let current = status?["approvedRDPHost"] as? String, Configuration.validHost(current), profile.work(current) { return current }
+        return defaultDesktop(resources:resources,paths:paths,profile:profile) ?? ""
+    }
+    static func matchesEnrollment(_ status: [String:Any]?, _ expected: [String:Any]?) -> Bool {
+        guard let rules = status?["tcpRules"] as? NSArray, let desktop = expected?["desktop"] as? String else { return false }
+        return rules.isEqual(expected?["rules"]) && (status?["approvedRDPHost"] as? String ?? "") == desktop
+    }
     static func defaultDesktop(resources: URL, paths: ProductPaths, profile: WorkProfile) -> String? {
         // The signed bundle may provide a deployment default; the saved copy
         // allows subsequent generic updates to use the same enrollment.

@@ -16,6 +16,11 @@ p.add_argument('--credit', help='GitHub authors as shown in the version label, s
 a=p.parse_args()
 edition = 'RED' if a.private else 'WHITE'
 channel = 'update-channel' if a.private else 'update-channel-white'
+# Carry the enrolled RED desktop through subsequent builds from that signed edition.
+previous_desktop=a.base_app/'Contents/Resources/DefaultDesktop.json'
+if a.private and previous_desktop.is_file() and not (a.deployment_desktop or a.rdp_host):
+ a.deployment_desktop=json.loads(previous_desktop.read_bytes())['desktop']
+ a.rdp_host=a.deployment_desktop
 if a.rdp_host and not a.private:p.error('--rdp-host requires --private')
 if not a.private and (a.bundled_rules or a.site_pin or a.deployment_desktop):
  p.error('Bundled work rules, site pins and deployment desktops are RED-only (--private)')

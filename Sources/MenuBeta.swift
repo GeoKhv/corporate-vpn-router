@@ -329,10 +329,11 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
               Set(profile.sites.map { $0.domain }).isSubset(of:Set(domains)) else {
             note = "Список рабочих сайтов выходит за разрешения прежнего помощника. Проверьте рабочие сайты."; refresh(); return
         }
-        if !edit, selective.helperAvailability == .updateRequired {
+        let preset = Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile)
+        if !edit, selective.helperAvailability == .updateRequired || selective.helperAvailability == .desktopAvailable {
             do {
-                let data = try profile.helperUpdateEnrollment(previous)
-                selective.manageHelper(resources: resources, enrollment: data)
+                let data = try profile.helperUpdateEnrollment(previous, defaultDesktop:preset)
+                selective.manageHelper(resources: resources, enrollment: data, reconfigure:selective.helperAvailability.canConnect)
             } catch {
                 note = "Не удалось прочитать прежние разрешения помощника. Повторите проверку помощника."
                 refresh()
@@ -340,7 +341,6 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             return
         }
         let current = previous?["approvedRDPHost"] as? String
-        let preset = Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile)
         let selected = [current, preset].compactMap { $0 }.first { host in
             Configuration.validHost(host) && profile.work(host) && domains.contains { host == $0 || host.hasSuffix("." + $0) }
         }
@@ -348,7 +348,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             guard let data = try? profile.enrollment(desktop:desktop) else { return }
             selective.manageHelper(resources:resources,enrollment:data,reconfigure:selective.helperAvailability.canConnect)
         }
-        if let selected, !edit || selective.helperAvailability != .ready { enroll(selected); return }
+        if !edit { enroll(selected ?? ""); return }
         let dialog = NSAlert()
         dialog.messageText = "Разрешения помощника маршрутов"
         dialog.informativeText = "Рабочие домены для HTTPS (443)\n" + domains.joined(separator:", ") +
