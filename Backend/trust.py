@@ -1,11 +1,14 @@
 """Bind a previously confirmed official CA to the configured DNS site or legacy IP.
 Candidate certificates are public discovery data. No CCC or credentials are
 sent until a separate authenticated connection succeeds."""
+from __future__ import annotations
+
 import hashlib, ipaddress, json, os, re, socket, ssl, stat, subprocess, tempfile
 import threading
 import sys
 import time
 from concurrent.futures import Future, TimeoutError as FutureTimeout
+from dataclasses import dataclass
 from pathlib import Path
 from tls_policy import pinned_context, pin_gateway_leaf
 
@@ -154,7 +157,14 @@ def official_info():
     output=''
     try:
         output=official_output()
-        return choose_site(parse_sites(output),output)
+        dns = GatewayDNS()
+        selected = selected_site(output, dns)
+        if dns.retried:
+            # An official handoff may have changed the selected site during a DNS retry.
+            output = official_output()
+            if selected_site(output, GatewayDNS(deadline=dns.deadline)) != selected:
+                raise Refused('OFFICIAL_SELECTION_CHANGED')
+        return selected
     except Refused as error:
         # Capture the failing read. The official client may change before export.
         try:
@@ -192,10 +202,12 @@ def official_info():
 
 def connected_object(output, host):
     """Only the Connected row in the one selected site's gateway list is eligible."""
-    records = official_records(output)
+    dns = GatewayDNS()
+    records = official_records(output, dns)
     if host not in records:
         raise Refused('OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED')
-    lists=re.split(r'(?im)^[ \t]*gateway list:[ \t]*\n', records[host][2])
+    records[host].verified_address(dns)
+    lists=re.split(r'(?im)^[ \t]*gateway list:[ \t]*\n', records[host].body)
     if len(lists)!=2: raise Refused('OFFICIAL_GATEWAY_OBJECT_UNCONFIRMED')
     names=[]
     for line in lists[1].splitlines():
@@ -245,19 +257,32 @@ def selected_dns_endpoint(blocks):
     return selected
 
 
-def official_records(output):
+@dataclass(frozen=True)
+class OfficialRecord:
+    state: str
+    body: str
+    dns_name: str | None
+    address: str | None
+    label_ip: str | None
+
+    def verified_address(self, dns):
+        address = self.address
+        if self.dns_name:
+            answers = dns.lookup(self.dns_name)
+            if address is None:
+                if len(answers) != 1:
+                    raise Refused('OFFICIAL_SITE_AMBIGUOUS')
+                address = next(iter(answers))
+            elif address not in answers:
+                raise Refused('SITE_ADDRESS_MISMATCH')
+        if self.label_ip and self.label_ip != address:
+            raise Refused('SITE_ADDRESS_MISMATCH')
+        return address
+
+
+def official_records(output, dns):
     from sites import hostname
     records = {}
-    addresses = {}
-    deadline = time.monotonic() + 8
-    def resolve(name):
-        if name not in addresses:
-            try:
-                addresses[name] = gateway_ipv4(name, deadline)
-            except socket.gaierror as error:
-                raise Refused('GATEWAY_DNS_UNRESOLVED') from error
-        return addresses[name]
-
     blocks = re.split(r'(?im)^[ \t]*Conn[ \t]+', output.replace('\r\n','\n'))
     if len(blocks) == 1:
         raise Refused('OFFICIAL_SITE_MISSING')
@@ -292,33 +317,25 @@ def official_records(output):
                 raise ProfileFormatError('unsupported_gateway_address', index)
             gateway = endpoint
         named = re.fullmatch(r'([^\s()]+)[ \t]+\(([^()\s]+)\)',gateway)
+        dns_name = None
         if named and hostname(named[1]) and native_ipv4(named[2]):
-            if native_ipv4(named[2]) not in resolve(named[1]):
-                raise Refused('SITE_ADDRESS_MISMATCH')
-            if not hostname(name):
-                if native_ipv4(label) and native_ipv4(label) != native_ipv4(named[2]):
-                    raise Refused('SITE_ADDRESS_MISMATCH')
-                name = named[1]
-            gateway = native_ipv4(named[2])
-        ip = native_ipv4(gateway)
-        if not ip:
-            if not hostname(gateway):
-                raise ProfileFormatError('unsupported_gateway_address', index)
-            candidates = resolve(gateway)
-            if len(candidates) != 1:
-                raise Refused('OFFICIAL_SITE_AMBIGUOUS')
-            ip = next(iter(candidates))
+            dns_name, ip = named[1], native_ipv4(named[2])
+        else:
+            ip = native_ipv4(gateway)
+            if not ip:
+                if not hostname(gateway):
+                    raise ProfileFormatError('unsupported_gateway_address', index)
+                dns_name = gateway
+        literal = native_ipv4(label)
+        if literal and ip and literal != ip:
+            raise Refused('SITE_ADDRESS_MISMATCH')
         if not hostname(name):
-            # The signed client can label a site with a display name or its IP.
-            # Never treat that label as a hostname or use the first known site.
-            literal = native_ipv4(label)
-            if literal and literal != ip:
-                raise Refused('SITE_ADDRESS_MISMATCH')
-            if hostname(gateway):
-                name = gateway
+            if dns_name:
+                name = dns_name
             else:
+                # Display-name/IP-only records need a unique approved DNS identity.
                 seeds = {item['site'] for item in (approved_receipt(), approved_site_pin()) if item}
-                matches = [site for site in seeds if ip in resolve(site)]
+                matches = [site for site in seeds if ip in dns.lookup(site)]
                 if len(matches) > 1:
                     raise Refused('OFFICIAL_SITE_AMBIGUOUS')
                 if matches:
@@ -332,12 +349,23 @@ def official_records(output):
             raise ProfileFormatError('duplicate_site_identity', index)
         if len(states)!=1 or states[0] not in ('Idle','Connected','Connecting','Reconnecting'):
             raise Refused('OFFICIAL_STATE_UNKNOWN')
-        records[name] = (ip, states[0], body)
+        records[name] = OfficialRecord(states[0], body, dns_name, ip, literal)
     return records
 
 
 def parse_sites(output):
-    return {name:(name, ip, state) for name,(ip,state,_) in official_records(output).items()}
+    # Full inventory for tools that explicitly request every endpoint.
+    dns = GatewayDNS()
+    return {name:(name, record.verified_address(dns), record.state)
+            for name,record in official_records(output, dns).items()}
+
+
+def selected_site(output, dns):
+    records = official_records(output, dns)
+    states = {name:record.state for name,record in records.items()}
+    name = choose_site_name(states, output)
+    record = records[name]
+    return check_attempt(name, record.verified_address(dns), record.state)
 
 
 def selected_idle_site(output,rows):
@@ -351,10 +379,22 @@ def selected_idle_site(output,rows):
         flags=re.findall(r'(?im)^[ \t]*active site:[ \t]*([^\n]*)$',body)
         if len(flags)!=1 or flags[0].strip() not in ('true','false'):return None
         if flags[0].strip()=='true':choices.append(name)
-    return rows.get(choices[0]) if len(choices)==1 else None
+    return choices[0] if len(choices)==1 else None
 
 
 def choose_site(rows,output=''):
+    name = choose_site_name({host:row[2] for host,row in rows.items()}, output)
+    return check_attempt(*rows[name])
+
+
+def check_attempt(host, ip, state):
+    expected = os.environ.get('CVR_ATTEMPT_GATEWAY')
+    if expected is not None and expected != host+'@'+ip:
+        raise Refused('OFFICIAL_SELECTION_CHANGED')
+    return host, ip, state
+
+
+def choose_site_name(states, output):
     from sites import hostname
     path=DATA/'ssl-site.json'
     saved=None
@@ -373,7 +413,7 @@ def choose_site(rows,output=''):
                         not re.fullmatch(r'[a-f0-9]{64}',saved['leaf_sha256'])):raise ValueError()
             else:ipaddress.IPv4Address(saved['ip'])
         except (OSError,KeyError,ValueError,TypeError):raise Refused('SAVED_SITE_OR_PIN_CHANGED') from None
-    active=[r for r in rows.values() if r[2]!='Idle']
+    active=[name for name,state in states.items() if state!='Idle']
     if len(active)>1:raise Refused('OFFICIAL_STATE_UNKNOWN')
     primary=approved_receipt()
     pin=approved_site_pin()
@@ -385,31 +425,29 @@ def choose_site(rows,output=''):
             allowed={p['site'] for p in (primary,pin) if p}
             if not isinstance(value,dict) or set(value)!={'site'} or value['site'] not in allowed:
                 raise ValueError()
-            preferred=rows.get(value['site'])
-            if preferred is None:raise Refused('SELECTED_SITE_MISSING')
+            preferred=value['site']
+            if preferred not in states:raise Refused('SELECTED_SITE_MISSING')
         except (OSError,TypeError,KeyError,ValueError):raise Refused('INVALID_SITE_SELECTION') from None
     if saved:
-        row=rows.get(saved['site'])
-        if not row:raise Refused('SAVED_SITE_OR_PIN_CHANGED')
-        if active and active[0]!=row:raise Refused('OFFICIAL_OTHER_SITE_ACTIVE')
+        name=saved['site']
+        if name not in states:raise Refused('SAVED_SITE_OR_PIN_CHANGED')
     elif preferred:
-        row=preferred
-        if active and active[0]!=row:raise Refused('OFFICIAL_OTHER_SITE_ACTIVE')
-    elif len(rows)==1:row=next(iter(rows.values()))
-    elif active and active[0][2]=='Connected':row=active[0]
-    elif not active and sum(hostname(name) for name in rows)==1:
-        row=selected_idle_site(output,rows)
-        if not row or not hostname(row[0]):raise Refused('OFFICIAL_SITE_AMBIGUOUS')
+        name=preferred
+    elif len(states)==1:name=next(iter(states))
+    elif active and states[active[0]]=='Connected':name=active[0]
+    elif not active and sum(hostname(name) for name in states)==1:
+        name=selected_idle_site(output,states)
+        if not name or not hostname(name):raise Refused('OFFICIAL_SITE_AMBIGUOUS')
     elif not active and pin and primary:
-        row=selected_idle_site(output,rows)
-        if not row or row[0] not in (pin['site'],primary['site']):raise Refused('OFFICIAL_SITE_AMBIGUOUS')
+        name=selected_idle_site(output,states)
+        if not name or name not in (pin['site'],primary['site']):raise Refused('OFFICIAL_SITE_AMBIGUOUS')
     else:raise Refused('OFFICIAL_SITE_AMBIGUOUS')
-    if not hostname(row[0]):raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
-    expected=os.environ.get('CVR_ATTEMPT_GATEWAY')
-    if expected is not None and expected!=row[0]+'@'+row[1]:raise Refused('OFFICIAL_SELECTION_CHANGED')
-    if primary and row[0]!=primary['site'] and not saved and row[2]!='Connected' and not (pin and row[0]==pin['site']):
+    if not hostname(name):raise Refused('OFFICIAL_SITE_FORMAT_UNSUPPORTED')
+    if active and active[0]!=name:
+        raise Refused('OFFICIAL_OTHER_SITE_ACTIVE')
+    if primary and name!=primary['site'] and not saved and states[name]!='Connected' and not (pin and name==pin['site']):
         raise Refused('OFFICIAL_CONNECT_ASSIGNED_SITE')
-    return row
+    return name
 
 GATEWAY_DNS_BUDGET = 40.0
 GATEWAY_DNS_RETRY_DELAY = 1.0
@@ -433,30 +471,45 @@ def gateway_ipv4(host, deadline):
         raise Refused('GATEWAY_DNS_TIMEOUT') from error
 
 
+class GatewayDNS:
+    """Bound all lookups for one native snapshot, including transient retries."""
+    def __init__(self, report_dns=None, deadline=None):
+        self.deadline = time.monotonic() + GATEWAY_DNS_BUDGET if deadline is None else deadline
+        self.report_dns = report_dns
+        self.addresses = {}
+        self.retried = False
+
+    def lookup(self, host):
+        if host in self.addresses:
+            return self.addresses[host]
+        for attempt in (1, 2):
+            try:
+                self.addresses[host] = gateway_ipv4(host, self.deadline)
+                return self.addresses[host]
+            except socket.gaierror as error:
+                # Darwin can also return EAI_NONAME after a 30 s DNS timeout.
+                retryable = error.errno in (socket.EAI_AGAIN, socket.EAI_NONAME,
+                                            getattr(socket, 'EAI_NODATA', socket.EAI_NONAME))
+                if not retryable or attempt == 2:
+                    raise Refused('GATEWAY_DNS_UNRESOLVED') from error
+                if time.monotonic() + GATEWAY_DNS_RETRY_DELAY >= self.deadline:
+                    raise Refused('GATEWAY_DNS_TIMEOUT') from error
+                self.retried = True
+                if self.report_dns:
+                    self.report_dns('gateway_dns_retry', errno=error.errno)
+                time.sleep(GATEWAY_DNS_RETRY_DELAY)
+
+
 def site(require_idle=True, report_dns=None):
     host,ip,state=official_info()
     if require_idle and state!='Idle': raise Refused('OFFICIAL_VPN_NOT_IDLE')
-    deadline = time.monotonic() + GATEWAY_DNS_BUDGET
+    dns = GatewayDNS(report_dns)
     if report_dns:
         report_dns('gateway_dns_lookup')
-    for attempt in (1, 2):
-        try:
-            addresses = gateway_ipv4(host, deadline)
-            break
-        except socket.gaierror as error:
-            # Darwin can also return EAI_NONAME after a 30 s DNS timeout.
-            retryable = error.errno in (socket.EAI_AGAIN, socket.EAI_NONAME,
-                                        getattr(socket, 'EAI_NODATA', socket.EAI_NONAME))
-            if not retryable or attempt == 2:
-                raise Refused('GATEWAY_DNS_UNRESOLVED') from error
-            if time.monotonic() + GATEWAY_DNS_RETRY_DELAY >= deadline:
-                raise Refused('GATEWAY_DNS_TIMEOUT') from error
-            if report_dns:
-                report_dns('gateway_dns_retry', errno=error.errno)
-            time.sleep(GATEWAY_DNS_RETRY_DELAY)
+    addresses = dns.lookup(host)
     if ip not in addresses:
         raise Refused('SITE_ADDRESS_MISMATCH')
-    if attempt == 2 and official_info() != (host, ip, state):
+    if dns.retried and official_info() != (host, ip, state):
         raise Refused('OFFICIAL_SELECTION_CHANGED')
     if report_dns:
         report_dns('gateway_dns_verified')
@@ -507,7 +560,7 @@ def private_gateway_binding(host, ip, cn, sans, leaf_der):
     if saved is not None and 'gateway_object' not in saved:raise Refused('SAVED_SITE_OR_PIN_CHANGED')
     reference=private_reference(sans)
     output=official_output()
-    site_name,dial,state=choose_site(parse_sites(output),output)
+    site_name,dial,state=selected_site(output, GatewayDNS())
     if (site_name,dial)!=(host,ip):raise Refused('OFFICIAL_SELECTION_CHANGED')
     if state=='Connected':
         name=connected_object(output,host)

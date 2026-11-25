@@ -39,14 +39,17 @@ func run() throws {
     try executable("Runtime/bin/python3.13","""
     #!/bin/sh
     export HOME='\(root.path)'
+    case " $* " in *" check-draft "*|*" save "*) if [ '\(firstProfile)' = 'true' ]; then echo OFFICIAL_SERVICE_NOT_STARTED; exit 1; fi;; esac
     case " $* " in *" start "*) /usr/bin/touch '\(started.path)'; /bin/cat >/dev/null; exit 0;; esac
     exec '\(payload.appendingPathComponent("Runtime/bin/python3.13").path)' "$@"
     """+"\n")
     let suffix="fixture.example"
     let original=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree"),WorkSite(domain:"mail.example",scope:"exact",tcp:.selected([8443]))], beforeLogin:["vpn.example"],ports:[443])
     var old=original; old.version=2
-    if !firstProfile { try JSONFile.write(old,to:menu.workURL) }
-    try JSONFile.write(["site":"vpn.example"],to:paths.data.appendingPathComponent("ssl-site.json"))
+    if !firstProfile {
+        try JSONFile.write(old,to:menu.workURL)
+        try JSONFile.write(["site":"vpn.example"],to:paths.data.appendingPathComponent("ssl-site.json"))
+    }
     let desktop=firstProfile ? "" : "desktop."+suffix
     let oldRules=(try JSONSerialization.jsonObject(with:old.enrollment(desktop:desktop)) as! [String:Any])["rules"]!
     func reply(_ rules:Any) throws {

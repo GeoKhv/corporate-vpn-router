@@ -75,6 +75,29 @@ struct WorkProfile: Codable, Equatable {
         }
         return try JSONSerialization.data(withJSONObject:["domains":sites.map{$0.domain}, "desktop":desktop, "rules":rules, "allowDNSRepair":true, "allowCheckPointStart":true])
     }
+    func helperUpdateEnrollment(_ status: [String:Any]?) throws -> Data {
+        guard let status, status["ok"] as? Bool == true,
+              status["active"] as? Bool == false, status["cleanupPending"] as? Bool == false,
+              let domains = status["approvedDomains"] as? [String], !domains.isEmpty,
+              Set(sites.map { $0.domain }).isSubset(of: Set(domains)),
+              status["approvedRDPHost"] == nil || status["approvedRDPHost"] is String
+        else { throw RouterError.invalidConfiguration }
+        // The helper omits this key when no separate Windows desktop was approved.
+        let desktop = status["approvedRDPHost"] as? String ?? ""
+        guard desktop.isEmpty || (Configuration.validHost(desktop) &&
+            domains.contains { desktop == $0 || desktop.hasSuffix("." + $0) })
+        else { throw RouterError.invalidConfiguration }
+        if let rules = status["tcpRules"] {
+            guard let rows = rules as? [[String:Any]], rows.count == domains.count,
+                  rows.compactMap({ $0["domain"] as? String }) == domains
+            else { throw RouterError.invalidConfiguration }
+            return try JSONSerialization.data(withJSONObject: [
+                "domains": domains, "rules": rows, "desktop": desktop,
+                "allowDNSRepair": true, "allowCheckPointStart": true
+            ])
+        }
+        return try enrollment(desktop: desktop)
+    }
     func work(_ h: String) -> Bool {
         !beforeLogin.contains(h) && sites.contains { h == $0.domain || ($0.scope == "tree" && h.hasSuffix("."+$0.domain)) }
     }
@@ -693,7 +716,7 @@ extension BetaMenu {
         defer{try? FileManager.default.removeItem(at:temp)}
         do{try JSONFile.write(sitesPanel.draft,to:temp)}catch{settingsNote.stringValue="Не удалось сохранить черновик.";return}
         #if CVR_SELECTIVE_TUN && CVR_UPDATES
-        let validation=Self.routeCommand("check-draft",[temp.path],resources:resources)
+        let validation=validateDraft(temp)
         guard validation.code==0 else { settingsNote.stringValue="Не сохранено: "+validation.output;return }
         let profile=sitesPanel.draft
         guard !sitesPanel.applying,!applyingBundledRule,matchesStoredBase(sitesPanel.base) else {settingsNote.stringValue="Список изменён или уже применяется. Сохраните черновик через «Ещё → Экспорт…».";return}
@@ -715,7 +738,15 @@ extension BetaMenu {
         routeStatus();refreshState()
     }
     #if CVR_SELECTIVE_TUN && CVR_UPDATES
-    func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool, firstEnrollment:Bool = false) throws {
+    private var firstSiteEnrollment: Bool {
+        !FileManager.default.fileExists(atPath: paths.data.appendingPathComponent("ssl-site.json").path)
+    }
+
+    private func validateDraft(_ file: URL) -> CommandResult {
+        Self.routeCommand(firstSiteEnrollment ? "check-enrollment" : "check-draft", [file.path], resources: resources)
+    }
+
+    func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool) throws {
         guard matchesStoredBase(old) else {throw ProxyFailure("Профиль изменился. Проверьте текущие правила.")}
         let p=sitesPanel
         let open=settingsWindow != nil && p.base==old
@@ -730,6 +761,9 @@ extension BetaMenu {
         var rebased=edited
         if var draft=edited, bundled {
             // Add migration changes only to rows the user has not independently edited.
+            for row in old.sites where !new.sites.contains(where: { $0.domain == row.domain }) {
+                draft.sites.removeAll { $0 == row }
+            }
             for row in new.sites {
                 let previous=old.sites.first { $0.domain==row.domain }
                 if row==previous {continue}
@@ -743,7 +777,7 @@ extension BetaMenu {
         if let edited, let rebased {
             try JSONFile.write(PendingWork(base:old,profile:edited,nextBase:new,nextDraft:rebased),to:draftURL)
         }
-        let result=Self.routeCommand(firstEnrollment ? "save-enrollment" : "save",[file.path],resources:resources)
+        let result=Self.routeCommand(firstSiteEnrollment ? "save-enrollment" : "save",[file.path],resources:resources)
         guard result.code==0 else {throw ProxyFailure(result.output)}
         if open {
             p.base=new;p.draft=rebased ?? new;p.table.reloadData();refreshState()
@@ -779,7 +813,7 @@ extension BetaMenu {
         let profile=saved.profile
         let temp=paths.data.appendingPathComponent("apply-"+UUID().uuidString)
         do {try JSONFile.write(profile,to:temp)} catch {report("Ошибка чтения черновика.");return}
-        let validation=Self.routeCommand("check-draft",[temp.path],resources:resources)
+        let validation=validateDraft(temp)
         guard validation.code==0 else{try? FileManager.default.removeItem(at:temp);report(validation.output);return}
         let status=SelectiveRouter.helperReply(resources:resources)
         let desktop=(status?["approvedRDPHost"] as? String).flatMap { profile.work($0) ? $0:nil } ?? ""
@@ -932,6 +966,8 @@ struct StarterHTTPSAliases: Decodable {
     static let filename = "StarterHTTPSAliases.json"
     static let receipt = "starter-https-aliases-v1.applied"
     static let httpEntryReceipt = "starter-http-entry-v1.applied"
+    static let retiredTreeReceipt = "starter-retired-tree-v1.applied"
+    let retiredTreeHost: String?
     let hosts: [String]
     let httpEntryHost: String?
     let additionalHTTPEntryHost: String?
@@ -946,6 +982,9 @@ struct StarterHTTPSAliases: Decodable {
     static func load(_ url: URL) throws -> Self {
         let bundle = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
         let httpHosts = bundle.httpEntries.map { $0.host }
+        if let host = bundle.retiredTreeHost {
+            guard Configuration.validHost(host), !bundle.hosts.contains(host) else { throw RouterError.invalidConfiguration }
+        }
         guard Set(httpHosts).count == httpHosts.count, httpHosts.allSatisfy(bundle.hosts.contains),
               (1...16).contains(bundle.hosts.count), Set(bundle.hosts).count == bundle.hosts.count,
               Set(bundle.hosts.map { $0.split(separator: ".").first }).count == bundle.hosts.count,
@@ -999,7 +1038,9 @@ extension BetaMenu {
             let pendingHTTP = (aliases?.httpEntries ?? []).filter { entry in
                 !fm.fileExists(atPath:paths.data.appendingPathComponent(entry.receipt).path)
             }
-            guard needsStarterAliases || !pendingHTTP.isEmpty ||
+            let retirementReceipt = paths.data.appendingPathComponent(StarterHTTPSAliases.retiredTreeReceipt)
+            let retired = fm.fileExists(atPath:retirementReceipt.path) ? nil : aliases?.retiredTreeHost
+            guard retired != nil || needsStarterAliases || !pendingHTTP.isEmpty ||
                   !fm.fileExists(atPath:legacyReceipt.path) || !fm.fileExists(atPath:httpsReceipt.path) else { return false }
             let original = try Data(contentsOf:workURL)
             let profile = try JSONDecoder().decode(WorkProfile.self,from:original)
@@ -1043,13 +1084,24 @@ extension BetaMenu {
                     receipts.append(paths.data.appendingPathComponent(entry.receipt))
                 }
             }
+            let status = SelectiveRouter.helperReply(resources:resources)
+            let desktop = status?["approvedRDPHost"] as? String ??
+                Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile) ?? ""
+            if let retired {
+                let legacy = WorkSite(domain:retired,scope:"tree")
+                if candidate.sites.count > 1 && !(desktop == retired || desktop.hasSuffix("." + retired)) {
+                    candidate.sites.removeAll { $0 == legacy }
+                }
+                if candidate == profile && receipts.isEmpty {
+                    try Data("applied\n".utf8).write(to:retirementReceipt,options:.atomic)
+                    return false
+                }
+                receipts.append(retirementReceipt)
+            }
             guard !receipts.isEmpty else {return false}
             func markApplied() throws {
                 for receipt in receipts {try Data("applied\n".utf8).write(to:receipt,options:.atomic)}
             }
-            let status = SelectiveRouter.helperReply(resources:resources)
-            let desktop = status?["approvedRDPHost"] as? String ??
-                Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile) ?? ""
             let enrollment = try candidate.enrollment(desktop:desktop)
             let expected = try JSONSerialization.jsonObject(with:enrollment) as? [String:Any]
             let authorized = selective.helperAvailability.canConnect &&
@@ -1061,8 +1113,7 @@ extension BetaMenu {
             let pending = paths.data.appendingPathComponent("pending-" + UUID().uuidString)
             try JSONFile.write(candidate,to:pending)
             // An earlier installation may already have enrolled the idle helper before the first VPN login.
-            let firstEnrollment = !fm.fileExists(atPath:paths.data.appendingPathComponent("ssl-site.json").path)
-            let validation = Self.routeCommand(firstEnrollment ? "check-enrollment" : "check-draft",[pending.path],resources:resources)
+            let validation = validateDraft(pending)
             guard validation.code == 0 else {
                 try? fm.removeItem(at:pending)
                 let reason = validation.output.trimmingCharacters(in:.whitespacesAndNewlines)
@@ -1089,7 +1140,7 @@ extension BetaMenu {
                         throw ProxyFailure("Помощник ещё не подтвердил рабочее правило. Повторите подключение.")
                     }
                     if candidate != profile {
-                        try self.saveAppliedProfile(pending,from:profile,to:candidate,bundled:true,firstEnrollment:firstEnrollment)
+                        try self.saveAppliedProfile(pending,from:profile,to:candidate,bundled:true)
                     }
                     try markApplied()
                     if resume {

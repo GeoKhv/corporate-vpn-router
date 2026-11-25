@@ -134,7 +134,16 @@ struct FirstLaunchPlan {
             guard old.identifier == AppInstallation.identifier else {
                 throw InstallationError(step: "Папка занята другим приложением", detail: paths.app.path)
             }
-            if running || old.build.compare(new.build, options: .numeric) != .orderedAscending {
+            let order = old.build.compare(new.build, options: .numeric)
+            if old.edition != new.edition && order != .orderedDescending {
+                if running {
+                    return FirstLaunchPlan(action: .openExisting, destination: paths.app,
+                        message: "Сейчас работает Router \(old.edition). Для перехода на \(new.edition) завершите установленный Router через меню и снова откройте скачанную копию.")
+                }
+                return FirstLaunchPlan(action: .install, destination: paths.app,
+                    message: "Сменить редакцию Router с \(old.edition) \(old.version) на \(new.edition) \(new.version)? Сохранённые настройки останутся доступны. Обновления будут приходить для \(new.edition).")
+            }
+            if running || order != .orderedAscending {
                 return FirstLaunchPlan(action: .openExisting, destination: paths.app,
                     message: "Router \(old.version) уже установлен\(running ? " и работает" : ""). Откроется существующая копия; замена не требуется.")
             }
@@ -147,7 +156,7 @@ struct FirstLaunchPlan {
 }
 
 struct BundleMetadata {
-    let identifier: String, build: String, version: String
+    let identifier: String, build: String, version: String, edition: String
     static func read(_ app: URL) throws -> BundleMetadata {
         guard let value = try PropertyListSerialization.propertyList(from: Data(contentsOf: app.appendingPathComponent("Contents/Info.plist")), format: nil) as? [String: Any],
               let identifier = value["CFBundleIdentifier"] as? String,
@@ -155,7 +164,12 @@ struct BundleMetadata {
               let version = value["CFBundleShortVersionString"] as? String else {
             throw InstallationError(step: "Не удалось прочитать пакет", detail: app.path)
         }
-        return BundleMetadata(identifier: identifier, build: build, version: version)
+        // Builds predating the edition split used the RED update channel.
+        let edition = value["CVRDeploymentEdition"] ?? "RED"
+        guard let edition = edition as? String, ["RED", "WHITE"].contains(edition) else {
+            throw InstallationError(step: "Неизвестная редакция Router", detail: app.path)
+        }
+        return BundleMetadata(identifier: identifier, build: build, version: version, edition: edition)
     }
 }
 

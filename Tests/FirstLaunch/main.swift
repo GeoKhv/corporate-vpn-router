@@ -44,6 +44,28 @@ try AppInstallation.verify(target)
 require(try FirstLaunchPlan.make(source:target,paths:paths).action == .runInstalled,"installed runs directly")
 require(try FirstLaunchPlan.make(source:source,paths:paths).action == .openExisting,"same-version download opens existing")
 require(try FirstLaunchPlan.make(source:old,paths:paths).action == .openExisting,"older download opens newer existing")
+// Read the actual bundle metadata through the normal planner in both directions.
+let editionHome = root.appendingPathComponent("edition-home")
+let editionPaths = ProductPaths(root:editionHome.path,systemApplications:shared)
+let alternate = root.appendingPathComponent("download/Router.app")
+for app in [editionPaths.app, alternate] {
+    try fm.createDirectory(at:app.appendingPathComponent("Contents"),withIntermediateDirectories:true)
+}
+var metadata = try PropertyListSerialization.propertyList(from:Data(contentsOf:source.appendingPathComponent("Contents/Info.plist")),format:nil) as! [String:Any]
+func writeEdition(_ edition:String?, to app:URL) throws {
+    metadata["CVRDeploymentEdition"] = edition
+    try PropertyListSerialization.data(fromPropertyList:metadata,format:.xml,options:0).write(to:app.appendingPathComponent("Contents/Info.plist"))
+}
+for (installed, incoming) in [("WHITE", "RED"), ("RED", "WHITE")] {
+    try writeEdition(installed, to:editionPaths.app)
+    try writeEdition(incoming, to:alternate)
+    let change = try FirstLaunchPlan.make(source:alternate,paths:editionPaths)
+    require(change.action == .install && change.message.contains(installed) && change.message.contains(incoming),"explicit edition change")
+    require(try FirstLaunchPlan.make(source:alternate,paths:editionPaths,running:true).action == .openExisting,"running edition is protected")
+}
+try writeEdition(nil,to:editionPaths.app)
+try writeEdition("RED",to:alternate)
+require(try FirstLaunchPlan.make(source:alternate,paths:editionPaths).action == .openExisting,"legacy editions use RED")
 do { _=try AppInstallation.install(source:old,home:home,systemApplications:shared); fatalError("CLI downgrade accepted") }
 catch { require(error.localizedDescription.contains("устаревшая"),"newer installed copy is protected at the transaction boundary") }
 try BetaInstall.registerLogin(paths)

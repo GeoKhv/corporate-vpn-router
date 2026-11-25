@@ -1,6 +1,7 @@
 """Clean-Mac enrollment and signed native site record compatibility."""
 import asyncio
 import json
+import socket
 from pathlib import Path
 import sys
 import tempfile
@@ -61,6 +62,36 @@ with tempfile.TemporaryDirectory() as temp, patch.object(trust, 'approved_receip
         refused(native('Work VPN',ip),'OFFICIAL_SITE_AMBIGUOUS')
     raw = native('first label',ip,'Idle').replace(' gateway list:', ' active site: false\n gateway list:') + native('second label',ip2,'Idle').replace(' gateway list:', ' active site: true\n gateway list:')
     assert trust.choose_site(trust.parse_sites(raw),raw) == (other,ip2,'Idle')
+    # An idle DNS endpoint is irrelevant to the authenticated selection, whichever row comes first.
+    active = native(primary, primary+' ('+ip+')')
+    idle = native(other, other, 'Idle')
+    def active_dns(name, deadline):
+        assert name == primary, 'looked up the unused endpoint'
+        return {ip}
+    with patch.object(trust, 'gateway_ipv4', side_effect=active_dns):
+        for raw in (active+idle, idle+active):
+            with patch.object(trust, 'official_output', return_value=raw):
+                assert asyncio.run(controller.connection_site()) == (primary,ip,'Connected')
+                assert trust.connected_object(raw, primary) == 'Object'
+        saved = Path(temp)/'ssl-site.json'
+        saved.write_text(json.dumps({'site':primary, 'ip':ip}))
+        with patch.object(trust,'official_output',return_value=native(primary,primary,'Idle') + idle):
+            assert trust.official_info() == (primary,ip,'Idle')
+        saved.unlink()
+    for gw in (primary, primary+':443', primary+' ('+ip+')'):
+        raw = native(primary,gw,'Idle')
+        again = socket.gaierror(socket.EAI_AGAIN, 'temporary')
+        with patch.object(trust, 'GATEWAY_DNS_RETRY_DELAY', 0), \
+                patch.object(trust,'gateway_ipv4',side_effect=[again,{ip},{ip}]) as lookup, \
+                patch.object(trust,'official_output',return_value=raw) as read:
+            assert trust.official_info() == (primary,ip,'Idle')
+            assert lookup.call_count == 3 and read.call_count == 2
+        with patch.object(trust, 'GATEWAY_DNS_RETRY_DELAY', 0), \
+                patch.object(trust,'gateway_ipv4',side_effect=[again,{ip}]), \
+                patch.object(trust,'official_output',side_effect=[raw,native(primary,ip2,'Idle')]):
+            try: trust.official_info()
+            except trust.Refused as error: assert str(error)=='OFFICIAL_SELECTION_CHANGED'
+            else: raise AssertionError('native site changed during DNS retry')
     f = Path(temp)/'candidate'
     rule = {'version':1,'sites':[{'domain':'work.example.invalid','scope':'tree'}],'beforeLogin':[],'ports':[443]}
     f.write_text(json.dumps(rule))

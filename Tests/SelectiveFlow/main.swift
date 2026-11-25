@@ -9,6 +9,18 @@ func until(line: UInt = #line, _ predicate: () -> Bool) {
     check(predicate(), "operation timed out at caller \(line)")
 }
 func run() throws {
+    let profile = WorkProfile(sites: [WorkSite(domain:"example.invalid", scope:"tree")], ports:[443])
+    let savedRules: [[String:Any]] = [["domain":"example.invalid", "scope":"tree", "anyTCP":false, "ports":[443,8443]]]
+    var status: [String:Any] = ["ok":true, "active":false, "cleanupPending":false,
+                                "approvedDomains":["example.invalid"], "tcpRules":savedRules]
+    for oldDesktop in ["", "desk.example.invalid"] {
+        if !oldDesktop.isEmpty { status["approvedRDPHost"] = oldDesktop }
+        let update = try JSONSerialization.jsonObject(with:profile.helperUpdateEnrollment(status)) as! [String:Any]
+        check(update["desktop"] as? String == oldDesktop, "upgrade must reuse the optional desktop")
+        check((update["rules"] as? NSArray)?.isEqual(savedRules) == true, "upgrade must retain actual approved TCP rules")
+        check(update["allowCheckPointStart"] as? Bool == true, "update must authorize the new service operation")
+    }
+    check((try? profile.helperUpdateEnrollment(nil)) == nil, "failure to read the old helper is not an empty desktop")
     let root = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("cvr-flow-"+UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: root) }
     let paths = ProductPaths(root: root.path), app = NSApplication.shared
@@ -171,7 +183,8 @@ sys.stdin.read()
         menu.selective.manageHelper(resources: res)
         check(authorizations == 0, "maintenance rechecks evidence before elevation")
     }
-    let healthy: [String: Any] = ["ok":true, "version":"0.3.0-alpha.3", "build":"0.3.10", "active":false, "cleanupPending":false]
+    let helperBuild = Bundle.main.object(forInfoDictionaryKey:"CVRRouteHelperBuild") as? String ?? "0.3.10"
+    let healthy: [String: Any] = ["ok":true, "version":"0.3.0-alpha.3", "build":helperBuild, "active":false, "cleanupPending":false]
     check(SelectiveRouter.classifyReply(healthy) == .ready, "compatible broker build and protocol")
     var legacy = healthy; legacy.removeValue(forKey:"build")
     check(SelectiveRouter.classifyReply(legacy) == .updateRequired, "an idle legacy broker must be upgraded")

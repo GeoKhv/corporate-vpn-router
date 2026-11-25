@@ -313,7 +313,8 @@ class Report:
             self.row({'official_status':self.term(str(exc))})
             return
         try:
-            rows=trust.parse_sites(raw)
+            dns = trust.GatewayDNS()
+            rows = trust.official_records(raw, dns)
         except trust.Refused as exc:
             details=trust.profile_shape(raw)
             if isinstance(exc,trust.ProfileFormatError):
@@ -331,12 +332,16 @@ class Report:
                   'preconfigured_alternate_pin':bool(trust.approved_site_pin())})
         selected=None
         try:
-            selected=trust.choose_site(rows,raw)[0]
+            selected = trust.choose_site_name({name:record.state for name,record in rows.items()}, raw)
+            address = rows[selected].verified_address(dns)
+            trust.check_attempt(selected, address, rows[selected].state)
         except trust.Refused as exc:
+            selected = None
             self.row({'selection':self.term(str(exc))})
-        for i,(host,ip,state) in enumerate(rows.values(),1):
-            self.row({'profile':i,'state':state,'selected':host==selected,'primary':host==primary.get('site'),
-                      'saved':host==saved.get('site'),'gateway_route':route_interface(['-inet',ip])})
+        for i,(host,record) in enumerate(rows.items(),1):
+            ip = address if host == selected else record.address
+            self.row({'profile':i,'state':record.state,'selected':host==selected,'primary':host==primary.get('site'),
+                      'saved':host==saved.get('site'),'gateway_route':route_interface(['-inet',ip]) if ip else 'unknown'})
 
     def installation(self):
         self.row({'saved_site_binding':(DATA/'ssl-site.json').is_file(),

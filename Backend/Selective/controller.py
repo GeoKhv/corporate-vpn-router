@@ -157,10 +157,10 @@ async def start(app_pid):
         gateway,gateway_ip,_=await connection_site()
     except trust.Refused as exc:
         if str(exc)!='OFFICIAL_SITE_AMBIGUOUS':raise
-        rows=trust.parse_sites(trust.official_output())
+        rows=trust.official_records(trust.official_output(), trust.GatewayDNS())
         approved_sites={p['site'] for p in (trust.approved_receipt(),trust.approved_site_pin()) if p}
         choices=sorted(set(rows)&approved_sites)
-        if not choices or any(row[2]!='Idle' for row in rows.values()):raise
+        if not choices or any(row.state!='Idle' for row in rows.values()):raise
         selected=choices[0]
         if len(choices)>1:
             emit('selectingSite','Выберите рабочий сайт.',sites=choices)

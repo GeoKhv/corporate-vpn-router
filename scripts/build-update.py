@@ -11,6 +11,7 @@ p.add_argument('--deployment-desktop', help='Package a fixed DNS name for distri
 p.add_argument('--ipsec-bridge', type=Path, help='Explicitly opt this candidate into the reviewed unprivileged IPsec bridge')
 p.add_argument('--bundled-rules', action='store_true', help='Include the reviewed deployment-specific rule migration')
 p.add_argument('--starter-https-aliases', type=Path, help='Reviewed HTTPS aliases for an enrolled starter')
+p.add_argument('--retire-starter-tree', help='Remove one unchanged legacy tree rule from the RED starter and migrate enrolled profiles')
 p.add_argument('--credit', help='GitHub authors as shown in the version label, separated by comma and space')
 a=p.parse_args()
 edition = 'RED' if a.private else 'WHITE'
@@ -19,6 +20,7 @@ if a.rdp_host and not a.private:p.error('--rdp-host requires --private')
 if not a.private and (a.bundled_rules or a.site_pin or a.deployment_desktop):
  p.error('Bundled work rules, site pins and deployment desktops are RED-only (--private)')
 if a.starter_https_aliases and not (a.private and a.bundled_rules):p.error('--starter-https-aliases requires --private and --bundled-rules')
+if a.retire_starter_tree and not a.starter_https_aliases:p.error('--retire-starter-tree requires a starter alias manifest')
 if a.credit and not re.fullmatch(r'[A-Za-z0-9-]{1,39}(, [A-Za-z0-9-]{1,39})*',a.credit):p.error('Expected GitHub logins separated by comma and space')
 assert re.fullmatch(r'\d+\.\d+\.\d+',a.version)
 assert not a.output.exists(),'Never overwrite an existing release'
@@ -35,7 +37,24 @@ else:
 if a.starter_https_aliases:
  aliases=json.loads(a.starter_https_aliases.read_bytes())
  # Keep the original Superset migration identity for previously enrolled installations.
+ retired=aliases.get('retiredTreeHost')
+ if retired and a.retire_starter_tree and retired!=a.retire_starter_tree:p.error('Retirement identity changed')
+ retired=retired or a.retire_starter_tree
  aliases={'hosts':aliases['hosts']}
+ if retired:
+  import sys
+  sys.path.insert(0,str(ROOT/'Backend'))
+  from sites import hostname
+  if not hostname(retired) or retired in aliases['hosts']:p.error('Invalid retired starter host')
+  default=res/'DefaultWorkSites.json'
+  profile=json.loads(default.read_bytes())
+  legacy={'domain':retired,'scope':'tree'}
+  if legacy in profile['sites']:
+   profile['sites'].remove(legacy)
+   default.write_text(json.dumps(profile,ensure_ascii=False,indent=2)+'\n')
+  elif a.retire_starter_tree and not json.loads(a.starter_https_aliases.read_bytes()).get('retiredTreeHost'):
+   p.error('Legacy rule missing in base starter')
+  aliases['retiredTreeHost']=retired
  for alias, field in [('superset','httpEntryHost'), ('ametrica','additionalHTTPEntryHost')]:
   matches=[host for host in aliases['hosts'] if host.split('.')[0]==alias]
   if len(matches)>1:p.error(f'Ambiguous {alias} alias in starter manifest')

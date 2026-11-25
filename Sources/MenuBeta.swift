@@ -329,6 +329,16 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
               Set(profile.sites.map { $0.domain }).isSubset(of:Set(domains)) else {
             note = "Список рабочих сайтов выходит за разрешения прежнего помощника. Проверьте рабочие сайты."; refresh(); return
         }
+        if !edit, selective.helperAvailability == .updateRequired {
+            do {
+                let data = try profile.helperUpdateEnrollment(previous)
+                selective.manageHelper(resources: resources, enrollment: data)
+            } catch {
+                note = "Не удалось прочитать прежние разрешения помощника. Повторите проверку помощника."
+                refresh()
+            }
+            return
+        }
         let current = previous?["approvedRDPHost"] as? String
         let preset = Provisioning.defaultDesktop(resources:resources,paths:paths,profile:profile)
         let selected = [current, preset].compactMap { $0 }.first { host in

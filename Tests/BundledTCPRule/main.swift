@@ -142,7 +142,9 @@ func run() throws {
         require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"starter retries")
         waitFor("starter aliases applied"){!menu.applyingBundledRule && fm.fileExists(atPath:receipt.path)}
         let updated=menu.storedWork()!
-        require(Array(updated.sites.prefix(prior.sites.count))==prior.sites,"starter preserves previously installed rules")
+        var baseline = prior
+        if let host = aliases.retiredTreeHost { baseline.sites.removeAll { $0 == WorkSite(domain:host,scope:"tree") } }
+        require(Array(updated.sites.prefix(baseline.sites.count))==baseline.sites,"only the retired starter tree may disappear")
         for host in aliases.hosts {
             let alias=String(host.prefix(while:{$0 != "."}))
             let ports = aliases.httpEntries.contains(where: { $0.host == host }) ? [80,443] : [443]
@@ -159,7 +161,7 @@ func run() throws {
         require(aliases.add(to:&edited)==[host] && edited.sites.contains(unrelated),"existing alias owner and any TCP preserved")
         if let host = aliases.httpEntryHost {
             let httpReceipt = paths.data.appendingPathComponent(StarterHTTPSAliases.httpEntryReceipt)
-            var v40 = prior
+            var v40 = baseline
             _ = aliases.add(to: &v40)
             try JSONFile.write(v40,to:menu.workURL)
             try reply((try JSONSerialization.jsonObject(with:v40.enrollment(desktop:desktop)) as! [String:Any])["rules"]!)
@@ -191,6 +193,30 @@ func run() throws {
                 try aliases.addHTTPEntry(additional, to:&expected)
                 require(menu.storedWork()==expected && expected != v40,"only the newly delivered host changes")
             }
+        }
+        if let retired = aliases.retiredTreeHost {
+            let marker = paths.data.appendingPathComponent(StarterHTTPSAliases.retiredTreeReceipt)
+            let legacy = WorkSite(domain:retired,scope:"tree")
+            var old = updated
+            old.sites.append(legacy)
+            try JSONFile.write(old,to:menu.workURL)
+            try reply((try JSONSerialization.jsonObject(with:old.enrollment(desktop:desktop)) as! [String:Any])["rules"]!)
+            try fm.removeItem(at:marker)
+            cancel=true
+            require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"retirement asks to update helper rules")
+            waitFor("retirement cancelled"){!menu.applyingBundledRule}
+            require(menu.storedWork()==old && !fm.fileExists(atPath:marker.path),"cancel preserves legacy workflow")
+            cancel=false
+            require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"retirement retries")
+            waitFor("starter retirement saved"){!menu.applyingBundledRule && fm.fileExists(atPath:marker.path)}
+            require(menu.storedWork()==updated,"removes only the unchanged legacy tree")
+            try JSONFile.write(old,to:menu.workURL)
+            require(!menu.applyBundledRuleIfNeeded(connectAfterward:false) && menu.storedWork()==old,"manual re-addition respected")
+            try fm.removeItem(at:marker)
+            old.sites[old.sites.count-1].tcp = .selected([8443])
+            try JSONFile.write(old,to:menu.workURL)
+            require(!menu.applyBundledRuleIfNeeded(connectAfterward:false) && menu.storedWork()==old && fm.fileExists(atPath:marker.path),"custom rule retained")
+            print("PASS starter tree retirement, cancel, retry, custom ports and manual re-addition")
         }
         print("PASS starter alias migration with prior receipts, cancelled approval, retry, conflict and manual removal")
     }
