@@ -91,6 +91,30 @@ import Foundation
                 fatalError("accepted unauthorized request")
             } catch is HelperFailure {}
         }
+        let mainRule: [String:Any] = ["domain":domain,"scope":"tree","anyTCP":false,"ports":[443,8443]]
+        let childRule: [String:Any] = ["domain":"restricted."+domain,"scope":"exact","anyTCP":false,"ports":[443]]
+        let spareRule: [String:Any] = ["domain":"unused.example.invalid","scope":"exact","anyTCP":false,"ports":[22]]
+        let enrolled = try LocalRoutePolicy.decode(jsonData(["domains":[domain,"restricted."+domain,"unused.example.invalid"],"desktop":desktop,"rules":[mainRule,childRule,spareRule]]))
+        localPolicy = enrolled
+        let narrower = mainRule.merging(["ports":[443]]) { _,new in new }
+        let selection = [narrower,childRule]
+        let selected = try sessionGrants(selection, approved:enrolled.rules!)
+        precondition(selected.count == 2 && selected[0].ports == [443])
+        let confirmed = try broker.request(["op":"checkSessionRules","sessionRules":selection], owner:owner)
+        precondition(confirmed["ok"] as? Bool == true && localPolicy?.rules?.count == 3)
+        var begin = base
+        begin.removeValue(forKey:"domains")
+        begin["sessionRules"] = selection
+        begin["rdpSlot"] = 12
+        let (sessionDomains, _, _, desktopSlot) = try broker.prepareSessionRules(begin)
+        precondition(sessionDomains == [domain,"restricted."+domain] && desktopSlot == 12)
+        precondition(broker.sessionTCPRules.map { $0.ports } == [[443],[443]] && localPolicy?.rules?.count == 3)
+        for invalid in [[narrower], [narrower,narrower], [mainRule.merging(["ports":[80]]) { _,new in new },childRule],
+                        [childRule.merging(["scope":"tree"]) { _,new in new }]] {
+            do { _ = try sessionGrants(invalid, approved:enrolled.rules!); fatalError("unapproved session rules") }
+            catch is HelperFailure {}
+        }
+        print("PASS session uses selected domains and ports, keeps nested restrictions and stored grants")
         print("PASS portable helper release policy, exact RDP, HTTPS, local enrollment and rejected destinations")
     }
 }

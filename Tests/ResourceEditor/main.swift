@@ -52,8 +52,8 @@ func run() throws {
     }
     let desktop=firstProfile ? "" : "desktop."+suffix
     let oldRules=(try JSONSerialization.jsonObject(with:old.enrollment(desktop:desktop)) as! [String:Any])["rules"]!
-    func reply(_ rules:Any) throws {
-        try JSONSerialization.data(withJSONObject:["ok":true,"active":false,"cleanupPending":false,"approvedRDPHost":desktop,"tcpRules":rules]).write(to:state)
+    func reply(_ rules:Any, reportedDesktop: String? = nil) throws {
+        try JSONSerialization.data(withJSONObject:["ok":true,"active":false,"cleanupPending":false,"approvedRDPHost":reportedDesktop ?? desktop,"tcpRules":rules]).write(to:state)
     }
     try reply(oldRules)
     let app=NSApplication.shared
@@ -68,13 +68,14 @@ func run() throws {
     menu.selective.changed = { menu.selectiveChanged() }
     var prompts=0
     var cancel=true
+    var wrongDesktop=false
     menu.selective.authorizeHelper = { args in
         prompts+=1
         if cancel { return "cancelled (-128)" }
         let encoded=args[2].components(separatedBy:"'").dropLast().last!
         let object=try! JSONSerialization.jsonObject(with:Data(base64Encoded:encoded)!) as! [String:Any]
         require(object["desktop"] as? String==desktop,"existing RDP host preserved")
-        try! reply(object["rules"]!)
+        try! reply(object["rules"]!, reportedDesktop:wrongDesktop ? "other.fixture.example" : desktop)
         approved=true
         return nil
     }
@@ -91,10 +92,16 @@ func run() throws {
         waitFor("approval cancelled"){!menu.sitesPanel.applying}
         require(menu.storedWork()==nil && menu.queuedProfile(for:WorkProfile())==draft,"first profile is retryable after cancellation")
         cancel=false
+        wrongDesktop=true
+        menu.savePolicy()
+        waitFor("missing desktop confirmation"){!menu.sitesPanel.applying}
+        require(menu.storedWork()==nil && fm.fileExists(atPath:menu.pendingURL.path),"incomplete helper confirmation retains the draft")
+        wrongDesktop=false
+        try reply(oldRules)
         menu.savePolicy()
         waitFor("approval completed"){!menu.sitesPanel.applying}
         require(menu.storedWork()==draft,"first profile saved: \(menu.settingsNote.stringValue)")
-        require(prompts==2 && !fm.fileExists(atPath:menu.pendingURL.path),"first profile installed with approved rules")
+        require(prompts==3 && !fm.fileExists(atPath:menu.pendingURL.path),"first profile installed with approved rules")
         print("PASS empty editor, first policy, cancelled approval, successful retry")
         return
     }

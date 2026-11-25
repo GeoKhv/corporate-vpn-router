@@ -10,6 +10,7 @@ from unittest.mock import patch
 engine = Path(sys.argv[1]).resolve()
 sys.path[:0] = [str(engine / 'Selective'), str(engine)]
 import controller
+from sites import grants
 import helper_client
 import sparse_dns
 import trust
@@ -68,11 +69,17 @@ async def test(mode):
         class FakeHelper:
             def __init__(self, _): pass
             async def open(self):
+                if mode == 'scoped_session':
+                    extra = dict(domain='other.example.invalid',scope='exact',ports=[443],anyTCP=False)
+                    return dict(version='0.3.0-alpha.3', build='0.3.20', supportsSessionRules=True,
+                                tcpRules=grants(cfg)+[extra], **status())
                 return dict(version='0.3.0-alpha.3', build='0.3.10', allowCheckPointStart=True, approvedDomains=['work.example.invalid'],
                             approvedPorts=[443], approvedRDPHost='desk.work.example.invalid' if mode=='partial_begin' else None, **status())
             async def call(self, op, **kwargs):
                 nonlocal clock_offset, service_down
                 calls.append(op)
+                if mode == 'scoped_session' and op in ('checkSessionRules','begin'):
+                    assert kwargs['sessionRules'] == grants(cfg) and 'domains' not in kwargs
                 if op == 'ensureCheckPointService':
                     assert service_down and not stage.exists()
                     service_down = False
@@ -167,6 +174,8 @@ async def test(mode):
                 assert 'publish' not in calls
             if mode == 'dns_live':
                 assert 'publish' in calls and cause == 'SYSTEM_DNS_ADDRESS_CONFLICT'
+            if mode == 'scoped_session':
+                assert calls.index('checkSessionRules') < calls.index('begin') < calls.index('publish')
             if mode == 'slow_dns_start':
                 assert 'publish' in calls and cause == 'FIXTURE_TRANSPORT_LOST'
             confirmed = mode not in ('cleanup_pending', 'missing_status')
@@ -177,7 +186,7 @@ async def test(mode):
 
 test_dns_addresses()
 for mode in ('pending_on_open', 'cancel_login', 'recover_then_cancel', 'dns_preflight', 'dns_after_mfa', 'dns_before_publish', 'dns_live', 'slow_dns_start',
-             'partial_begin', 'publish_failure', 'transport_failure', 'cleanup_pending', 'missing_status'):
+             'scoped_session', 'partial_begin', 'publish_failure', 'transport_failure', 'cleanup_pending', 'missing_status'):
     asyncio.run(test(mode))
 print('PASS DNS overlap IPv4/IPv6 and scoped resolvers, no routes on cancellation or preflight failure, '
       'partial begin, publish and transport failures, independent cleanup status and pending/unknown block')

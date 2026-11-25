@@ -62,6 +62,22 @@ def initialize_map():
 def quote(value):return "'"+str(value).replace("'","'\\''")+"'"
 
 
+async def session_policy(cfg, status, helper):
+    from sites import approved, grants
+    if approved(cfg, status):
+        return {'domains': [row['domain'] for row in cfg['sites']]}
+    if status.get('supportsSessionRules') is not True:
+        raise RuntimeError('HELPER_POLICY_APPROVAL_REQUIRED')
+    selection = {'sessionRules': grants(cfg)}
+    try:
+        await helper.call('checkSessionRules', **selection)
+    except RuntimeError as exc:
+        if str(exc) == 'RULE_APPROVAL_REQUIRED':
+            raise RuntimeError('HELPER_POLICY_APPROVAL_REQUIRED') from exc
+        raise
+    return selection
+
+
 def helper_is_idle(status):
     return status.get('active') is False and status.get('cleanupPending') is False
 
@@ -150,7 +166,7 @@ async def start(app_pid):
     # An Idle VPN is normal; only explicit service errors are classified as such.
     from trust import official_info
     from helper_client import RouteHelper
-    from sites import rdp_host_for_profile, approved, matched_rule
+    from sites import rdp_host_for_profile, matched_rule
     from sparse_dns import serve as serve_front
     import trust
     try:
@@ -254,8 +270,7 @@ async def start(app_pid):
             CLEANUP_CONFIRMED=False
             raise RuntimeError('HELPER_SESSION_PENDING')
         if status.get('version')!='0.3.0-alpha.3' or status.get('build') not in ('0.3.10','0.3.11','0.3.20'):raise RuntimeError('HELPER_UPDATE_REQUIRED')
-        if not approved(cfg, status):
-            raise RuntimeError('HELPER_POLICY_APPROVAL_REQUIRED')
+        selection = await session_policy(cfg, status, helper)
         loop.add_reader(sys.stdin.fileno(),input_ready);reader=True
         for sig in (signal.SIGTERM,signal.SIGINT):loop.add_signal_handler(sig,cancel)
         await check_system_dns()
@@ -289,7 +304,7 @@ async def start(app_pid):
         # A failed begin can still have created a journal/interface. Always
         # verify cleanup, including partial startup and lost replies.
         prepared=True;CLEANUP_CONFIRMED=False
-        await helper.call('begin',domains=[r['domain'] for r in cfg['sites']],ports=[443] if 'tcpRules' in status else cfg['ports'],password=inp['password'],**rdp_rule)
+        await helper.call('begin',**selection,ports=[443] if 'tcpRules' in status else cfg['ports'],password=inp['password'],**rdp_rule)
         async def install(addresses):
             await check_system_dns()
             if 'tcpRules' in status:

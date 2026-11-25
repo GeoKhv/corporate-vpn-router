@@ -11,13 +11,15 @@ python3 scripts/build-update.py \
   --base-app '/path/to/verified/Corporate VPN Router TUN Trial.app' \
   --sparkle '/path/to/verified/Corporate VPN Router TUN Trial.app/Contents/Frameworks' \
   --output '/path/to/new-output' \
-  --version 0.3.31 --build 3031 --credit MichaelTG \
+  --version 0.3.43 --build 3043 --credit MichaelTG \
   --ipsec-bridge '/path/to/source/snx-rs/target/release/cvr-ipsec'
 ```
 
-RED и WHITE 0.3.31 используют один код и номер сборки. Параметр `--private` выбирает RED и ленту `update-channel`. Без него создаётся WHITE с лентой `update-channel-white`. После распаковки проверяйте состав файлов, контрольную сумму и адрес ленты. [Манифест 0.3.31](releases/0.3.31.json)
+RED и WHITE 0.3.43 используют один код и номер сборки. Параметр `--private` выбирает RED и ленту `update-channel`. Без него создаётся WHITE с лентой `update-channel-white`. После распаковки проверяйте состав файлов, контрольную сумму и адрес ленты. [Манифест 0.3.43](releases/0.3.43.json)
 
-Для подготовки «Красной» с проверенным списком алиасов используйте `--starter-https-aliases` вместе с `--private` и `--bundled-rules`. Чистая сборка удаляет ресурс алиасов развёртывания из унаследованного bundle.
+Используйте предыдущий подписанный ZIP той же редакции. Для WHITE подходит команда выше. Для очередной RED из стартового комплекта 0.3.43 добавьте `--private`. Текущий сборщик в Git наследует готовый адрес ПУРМС, список коротких имён и отметку об удалённом стандартном правиле VDI. При подготовке исходного комплекта с новым списком используйте `--starter-https-aliases` вместе с `--private --bundled-rules`.
+
+В распакованной RED сравните `DefaultDesktop.json`, `DefaultWorkSites.json`, `StarterHTTPSAliases.json` и `BundledTCPRule.json` с опубликованной базой. Проверьте подключение с готовым адресом ПУРМС, обычный маршрут VDI и оба коротких имени. Повторите проверки с пустым профилем и с копией уже обновлявшегося профиля. Для WHITE проверьте отсутствие этих ресурсов и сохранение первого адреса через «Доступы…».
 
 ## Проверки и публикация
 

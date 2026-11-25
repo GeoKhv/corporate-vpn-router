@@ -824,6 +824,10 @@ extension BetaMenu {
             defer {try? FileManager.default.removeItem(at:temp)}
             p.applying=false
             guard success else{report("Утверждение не завершено. Черновик сохранён.");return}
+            guard Provisioning.matchesEnrollment(SelectiveRouter.helperReply(resources:resources), expected) else {
+                report("Помощник ещё не подтвердил рабочие правила и адрес ПК. Черновик сохранён.")
+                return
+            }
             do {try saveAppliedProfile(temp,from:saved.base,to:profile,bundled:false)}
             catch {report(error.localizedDescription);return}
             completePending()

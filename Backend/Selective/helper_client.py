@@ -18,7 +18,7 @@ class RouteHelper:
         async with self.lock:
             if self.process is None or self.process.returncode is not None:
                 raise RuntimeError('HELPER_UNAVAILABLE')
-            data = json.dumps(dict(op=operation, **fields)).encode()+b'\n'
+            data = json.dumps(dict(op=operation, **fields), separators=(',', ':')).encode()+b'\n'
             if len(data) > 65536:
                 raise ValueError('Helper request too large')
             self.process.stdin.write(data)

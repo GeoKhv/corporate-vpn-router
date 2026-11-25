@@ -16,6 +16,11 @@ p.add_argument('--credit', help='GitHub authors as shown in the version label, s
 a=p.parse_args()
 edition = 'RED' if a.private else 'WHITE'
 channel = 'update-channel' if a.private else 'update-channel-white'
+# Preserve a starter's deployment manifest and its receipt identities on RED updates.
+base_resources=a.base_app/'Contents/Resources'
+if a.private and (base_resources/'StarterHTTPSAliases.json').is_file():
+ a.starter_https_aliases=a.starter_https_aliases or base_resources/'StarterHTTPSAliases.json'
+ a.bundled_rules=True
 # Carry the enrolled RED desktop through subsequent builds from that signed edition.
 previous_desktop=a.base_app/'Contents/Resources/DefaultDesktop.json'
 if a.private and previous_desktop.is_file() and not (a.deployment_desktop or a.rdp_host):
@@ -97,7 +102,7 @@ if a.ipsec_bridge:
    destination.parent.mkdir(parents=True,exist_ok=True)
    destination.write_bytes(source.read_bytes());destination.chmod(0o644)
  license_target.chmod(0o755)
-for name in ['controller.py','services.py','policy.py','sparse_dns.py','analyze.py','system_dns_check.py']:
+for name in ['controller.py','helper_client.py','services.py','policy.py','sparse_dns.py','analyze.py','system_dns_check.py']:
  shutil.copy2(ROOT/'Backend/Selective'/name,res/'Engine/Selective'/name)
 # Do not inherit a host-only proxy from an older bootstrap.
 bundle.CACHE.mkdir(parents=True,exist_ok=True)

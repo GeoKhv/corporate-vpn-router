@@ -15,6 +15,15 @@ struct TCPGrant: Codable {
     func matches(_ host: String) -> Bool {
         host == domain || (scope == "tree" && host.hasSuffix("." + domain))
     }
+    #if CVR_PORTABLE_HELPER
+    func permits(_ requested: TCPGrant) -> Bool {
+        guard scope == requested.scope, requested.alias == nil || requested.alias == alias else { return false }
+        if requested.anyTCP { return anyTCP && requested.ports.isEmpty }
+        return (1...32).contains(requested.ports.count) && requested.ports.allSatisfy {
+            (1...65535).contains($0) && (anyTCP || ports.contains($0))
+        }
+    }
+    #endif
 }
 #if CVR_PORTABLE_HELPER
 // Private rules exist only on the enrolled Mac. Installation requires an
@@ -56,6 +65,23 @@ struct LocalRoutePolicy: Codable {
         }
         return value
     }
+}
+// Select a session within the administrator-approved rules. Never drop a more
+// specific enrolled restriction underneath a selected tree.
+func sessionGrants(_ raw: Any?, approved: [TCPGrant]) throws -> [TCPGrant] {
+    guard let rows = raw as? [[String:Any]], !rows.isEmpty, rows.count <= approved.count else {
+        throw HelperFailure("RULE_APPROVAL_REQUIRED")
+    }
+    let requested = try JSONDecoder().decode([TCPGrant].self, from:jsonData(rows))
+    let enrolled = Dictionary(uniqueKeysWithValues:approved.map { ($0.domain, $0) })
+    let names = Set(requested.map { $0.domain })
+    guard names.count == requested.count else { throw HelperFailure("RULE_APPROVAL_REQUIRED") }
+    for rule in requested {
+        guard enrolled[rule.domain]?.permits(rule) == true,
+              rule.scope != "tree" || !approved.contains(where: { rule.matches($0.domain) && !names.contains($0.domain) })
+        else { throw HelperFailure("RULE_APPROVAL_REQUIRED") }
+    }
+    return requested
 }
 var localPolicy: LocalRoutePolicy?
 var approvedDomains: [String] { localPolicy?.domains ?? [] }
@@ -370,6 +396,9 @@ final class Broker {
     var lastDNSRepair: TimeInterval?
     var registeredNames = [Int:String]()
     var usesScopedRules = false
+    #if CVR_PORTABLE_HELPER
+    var sessionTCPRules = [TCPGrant]()
+    #endif
     var adapter: Child?
     var lease: UUID?
     var beat = Date.distantPast
@@ -403,7 +432,7 @@ final class Broker {
     }
     #if CVR_PORTABLE_HELPER
     func writeTCPRules() throws {
-        let granted = localPolicy?.rules ?? []
+        let granted = sessionTCPRules
         var entries = [[String:Any]]()
         for (slot, name) in registeredNames.sorted(by: { $0.key < $1.key }) {
             guard let rule = granted.filter({ $0.matches(name) }).max(by: { $0.domain.count < $1.domain.count }) else { continue }
@@ -417,26 +446,44 @@ final class Broker {
         guard usesScopedRules, let name=input["name"] as? String, name.utf8.count <= 253,
               name.range(of:"^[a-z0-9-]+(\\.[a-z0-9-]+)+$",options:.regularExpression) != nil,
               let slot=input["slot"] as? Int, (2...254).contains(slot),
-              localPolicy?.rules?.contains(where: { $0.matches(name) }) == true,
+              sessionTCPRules.contains(where: { $0.matches(name) }),
               registeredNames[slot] == nil || registeredNames[slot] == name else { throw HelperFailure("INVALID_RULE_BINDING") }
         if registeredNames[slot] == name { return }
         registeredNames[slot] = name
         do { try writeTCPRules() } catch { registeredNames.removeValue(forKey:slot); throw error }
     }
     #endif
-    func begin(_ input:[String:Any],owner:UUID) throws -> [String:Any] {
-        guard journal.isEmpty, lease == nil else { throw HelperFailure("SESSION_BUSY_OR_CLEANUP_REQUIRED") }
-        let (baseDomains,ports,password,rdpSlot)=try validateBegin(input)
+    func prepareSessionRules(_ input:[String:Any]) throws -> ([String],[Int],String,Int?) {
+        var parameters = input
+        #if CVR_PORTABLE_HELPER
+        if let requested = parameters.removeValue(forKey:"sessionRules") {
+            guard parameters["domains"] == nil, let approved = localPolicy?.rules else { throw HelperFailure("RULE_APPROVAL_REQUIRED") }
+            sessionTCPRules = try sessionGrants(requested, approved:approved)
+            parameters["domains"] = sessionTCPRules.map { $0.domain }
+        } else {
+            sessionTCPRules = localPolicy?.rules ?? []
+        }
+        #endif
+        let (baseDomains,ports,password,rdpSlot)=try validateBegin(parameters)
         var domains = baseDomains
         registeredNames.removeAll()
         usesScopedRules = false
         #if CVR_PORTABLE_HELPER
-        if let grants = localPolicy?.rules {
+        if localPolicy?.rules != nil {
+            let grants = sessionTCPRules
             guard Set(baseDomains) == Set(grants.map({$0.domain})) else { throw HelperFailure("RULE_APPROVAL_REQUIRED") }
+            if rdpSlot != nil && !grants.contains(where: { $0.matches(approvedRDPHost) }) {
+                throw HelperFailure("RULE_APPROVAL_REQUIRED")
+            }
             usesScopedRules = true
             domains += grants.compactMap({$0.alias})
         }
         #endif
+        return (domains,ports,password,rdpSlot)
+    }
+    func begin(_ input:[String:Any],owner:UUID) throws -> [String:Any] {
+        guard journal.isEmpty, lease == nil else { throw HelperFailure("SESSION_BUSY_OR_CLEANUP_REQUIRED") }
+        let (domains,ports,password,rdpSlot) = try prepareSessionRules(input)
         guard liveInterface() == 0 else { throw HelperFailure("UTUN73_IN_USE") }
         let resolver="/private/etc/resolver"
         try checkParents(resolver)
@@ -599,6 +646,7 @@ final class Broker {
             status["build"] = "0.3.20"
             status["allowCheckPointStart"] = localPolicy?.allowCheckPointStart == true
             if let rules = localPolicy?.rules {
+                status["supportsSessionRules"] = true
                 status["tcpRules"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(rules))
                 status.removeValue(forKey:"approvedPorts")
             }
@@ -617,6 +665,11 @@ final class Broker {
                 throw HelperFailure("HELPER_SESSION_PENDING")
             }
             try CheckPointService.restore()
+            return ["ok":true]
+        }
+        if op == "checkSessionRules" {
+            guard Set(input.keys) == ["op","sessionRules"], let approved = localPolicy?.rules else { throw HelperFailure("RULE_APPROVAL_REQUIRED") }
+            _ = try sessionGrants(input["sessionRules"], approved:approved)
             return ["ok":true]
         }
         #endif
