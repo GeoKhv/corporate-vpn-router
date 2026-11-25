@@ -56,6 +56,7 @@ enum BetaInstall {
             if let aliases = Bundle.main.url(forResource: "StarterHTTPSAliases", withExtension: "json") {
                 let defaults = try StarterHTTPSAliases.load(aliases)
                 guard defaults.add(to: &profile).isEmpty else { throw RouterError.invalidConfiguration }
+                for entry in defaults.httpEntries { try defaults.addHTTPEntry(entry.host, to: &profile) }
                 data = try JSONEncoder().encode(profile)
             }
 #endif

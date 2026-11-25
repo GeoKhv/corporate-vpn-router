@@ -33,7 +33,14 @@ else:
  (res/'BundledTCPRule.json').unlink(missing_ok=True)
 (res/'StarterHTTPSAliases.json').unlink(missing_ok=True)
 if a.starter_https_aliases:
- shutil.copyfile(a.starter_https_aliases,res/'StarterHTTPSAliases.json')
+ aliases=json.loads(a.starter_https_aliases.read_bytes())
+ # Keep the original Superset migration identity for previously enrolled installations.
+ aliases={'hosts':aliases['hosts']}
+ for alias, field in [('superset','httpEntryHost'), ('ametrica','additionalHTTPEntryHost')]:
+  matches=[host for host in aliases['hosts'] if host.split('.')[0]==alias]
+  if len(matches)>1:p.error(f'Ambiguous {alias} alias in starter manifest')
+  if matches:aliases[field]=matches[0]
+ (res/'StarterHTTPSAliases.json').write_text(json.dumps(aliases,indent=2)+'\n')
 framework=app/'Contents/Frameworks/Sparkle.framework';framework.parent.mkdir(exist_ok=True)
 if (a.sparkle/'Sparkle.framework').resolve() != (a.base_app/'Contents/Frameworks/Sparkle.framework').resolve():
  run('ditto',a.sparkle/'Sparkle.framework',framework)

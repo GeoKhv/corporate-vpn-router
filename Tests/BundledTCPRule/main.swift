@@ -145,7 +145,8 @@ func run() throws {
         require(Array(updated.sites.prefix(prior.sites.count))==prior.sites,"starter preserves previously installed rules")
         for host in aliases.hosts {
             let alias=String(host.prefix(while:{$0 != "."}))
-            require(updated.sites.contains(WorkSite(domain:host,scope:"exact",tcp:.selected([443]),alias:alias)),"starter delivers exact HTTPS alias")
+            let ports = aliases.httpEntries.contains(where: { $0.host == host }) ? [80,443] : [443]
+            require(updated.sites.contains(WorkSite(domain:host,scope:"exact",tcp:.selected(ports),alias:alias)),"starter delivers exact HTTPS alias")
         }
         try JSONFile.write(prior,to:menu.workURL)
         require(!menu.applyBundledRuleIfNeeded(connectAfterward:false),"starter respects manual removal")
@@ -156,6 +157,41 @@ func run() throws {
         var edited=prior
         edited.sites.append(unrelated)
         require(aliases.add(to:&edited)==[host] && edited.sites.contains(unrelated),"existing alias owner and any TCP preserved")
+        if let host = aliases.httpEntryHost {
+            let httpReceipt = paths.data.appendingPathComponent(StarterHTTPSAliases.httpEntryReceipt)
+            var v40 = prior
+            _ = aliases.add(to: &v40)
+            try JSONFile.write(v40,to:menu.workURL)
+            try reply((try JSONSerialization.jsonObject(with:v40.enrollment(desktop:desktop)) as! [String:Any])["rules"]!)
+            for entry in aliases.httpEntries { try fm.removeItem(at:paths.data.appendingPathComponent(entry.receipt)) }
+            cancel=true
+            require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"HTTP-only migration requests authorization")
+            waitFor("HTTP authorization cancelled"){!menu.applyingBundledRule}
+            require(menu.storedWork()==v40 && !fm.fileExists(atPath:httpReceipt.path),"HTTP cancel preserves state")
+            cancel=false
+            require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"HTTP migration retries")
+            waitFor("HTTP migration saved"){!menu.applyingBundledRule && fm.fileExists(atPath:httpReceipt.path)}
+            require(menu.storedWork()==updated,"direct HTTPS-only upgrade matches fresh rules")
+            try JSONFile.write(v40,to:menu.workURL)
+            require(!menu.applyBundledRuleIfNeeded(connectAfterward:false),"removing HTTP after upgrade is respected")
+            var removed = v40
+            removed.sites.removeAll { $0.domain == host }
+            let snapshot = removed
+            try aliases.addHTTPEntry(host, to:&removed)
+            require(removed == snapshot,"deleted starter alias stays deleted during upgrade")
+            if let additional = aliases.additionalHTTPEntryHost {
+                // Superset was already delivered and the user removed TCP 80.
+                let entry = aliases.httpEntries.first { $0.host == additional }!
+                let additionalReceipt = paths.data.appendingPathComponent(entry.receipt)
+                try fm.removeItem(at:additionalReceipt)
+                try reply((try JSONSerialization.jsonObject(with:v40.enrollment(desktop:desktop)) as! [String:Any])["rules"]!)
+                require(menu.applyBundledRuleIfNeeded(connectAfterward:false),"second HTTP migration runs independently")
+                waitFor("second HTTP migration saved"){!menu.applyingBundledRule && fm.fileExists(atPath:additionalReceipt.path)}
+                var expected = v40
+                try aliases.addHTTPEntry(additional, to:&expected)
+                require(menu.storedWork()==expected && expected != v40,"only the newly delivered host changes")
+            }
+        }
         print("PASS starter alias migration with prior receipts, cancelled approval, retry, conflict and manual removal")
     }
     // Fresh helper installation must finish even when no live site is readable.

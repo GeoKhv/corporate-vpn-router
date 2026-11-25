@@ -931,16 +931,38 @@ extension BetaMenu {
 struct StarterHTTPSAliases: Decodable {
     static let filename = "StarterHTTPSAliases.json"
     static let receipt = "starter-https-aliases-v1.applied"
+    static let httpEntryReceipt = "starter-http-entry-v1.applied"
     let hosts: [String]
+    let httpEntryHost: String?
+    let additionalHTTPEntryHost: String?
+
+    var httpEntries: [(host: String, receipt: String)] {
+        var entries: [(String, String)] = []
+        if let host = httpEntryHost { entries.append((host, Self.httpEntryReceipt)) }
+        if let host = additionalHTTPEntryHost { entries.append((host, "starter-http-entry-v2.applied")) }
+        return entries
+    }
 
     static func load(_ url: URL) throws -> Self {
         let bundle = try JSONDecoder().decode(Self.self, from: Data(contentsOf: url))
-        guard (1...16).contains(bundle.hosts.count), Set(bundle.hosts).count == bundle.hosts.count,
+        let httpHosts = bundle.httpEntries.map { $0.host }
+        guard Set(httpHosts).count == httpHosts.count, httpHosts.allSatisfy(bundle.hosts.contains),
+              (1...16).contains(bundle.hosts.count), Set(bundle.hosts).count == bundle.hosts.count,
               Set(bundle.hosts.map { $0.split(separator: ".").first }).count == bundle.hosts.count,
               bundle.hosts.allSatisfy({ $0.contains(".") && Configuration.validHost($0) }) else {
             throw RouterError.invalidConfiguration
         }
         return bundle
+    }
+
+    // Only extend an existing exact starter alias that still grants HTTPS.
+    func addHTTPEntry(_ host: String, to profile: inout WorkProfile) throws {
+        guard let site = profile.sites.first(where: { $0.domain == host }),
+              site.scope == "exact", site.alias == String(host.prefix(while: { $0 != "." })),
+              !profile.beforeLogin.contains(host),
+              case .selected(let ports) = site.tcp ?? .selected(profile.ports),
+              ports.contains(443), !ports.contains(80) else { return }
+        try profile.mergeExactRule(SharedTCPRule(kind: "exact-tcp-rule", domain: host, ports: [80], shortName: false))
     }
 
     func add(to profile: inout WorkProfile) -> [String] {
@@ -968,13 +990,17 @@ extension BetaMenu {
         let fm = FileManager.default
         let starterAliases = resources.appendingPathComponent(StarterHTTPSAliases.filename)
         let starterReceipt = paths.data.appendingPathComponent(StarterHTTPSAliases.receipt)
-        let needsStarterAliases = fm.fileExists(atPath:starterAliases.path) && !fm.fileExists(atPath:starterReceipt.path)
         guard !applyingBundledRule, engine == nil, !selective.busy,
               selective.helperAvailability.canConnect || selective.helperAvailability.needsInstallation,
-              (needsStarterAliases || !fm.fileExists(atPath:legacyReceipt.path) || !fm.fileExists(atPath:httpsReceipt.path)),
-              fm.fileExists(atPath:resource.path),
-              fm.fileExists(atPath:workURL.path) else { return false }
+              fm.fileExists(atPath:resource.path), fm.fileExists(atPath:workURL.path) else { return false }
         do {
+            let aliases = fm.fileExists(atPath:starterAliases.path) ? try StarterHTTPSAliases.load(starterAliases) : nil
+            let needsStarterAliases = aliases != nil && !fm.fileExists(atPath:starterReceipt.path)
+            let pendingHTTP = (aliases?.httpEntries ?? []).filter { entry in
+                !fm.fileExists(atPath:paths.data.appendingPathComponent(entry.receipt).path)
+            }
+            guard needsStarterAliases || !pendingHTTP.isEmpty ||
+                  !fm.fileExists(atPath:legacyReceipt.path) || !fm.fileExists(atPath:httpsReceipt.path) else { return false }
             let original = try Data(contentsOf:workURL)
             let profile = try JSONDecoder().decode(WorkProfile.self,from:original)
             let bytes=try Data(contentsOf:resource)
@@ -1003,13 +1029,19 @@ extension BetaMenu {
                 }
                 if !conflict || candidate != profile {receipts.append(httpsReceipt)}
             }
-            if needsStarterAliases {
-                let aliases = try StarterHTTPSAliases.load(starterAliases)
-                let conflicts = aliases.add(to: &candidate)
-                if !conflicts.isEmpty {
-                    connectionNotice = "Сохранены ваши правила для: " + conflicts.joined(separator: ", ")
+            if let aliases {
+                if needsStarterAliases {
+                    let conflicts = aliases.add(to: &candidate)
+                    if !conflicts.isEmpty {
+                        connectionNotice = "Сохранены ваши правила для: " + conflicts.joined(separator: ", ")
+                    }
+                    receipts.append(starterReceipt)
                 }
-                receipts.append(starterReceipt)
+                for entry in pendingHTTP {
+                    do { try aliases.addHTTPEntry(entry.host, to: &candidate) }
+                    catch { connectionNotice = "Сохранено ваше правило для " + entry.host }
+                    receipts.append(paths.data.appendingPathComponent(entry.receipt))
+                }
             }
             guard !receipts.isEmpty else {return false}
             func markApplied() throws {
