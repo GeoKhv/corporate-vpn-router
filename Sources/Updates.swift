@@ -12,6 +12,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     var changed: (() -> Void)?
     var cancelAction: (() -> Void)?
     var foundReply: ((SPUUserUpdateChoice) -> Void)?
+    private var checkAvailabilityObservation: NSKeyValueObservation?
     private var recheckAfterDismiss = false
     var installationRequested = false
     var preparing = false
@@ -34,6 +35,9 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         for item in [checkItem, actionItem, cancelItem, automaticItem] { item.target = self }
         button.target = self; button.action = #selector(openUpdate); button.isBordered = false
         button.font = .systemFont(ofSize: 10); button.contentTintColor = .linkColor
+        checkAvailabilityObservation = updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, _ in
+            self?.refreshWhenUpdaterSettles()
+        }
         do {
             try updater.start()
             // Explicit startup check even if a previous launch checked recently.
@@ -42,12 +46,15 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         refresh()
     }
     func refresh() {
-        checkItem.title = foundReply == nil ? status : "Проверить обновления снова"
+        let checking = updater.sessionInProgress && !updater.canCheckForUpdates &&
+            foundReply == nil && !installationRequested && !preparing && cancelAction == nil
+        let title = checking ? "Проверка обновлений…" : status
+        checkItem.title = foundReply == nil ? title : "Проверить обновления снова"
         checkItem.isEnabled = !installationRequested && !preparing && !recheckAfterDismiss && (foundReply != nil || updater.canCheckForUpdates)
         actionItem.isHidden = foundReply == nil; actionItem.isEnabled = !installationRequested
         cancelItem.isHidden = cancelAction == nil || preparing
         automaticItem.state = updater.automaticallyChecksForUpdates ? .on : .off
-        button.title = status; button.isEnabled = checkItem.isEnabled
+        button.title = title; button.isEnabled = checkItem.isEnabled
         changed?()
     }
     func record(_ event: String, error: Error? = nil) {
@@ -78,12 +85,18 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         reply(.dismiss)
     }
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
-        // The old offer owns a live Sparkle session until its cycle ends.
-        // Start the new check after Sparkle has finished dismissing that offer.
+        refreshWhenUpdaterSettles()
+    }
+    private func refreshWhenUpdaterSettles() {
+        // Sparkle can probe for a scheduled check after notifying its delegate.
+        // Observe availability so the interface and a queued recheck recover
+        // when that probe finishes. Wait a turn for both Sparkle flags to settle.
         DispatchQueue.main.async { [weak self] in
-            guard let self, self.recheckAfterDismiss else { self?.refresh(); return }
-            self.recheckAfterDismiss = false
-            self.check()
+            guard let self else { return }
+            if self.recheckAfterDismiss && self.updater.canCheckForUpdates && !self.updater.sessionInProgress {
+                self.recheckAfterDismiss = false
+                self.check()
+            }
             self.refresh()
         }
     }
