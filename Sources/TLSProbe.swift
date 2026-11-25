@@ -133,13 +133,18 @@ enum HTTPSCertificates {
         } catch { box.result.issue = (error as? RouterError)?.rawValue ?? "LOCAL_ERROR"; return box.result }
     }
 
+    static func openRouterSOCKS(session: Session? = nil, timeout: Int) throws -> OwnedSocket {
+        let socket = try OwnedSocket(Darwin.socket(AF_INET, SOCK_STREAM, 0))
+        socket.timeouts(timeout); try session?.add(socket)
+        try MacOSAdapter().connectSocket(socket, address: "127.0.0.1", port: 1090)
+        try socket.write([5, 1, 0]); guard try socket.exact(2) == [5, 0] else { throw RouterError.vpnUnavailable }
+        return socket
+    }
+
     private static func socksSocket(host: String, session: Session) throws -> OwnedSocket {
         let name = Array(host.utf8)
         guard Configuration.validHost(host), name.count <= 255 else { throw RouterError.destinationDenied }
-        let socket = try OwnedSocket(Darwin.socket(AF_INET, SOCK_STREAM, 0))
-        socket.timeouts(10); try session.add(socket)
-        try MacOSAdapter().connectSocket(socket, address: "127.0.0.1", port: 1090)
-        try socket.write([5, 1, 0]); guard try socket.exact(2) == [5, 0] else { throw RouterError.vpnUnavailable }
+        let socket = try openRouterSOCKS(session: session, timeout: 10)
         try socket.write([5, 1, 0, 3, UInt8(name.count)] + name + [1, 187])
         let response = try socket.exact(4)
         guard response[0] == 5, response[1] == 0, response[2] == 0 else { throw RouterError.routeDenied }

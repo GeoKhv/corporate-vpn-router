@@ -109,9 +109,13 @@
  static void finish_resolution(const char *hostname, ip_addr_t *ipaddr, void *arg)
  {
  	struct ocp_sock *s = arg;
-@@ -555,12 +609,25 @@
+@@ -554,13 +608,29 @@
+ 		return;
  	}
  
++	/* The DNS callback now owns cleanup, including cached and negative replies. */
++	s->state = STATE_NEW;
++
  	if (ipaddr) {
 -		/* success */
 -		start_connection(s, ipaddr);
@@ -138,7 +142,7 @@
  	if (s->conn_type == CONN_TYPE_SOCKS)
  		socks_reply(s, SOCKS_HOST_UNREACHABLE);
  	else
-@@ -583,7 +650,7 @@
+@@ -583,7 +653,7 @@
  	if (err == ERR_INPROGRESS)
  		return;
  	else if (err == ERR_OK)
@@ -147,7 +151,7 @@
  	else if (err == ERR_MEM) {
  		warn("%s: DNS table full, aborting lookup\n", __func__);
  		found(hostname, NULL, s);
-@@ -617,7 +684,7 @@
+@@ -617,7 +687,7 @@
  	 * obvious.
  	 */
  	if (strchr(hostname, '.'))
@@ -156,7 +160,15 @@
  	else
  		enqueue_dns_req(s, hostname, dns_domain, finish_resolution);
  }
-@@ -1009,6 +1076,7 @@
+@@ -631,6 +701,7 @@
+ 	s = ocp_sock_new(fd, lsock->conn_type == CONN_TYPE_REDIR ?
+ 			 local_data_cb : socks_cmd_cb, 0);
+ 	if (!s) {
++		evutil_closesocket(fd);
+ 		warn("too many connections\n");
+ 		return;
+ 	}
+@@ -1009,6 +1080,7 @@
  	lwip_init();
  	dns_init();
  

@@ -77,6 +77,7 @@ extension BetaMenu {
             connectionPhase = .connected
             repairingAttempt = nil; repairTarget = nil
             health = .ready; stage = "Подключено"; note = "Рабочие маршруты подключены."
+            scheduleProxyCheck(attempt: connectionAttempt)
             monitorSystemDNS(attempt: connectionAttempt)
             if FileManager.default.fileExists(atPath:pendingURL.path) {
                 note += " Отложенные правила сохранятся до подключения после полного отключения."
@@ -89,6 +90,23 @@ extension BetaMenu {
         }
         if connectionPhase == .stopping && engine == nil && selective.process == nil && selective.cleanupConfirmed { connectionPhase = .idle }
         routeStatus(); presentConnection()
+    }
+
+    private func scheduleProxyCheck(attempt: Int) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 30) { [weak self] in
+            guard let self, self.connectionAttempt == attempt, self.connectionPhase == .connected else { return }
+            DispatchQueue.global(qos: .utility).async {
+                let proxy = try? HTTPSCertificates.openRouterSOCKS(timeout: 2)
+                proxy?.close()
+                DispatchQueue.main.async {
+                    guard self.connectionAttempt == attempt, self.connectionPhase == .connected else { return }
+                    self.mark(3, proxy == nil ? .error : .ready,
+                              proxy == nil ? "Локальный прокси не отвечает. Переподключите рабочий VPN." : "локальный прокси отвечает")
+                    self.refresh()
+                    self.scheduleProxyCheck(attempt: attempt)
+                }
+            }
+        }
     }
 
     private func checkHosts(_ profile: WorkProfile) -> [String] {

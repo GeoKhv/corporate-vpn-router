@@ -551,6 +551,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func controlTextDidEndEditing(_ n: Notification) { secret.hideEcho() }
     func refresh() {
         var displayedNote = note
+        var displayedHealth = health, displayedStage = stage
         #if CVR_SELECTIVE_TUN
         siteHelpButton.isHidden = connectionPhase != .connected
         repairDNSButton.isHidden = connectionPhase != .connected || repairTarget?.attempt != connectionAttempt
@@ -559,8 +560,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if connectionPhase == .connected, let dns = findings["DNS macOS"], dns.health == .error {
             displayedNote = dns.text
         }
+        if connectionPhase == .connected, let proxy = findings[checks[3]], proxy.health == .error {
+            displayedHealth = .error
+            displayedStage = "Сбой рабочего прокси"
+            displayedNote = proxy.text
+        }
         #endif
-        label.stringValue = stage; detail.stringValue = displayedNote; statusIcon.image = health.dot()
+        label.stringValue = displayedStage; detail.stringValue = displayedNote; statusIcon.image = displayedHealth.dot()
         let who = displayedAccount()
         let enterLogin = !browserMode && engine == nil && (who == nil || editingLogin)
         loginDraft.isHidden = !enterLogin
@@ -594,10 +600,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         if switching { setupBrowser.isHidden = true }
         leaveOfficial.isHidden = !switching
         refreshMenuActions(); promptBox.isHidden = requestKind == nil
-        item.button?.image = health.dot()
-        item.button?.title = " " + health.menuTitle; item.button?.toolTip = "Corporate VPN Router · " + stage
-        item.button?.setAccessibilityLabel("Corporate VPN Router · " + stage)
-        menuStatus.title = stage; menuStatus.image = health.dot()
+        item.button?.image = displayedHealth.dot()
+        item.button?.title = " " + displayedHealth.menuTitle; item.button?.toolTip = "Corporate VPN Router · " + displayedStage
+        item.button?.setAccessibilityLabel("Corporate VPN Router · " + displayedStage)
+        menuStatus.title = displayedStage; menuStatus.image = displayedHealth.dot()
         for check in checks {
             let finding = findings[check]
             let current = engine != nil && health != .idle && health != .error
@@ -609,7 +615,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         checkButton.isEnabled = health == .ready && findings[checks[5]]?.health != .waiting
         let results = findings.mapValues { ["status": $0.health.rawValue, "checked": $0.checked.timeIntervalSince1970,
                                            "result": $0.text] as [String:Any] }
-        let state: [String:Any] = ["checks":results, "activeAttempt":engine != nil && !stopping, "state":stage, "message":displayedNote, "connected":health == .ready,
+        let state: [String:Any] = ["checks":results, "activeAttempt":engine != nil && !stopping, "state":displayedStage, "message":displayedNote, "connected":health == .ready,
                                    "port":1090, "counters":counters, "httpsProbe":httpsProbe, "updated":Date().timeIntervalSince1970]
         if let data = try? JSONSerialization.data(withJSONObject: state) { try? data.write(to: runtimeState, options:.atomic) }
     }

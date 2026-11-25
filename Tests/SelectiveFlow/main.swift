@@ -121,6 +121,13 @@ sys.stdin.read()
         check(menu.detail.stringValue.contains("macOS не находит owa.work.example.invalid"), "confirmed DNS failure must be visible while connected")
         check(!menu.siteHelpButton.isHidden && menu.siteHelpButton.action == #selector(BetaMenu.checkSiteAddress), "site troubleshooting is available from the connected window")
         if !testedSiteLink {
+            menu.mark(3, .error, "Локальный прокси не отвечает.")
+            menu.refresh()
+            check(menu.item.button?.title.contains("сбой") == true && menu.menuConnect.title == "Отключить",
+                  "proxy failure must update the tray and preserve disconnect")
+            menu.mark(3, .ready, "локальный прокси отвечает")
+            menu.refresh()
+            check(menu.item.button?.title.contains("вкл.") == true, "proxy recovery must clear the tray error")
             var calls = 0
             let repaired = res.appendingPathComponent("Engine/repaired")
             menu.refreshMacDNS = { false }

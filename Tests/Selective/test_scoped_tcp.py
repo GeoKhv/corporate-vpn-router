@@ -68,6 +68,18 @@ def run(host,port,case):
             raw.send(inbound(pkt,17,udp[2:4]+udp[:2]+struct.pack('!HH',len(ans)+8,0)+ans))
             if not port:
                 assert stream.recv(10)[1] == (4 if case=='absent' else 0)
+                # A completed lookup releases its accepted socket on both outcomes.
+                assert stream.recv(1) == b''
+                if case == 'dns':
+                    # Exercise slot reuse across more lookups than the connection pool holds.
+                    for _ in range(1100):
+                        with socket.create_connection(('127.0.0.1', local), 2) as cached:
+                            cached.sendall(b'\x05\x01\x00')
+                            assert cached.recv(2) == b'\x05\x00'
+                            cached.sendall(bytes([5,240,0,3,len(name)]) + name + bytes(2))
+                            with cached.makefile('rb') as reply:
+                                assert reply.read(10)[1] == 0
+                                assert reply.read(1) == b''
                 assert not select.select([raw],[],[],.08)[0];return
             pkt=raw.recv(65535);tcp=pkt[20:];assert pkt[9]==6 and tcp[13]&2
             source,dest,seq=struct.unpack('!HHI',tcp[:8]);assert dest==port
