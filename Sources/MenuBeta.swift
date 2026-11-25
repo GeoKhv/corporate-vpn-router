@@ -63,6 +63,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     var connectionPhase = ConnectionPhase.idle
     var connectionFailure: String?, connectionFailureCode: String?, connectionNotice: String?
     var connectionAttempt = 0
+    var reconnectRequested = false
+    var proxyUnresponsive: Bool {
+        connectionPhase == .connected && findings[checks[3]]?.health == .error
+    }
     var certificateWizard: CertificateWizard?
 #endif
     // A running executable must never load Python from a different installed
@@ -442,11 +446,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     func refreshMenuActions() {
 #if CVR_SELECTIVE_TUN
         let waitingForInput = connectionPhase.pending && requestKind != nil
-        menuConnect.title = connectionPhase == .connected ? "Отключить"
+        menuConnect.action = proxyUnresponsive ? #selector(reconnectProxy) : #selector(menuToggle)
+        menuConnect.title = connectionPhase == .connected ? primary.title
             : connectionPhase.pending ? (waitingForInput ? "Показать окно входа" : "Подключение…")
             : connectionPhase == .stopping ? "Отключение…" : "Подключить…"
         menuConnect.isEnabled = connectionPhase.pending ? waitingForInput : primary.isEnabled
-        menuCancel.isHidden = !connectionPhase.pending
+        menuCancel.title = proxyUnresponsive ? "Отключить" : "Отменить подключение"
+        menuCancel.isHidden = !connectionPhase.pending && !proxyUnresponsive
         menuCancel.isEnabled = primary.isEnabled
 #else
         menuConnect.title = engine == nil ? "Подключить…" : (health == .ready ? "Отключить" : "Показать окно входа")
@@ -466,7 +472,13 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         else { show() }
 #endif
     }
-    @objc func menuCancelConnection() { toggle() }
+    @objc func menuCancelConnection() {
+#if CVR_SELECTIVE_TUN
+        if connectionPhase.pending || proxyUnresponsive { stop("Сеанс завершён пользователем.") }
+#else
+        toggle()
+#endif
+    }
     @objc func show() {
         hiddenByUser = false
         if window.isMiniaturized { window.deminiaturize(nil) }
@@ -591,7 +603,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         setupBrowser.isEnabled = engine == nil
 #endif
 #if CVR_SELECTIVE_TUN
-        primary.title = connectionPhase == .connected ? "Отключить" : connectionPhase.pending ? "Отменить подключение" : connectionPhase == .stopping ? "Отключение…" : "Подключить"
+        primary.action = proxyUnresponsive ? #selector(reconnectProxy) : #selector(toggle)
+        primary.title = proxyUnresponsive ? "Переподключиться" : connectionPhase == .connected ? "Отключить" : connectionPhase.pending ? "Отменить подключение" : connectionPhase == .stopping ? "Отключение…" : "Подключить"
 #else
         primary.title = engine == nil ? "Подключить" : (health == .ready ? "Отключить рабочий туннель" : "Отменить вход")
 #endif
@@ -705,10 +718,10 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
     }
     func stop(_ reason: String) {
 #if CVR_SELECTIVE_TUN
+        reconnectRequested = false
         if connectionPhase != .failed { connectionPhase = .stopping; connectionNotice = reason }
         journal("ui", "cancel")
         shutdownConnection()
-        if connectionPhase == .stopping && engine == nil && selective.process == nil && selective.cleanupConfirmed { connectionPhase = .idle }
         presentConnection()
 #else
         clearPrompt(); pendingLogin = nil; attemptLogin = nil; health = .idle; stage = "Отключено"; note = reason
@@ -829,7 +842,6 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
                 if self.connectionPhase != .failed && self.connectionPhase != .stopping && self.connectionPhase != .idle {
                     self.failConnection("Сеанс неожиданно завершился (код \(p.terminationStatus)).", code: "ENGINE_EXIT")
                 } else if !self.selective.holdingRoutes { self.selective.stop() }
-                if self.connectionPhase == .stopping && self.selective.process == nil && self.selective.cleanupConfirmed { self.connectionPhase = .idle }
                 self.presentConnection()
 #else
                 if self.health != .error && self.health != .idle {

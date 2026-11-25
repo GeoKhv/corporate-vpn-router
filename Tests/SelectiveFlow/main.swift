@@ -55,6 +55,10 @@ else:
   elif mode=='activation_failure':emit(state='error',message='FIXTURE_PUBLISH_FAILED',code='FIXTURE_PUBLISH_FAILED',cleanupConfirmed=False)
   else:emit(state='ready',message='fixture routes ready')
 for line in sys.stdin:
+ if line == 'hold\n':
+  assert sys.stdin.readline() == 'resume\n'
+  emit(state='ready',message='fixture resumed routes')
+  continue
  assert line == 'repair-dns owa.work.example.invalid\n'
  (base/'repaired').touch()
  emit(state='dnsRepairResult',message='refreshed')
@@ -123,7 +127,8 @@ sys.stdin.read()
         if !testedSiteLink {
             menu.mark(3, .error, "Локальный прокси не отвечает.")
             menu.refresh()
-            check(menu.item.button?.title.contains("сбой") == true && menu.menuConnect.title == "Отключить",
+            check(menu.item.button?.title.contains("сбой") == true && menu.menuConnect.title == "Переподключиться" &&
+                  menu.primary.action == #selector(BetaMenu.reconnectProxy) && !menu.menuCancel.isHidden && menu.menuCancel.title == "Отключить",
                   "proxy failure must update the tray and preserve disconnect")
             menu.mark(3, .ready, "локальный прокси отвечает")
             menu.refresh()
@@ -243,6 +248,22 @@ sys.stdin.read()
     }
     try begin("site_choice"); finishMFA()
     check(choices == 1, "ambiguous selection resumes the same connection attempt")
+    try begin("repeat")
+    until { menu.requestKind == "challenge" }
+    menu.secret.stringValue = "fixture-code"; menu.answer()
+    until { menu.connectionPhase == .connected }
+    let oldAttempt = menu.connectionAttempt, controller = menu.selective.process
+    menu.mark(3, .error, "Локальный прокси не отвечает.")
+    menu.refresh()
+    menu.item.menu!.performActionForItem(at: menu.item.menu!.index(of: menu.menuConnect))
+    menu.reconnectProxy() // Double activation must not start another attempt.
+    until { menu.requestKind == "challenge" }
+    check(menu.connectionAttempt == oldAttempt + 1 && menu.selective.holdingRoutes, "one fresh login with routes held")
+    menu.secret.stringValue = "fixture-code"; menu.answer()
+    until { menu.connectionPhase == .connected }
+    check(menu.selective.process === controller && menu.menuConnect.title == "Отключить", "resume the original route controller after MFA")
+    menu.toggle()
+    until { menu.connectionPhase == .idle }
     let completed = try String(contentsOf: activations)
     try begin("server_refusal")
     until { menu.requestKind == "challenge" }

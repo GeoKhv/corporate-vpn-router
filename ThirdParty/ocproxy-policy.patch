@@ -101,15 +101,54 @@
  			start_resolution(s, (char *)name);
  			return;
  		} else {
-@@ -541,6 +594,7 @@
- 		warn("%s: tcp_connect() returned %d\n", __func__, (int)err);
- }
+@@ -503,13 +556,12 @@
+ {
+ 	struct ocp_sock *s = arg;
  
+-	if (s->conn_type == CONN_TYPE_SOCKS)
+-		socks_reply(s, SOCKS_OK);
+-
+ 	s->state = STATE_DATA;
+ 	event_add(s->ev, NULL);
+ 	tcp_recv(tpcb, recv_cb);
+ 	tcp_sent(tpcb, sent_cb);
++	if (s->conn_type == CONN_TYPE_SOCKS)
++		socks_reply(s, SOCKS_OK);
+ 
+ 	return ERR_OK;
+ }
+@@ -523,7 +575,7 @@
+ 
+ 	tpcb = tcp_new();
+ 	if (!tpcb)
+-		die("%s: out of memory\n", __func__);
++		goto refused;
+ 	tcp_nagle_disable(tpcb);
+ 	tcp_arg(tpcb, s);
+ 	tcp_recv(tpcb, NULL);
+@@ -537,10 +589,17 @@
+ 	}
+ 
+ 	err = tcp_connect(tpcb, ipaddr, s->rport, connect_cb);
+-	if (err != ERR_OK)
+-		warn("%s: tcp_connect() returned %d\n", __func__, (int)err);
+-}
+-
++	if (err == ERR_OK)
++		return;
++
++refused:
++	if (s->conn_type == CONN_TYPE_SOCKS)
++		socks_reply(s, SOCKS_GEN_FAILURE);
++	else
++		ocp_sock_del(s);
++}
++
 +extern int cvr_dns_rcode;
  static void finish_resolution(const char *hostname, ip_addr_t *ipaddr, void *arg)
  {
  	struct ocp_sock *s = arg;
-@@ -554,13 +608,29 @@
+@@ -554,13 +613,29 @@
  		return;
  	}
  
@@ -142,7 +181,7 @@
  	if (s->conn_type == CONN_TYPE_SOCKS)
  		socks_reply(s, SOCKS_HOST_UNREACHABLE);
  	else
-@@ -583,7 +653,7 @@
+@@ -583,7 +658,7 @@
  	if (err == ERR_INPROGRESS)
  		return;
  	else if (err == ERR_OK)
@@ -151,7 +190,7 @@
  	else if (err == ERR_MEM) {
  		warn("%s: DNS table full, aborting lookup\n", __func__);
  		found(hostname, NULL, s);
-@@ -617,7 +687,7 @@
+@@ -617,7 +692,7 @@
  	 * obvious.
  	 */
  	if (strchr(hostname, '.'))
@@ -160,7 +199,7 @@
  	else
  		enqueue_dns_req(s, hostname, dns_domain, finish_resolution);
  }
-@@ -631,6 +701,7 @@
+@@ -631,6 +706,7 @@
  	s = ocp_sock_new(fd, lsock->conn_type == CONN_TYPE_REDIR ?
  			 local_data_cb : socks_cmd_cb, 0);
  	if (!s) {
@@ -168,7 +207,7 @@
  		warn("too many connections\n");
  		return;
  	}
-@@ -1009,6 +1080,7 @@
+@@ -1009,6 +1085,7 @@
  	lwip_init();
  	dns_init();
  

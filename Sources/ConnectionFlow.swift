@@ -88,8 +88,18 @@ extension BetaMenu {
                     (connectionPhase == .connected && !selective.ready) {
             failConnection("Рабочие маршруты прервались. Вход остановлен; выполняется очистка.", code: "ROUTES_LOST")
         }
-        if connectionPhase == .stopping && engine == nil && selective.process == nil && selective.cleanupConfirmed { connectionPhase = .idle }
         routeStatus(); presentConnection()
+    }
+
+    @objc func reconnectProxy() {
+        guard proxyUnresponsive else { return }
+        show()
+        reconnectRequested = true
+        connectionPhase = .stopping
+        journal("ui", "reconnect_proxy")
+        let held = selective.holdRoutes()
+        shutdownConnection(keepRoutes: held)
+        presentConnection()
     }
 
     private func scheduleProxyCheck(attempt: Int) {
@@ -311,6 +321,7 @@ extension BetaMenu {
     }
 
     func failConnection(_ message: String, code: String) {
+        reconnectRequested = false
         // Latch the first failure before cleanup causes synchronous callbacks.
         let firstFailure = connectionFailure == nil
         let failedPhase = connectionPhase.rawValue
@@ -332,6 +343,15 @@ extension BetaMenu {
     }
 
     func presentConnection() {
+        if connectionPhase == .stopping, engine == nil,
+           (reconnectRequested && selective.holdingRoutes) || (selective.process == nil && selective.cleanupConfirmed) {
+            connectionPhase = .idle
+            if reconnectRequested {
+                reconnectRequested = false
+                connect()
+                return
+            }
+        }
         switch connectionPhase {
         case .idle:
             if selective.helperAvailability == .checking {
@@ -356,7 +376,9 @@ extension BetaMenu {
             health = .waiting; stage = "Включение рабочих маршрутов"; note = "Корпоративный туннель готов. Подключаем рабочие сайты…"
         case .authenticating, .connected: break // Detailed SSL/MFA state owns this presentation.
         case .stopping:
-            health = .waiting; stage = "Отключение"; note = "Завершение сеанса и очистка рабочих маршрутов…"
+            health = .waiting
+            stage = reconnectRequested ? "Переподключение" : "Отключение"
+            note = reconnectRequested ? "Завершаем предыдущий сеанс перед входом." : "Завершение сеанса и очистка рабочих маршрутов…"
         case .failed:
             health = .error; stage = "Ошибка подключения"
             note = connectionFailure ?? "Подключение завершилось с ошибкой."
