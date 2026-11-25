@@ -270,7 +270,8 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         github.toolTip = "https://github.com/GeoKhv/corporate-vpn-router"
         let byline = NSStackView(views: [author, github, version]); byline.spacing = 3
         #if CVR_UPDATES
-        let footer = makeColumn([motto, byline, updates!.button], spacing: 1)
+        let updateControls = NSStackView(views: [updates!.button, updates!.installButton])
+        let footer = makeColumn([motto, byline, updateControls, updates!.resultLabel], spacing: 2)
 #else
         let footer = makeColumn([motto, byline], spacing: 1)
 #endif

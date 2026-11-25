@@ -52,8 +52,16 @@ func choose(_ title: String, in driver: RouterUpdates) {
         }
     }
     RunLoop.main.add(timer, forMode: .modalPanel)
-    driver.openUpdate()
+    driver.installButton.performClick(nil)
     timer.invalidate()
+}
+
+var calendar = Calendar(identifier: .gregorian)
+calendar.timeZone = TimeZone(secondsFromGMT: 10800)!
+let checked = calendar.date(from: DateComponents(year: 2026, month: 11, day: 25, hour: 23, minute: 59))!
+for (minutes, day) in [(0, "сегодня"), (1, "вчера"), (1442, "25.11.2026")] {
+    let text = RouterUpdates.noUpdateMessage(checked: checked, now: checked.addingTimeInterval(Double(minutes * 60)), calendar: calendar)
+    require(text.hasSuffix(day + " в 23:59"), "calendar-day boundary and original check time")
 }
 
 let app = NSApplication.shared
@@ -75,14 +83,23 @@ if background {
     waitFor("button and menu become enabled after a background check") {
         driver.button.isEnabled && driver.checkItem.isEnabled
     }
-    require(driver.button.title != "Проверка обновлений…", "completed check no longer shown as busy")
+    require(driver.button.title == "Проверить обновления", "idle button names its action")
+    require(driver.resultLabel.stringValue.contains("проверено сегодня в "), "background success dates the result")
     try offer(26)
     driver.button.performClick(nil)
 } else {
+    try offer(25)
+    driver.button.performClick(nil)
+    require(driver.button.title == "Проверяем…", "immediate feedback on manual check")
+    waitFor("dated result and available retry") {
+        driver.button.title == "Проверить обновления" && driver.button.isEnabled &&
+        driver.resultLabel.stringValue.contains("Обновлений нет · проверено сегодня в ")
+    }
     try offer(26)
-    driver.check()
+    driver.button.performClick(nil)
 }
 waitFor("initial 0.3.26 offer") { driver.version == "0.3.26" && driver.foundReply != nil }
+require(driver.button.title == "Проверить обновления" && !driver.installButton.isHidden, "check and install remain distinct")
 try offer(27)
 choose("Проверить снова", in: driver)
 waitFor("dialog replaces stale offer with 0.3.27") { driver.version == "0.3.27" && driver.foundReply != nil }

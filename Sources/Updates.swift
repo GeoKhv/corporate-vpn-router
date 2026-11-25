@@ -7,7 +7,12 @@ import Sparkle
 final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     weak var owner: BetaMenu?
     var updater: SPUUpdater!
-    var status = "Проверить обновления"
+    private let checkTitle = "Проверить обновления"
+    private let checkingTitle = "Проверяем…"
+    private var noUpdateAt: Date?
+    private var status = "" {
+        didSet { noUpdateAt = nil }
+    }
     var version: String?
     var changed: (() -> Void)?
     var cancelAction: (() -> Void)?
@@ -20,6 +25,8 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     var total: UInt64 = 0, received: UInt64 = 0
     var checkItem = NSMenuItem(), actionItem = NSMenuItem(), cancelItem = NSMenuItem(), automaticItem = NSMenuItem()
     let button = NSButton()
+    let installButton = NSButton()
+    let resultLabel = NSTextField(wrappingLabelWithString: "")
     init(owner: BetaMenu) {
         self.owner = owner; super.init()
         // Even if macOS translocates execution, update the verified persistent
@@ -28,13 +35,26 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         updater = SPUUpdater(hostBundle: installed, applicationBundle: installed, userDriver: self, delegate: self)
     }
     func start(menu: NSMenu) {
-        checkItem = menu.addItem(withTitle: status, action: #selector(check), keyEquivalent: "")
+        checkItem = menu.addItem(withTitle: checkTitle, action: #selector(check), keyEquivalent: "")
         actionItem = menu.addItem(withTitle: "Загрузить и установить…", action: #selector(install), keyEquivalent: "")
         cancelItem = menu.addItem(withTitle: "Отменить обновление", action: #selector(cancel), keyEquivalent: "")
         automaticItem = menu.addItem(withTitle: "Проверять обновления автоматически", action: #selector(toggleAutomatic), keyEquivalent: "")
         for item in [checkItem, actionItem, cancelItem, automaticItem] { item.target = self }
-        button.target = self; button.action = #selector(openUpdate); button.isBordered = false
-        button.font = .systemFont(ofSize: 10); button.contentTintColor = .linkColor
+        button.target = self; button.action = #selector(check)
+        installButton.title = "Установить…"
+        installButton.target = self; installButton.action = #selector(install)
+        for control in [button, installButton] {
+            control.bezelStyle = .rounded
+            control.controlSize = .small
+        }
+        resultLabel.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+        resultLabel.textColor = .secondaryLabelColor
+        resultLabel.alignment = .center
+        for name in [Notification.Name.NSCalendarDayChanged, .NSSystemTimeZoneDidChange, .NSSystemClockDidChange] {
+            NotificationCenter.default.addObserver(self, selector: #selector(dateChanged), name: name, object: nil)
+        }
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(dateChanged),
+                                                         name: NSWorkspace.didWakeNotification, object: nil)
         checkAvailabilityObservation = updater.observe(\.canCheckForUpdates, options: [.new]) { [weak self] _, _ in
             self?.refreshWhenUpdaterSettles()
         }
@@ -48,14 +68,40 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     func refresh() {
         let checking = updater.sessionInProgress && !updater.canCheckForUpdates &&
             foundReply == nil && !installationRequested && !preparing && cancelAction == nil
-        let title = checking ? "Проверка обновлений…" : status
-        checkItem.title = foundReply == nil ? title : "Проверить обновления снова"
+        let busy = checking || recheckAfterDismiss || status == checkingTitle
+        let title = busy ? checkingTitle : checkTitle
+        checkItem.title = foundReply != nil ? "Проверить обновления снова" : title
         checkItem.isEnabled = !installationRequested && !preparing && !recheckAfterDismiss && (foundReply != nil || updater.canCheckForUpdates)
         actionItem.isHidden = foundReply == nil; actionItem.isEnabled = !installationRequested
         cancelItem.isHidden = cancelAction == nil || preparing
         automaticItem.state = updater.automaticallyChecksForUpdates ? .on : .off
         button.title = title; button.isEnabled = checkItem.isEnabled
+        installButton.isHidden = actionItem.isHidden
+        installButton.isEnabled = actionItem.isEnabled
+        resultLabel.stringValue = busy ? "" : noUpdateAt.map { Self.noUpdateMessage(checked: $0) } ?? status
+        resultLabel.isHidden = resultLabel.stringValue.isEmpty
         changed?()
+    }
+    @objc private func dateChanged(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in self?.refresh() }
+    }
+
+    static func noUpdateMessage(checked: Date, now: Date = Date(), calendar: Calendar = .autoupdatingCurrent) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.timeZone = calendar.timeZone
+        let day: String
+        if calendar.isDate(checked, inSameDayAs: now) {
+            day = "сегодня"
+        } else if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+                  calendar.isDate(checked, inSameDayAs: yesterday) {
+            day = "вчера"
+        } else {
+            formatter.dateFormat = "dd.MM.yyyy"
+            day = formatter.string(from: checked)
+        }
+        formatter.dateFormat = "HH:mm"
+        return "Обновлений нет · проверено " + day + " в " + formatter.string(from: checked)
     }
     func record(_ event: String, error: Error? = nil) {
         guard let owner else { return }
@@ -68,23 +114,25 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
             defer { try? handle.close() }; _ = try? handle.seekToEnd(); try? handle.write(contentsOf:data + Data([10]))
         }
     }
-    @objc func openUpdate() {
-        if foundReply == nil { check() } else { install() }
-    }
     @objc func check() {
         guard !installationRequested, !preparing, !recheckAfterDismiss else { return }
         if foundReply != nil { dismissOffer(recheck: true) }
-        else if updater.canCheckForUpdates { updater.checkForUpdates() }
+        else if updater.canCheckForUpdates {
+            status = checkingTitle
+            refresh()
+            updater.checkForUpdates()
+        }
     }
     private func dismissOffer(recheck: Bool) {
         guard let reply = foundReply else { return }
         recheckAfterDismiss = recheck
         foundReply = nil; version = nil
-        status = recheck ? "Проверка обновлений…" : "Проверить обновления"
+        status = recheck ? checkingTitle : ""
         refresh()
         reply(.dismiss)
     }
     func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        if status == checkingTitle && !recheckAfterDismiss { status = "" }
         refreshWhenUpdaterSettles()
     }
     private func refreshWhenUpdaterSettles() {
@@ -133,7 +181,7 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
         reply(SUUpdatePermissionResponse(automaticUpdateChecks:false, sendSystemProfile:false))
     }
     func showUserInitiatedUpdateCheck(cancellation: @escaping () -> Void) {
-        status = "Проверка обновлений…"; cancelAction = cancellation; refresh(); record("manual-check")
+        status = checkingTitle; cancelAction = cancellation; refresh(); record("manual-check")
     }
     func showUpdateFound(with appcastItem: SUAppcastItem, state: SPUUserUpdateState, reply: @escaping (SPUUserUpdateChoice) -> Void) {
         version = appcastItem.displayVersionString
@@ -145,8 +193,13 @@ final class RouterUpdates: NSObject, SPUUserDriver, SPUUpdaterDelegate {
     }
     func showUpdateReleaseNotes(with downloadData: SPUDownloadData) {}
     func showUpdateReleaseNotesFailedToDownloadWithError(_ error: Error) {}
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater) {
+        status = ""
+        noUpdateAt = Date()
+        refresh()
+    }
     func showUpdateNotFoundWithError(_ error: Error, acknowledgement: @escaping () -> Void) {
-        status = "Обновлений нет"; acknowledgement(); refresh(); record("no-update")
+        cancelAction = nil; acknowledgement(); refresh(); record("no-update")
     }
     func showUpdaterError(_ error: Error, acknowledgement: @escaping () -> Void) {
         status = "Ошибка обновления — повторить проверку"; record("error",error:error)
