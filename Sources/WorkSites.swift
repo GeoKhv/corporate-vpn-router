@@ -636,6 +636,8 @@ extension BetaMenu {
             if let cover=item.covered {
                 item.check.isEnabled=false;item.purpose.isEnabled=false;item.aliasCheck.isEnabled=false;covered+=1
                 note="уже есть: "+(cover.scope=="tree" ? "*.":"")+cover.domain
+            } else if item.choices.count==1, let existing=p.draft.sites.first(where:{$0.domain==host && $0.scope==rule.scope}) {
+                note="правило есть ("+AccessPurpose.label(existing.tcp,defaultPorts:p.draft.ports)+") — порт добавится к нему"
             }
             p.items.append(item);p.previewList.addArrangedSubview(previewRow(item,note:note))
         }
@@ -655,7 +657,7 @@ extension BetaMenu {
         let p=sitesPanel,old=p.draft
         guard p.parsedText==p.address.string else {clearPreview();return}
         guard p.editing==nil else {settingsNote.stringValue="Сначала завершите правку: «Готово» или «Отмена».";return}
-        var next=old,added=[String]()
+        var next=old,added=[String](),extended=Set<String>()
         do {
             for item in p.items where item.check.state == .on && item.check.isEnabled {
                 var host=item.host
@@ -668,12 +670,29 @@ extension BetaMenu {
                 var row=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:.selected([port]),alias:alias)
                 if next.covers(row) != nil { continue }
                 guard !next.beforeLogin.contains(row.domain) else{throw ProxyFailure("Имя исключено для доступа до входа.")}
-                if let existing=next.sites.first(where:{$0.domain==row.domain}) {
-                    // An alias selected in the preview can be attached without changing grants.
-                    guard row.alias != nil,existing.alias==nil, next.covers(WorkSite(domain:row.domain,scope:row.scope,tcp:row.tcp)) != nil else {throw ProxyFailure("Для "+row.domain+" уже есть правило. Измените его явно.")}
-                    row=existing;row.alias=alias
-                    next.sites.removeAll{$0.domain==row.domain}
-                } else if let parent=next.matching(row.domain) {
+                if let index=next.sites.firstIndex(where:{$0.domain==row.domain}) {
+                    // Same name and coverage: add the port to that rule. Changing
+                    // the coverage (with or without subdomains) stays explicit.
+                    let existing=next.sites[index]
+                    if existing.scope != row.scope {
+                        // An alias selected in the preview can be attached without changing grants.
+                        guard row.alias != nil,existing.alias==nil, next.covers(WorkSite(domain:row.domain,scope:row.scope,tcp:row.tcp)) != nil else {throw ProxyFailure("Для "+row.domain+" уже есть правило с другим охватом. Измените его явно.")}
+                    }
+                    var merged=existing
+                    if case .selected(let have)=existing.tcp ?? .selected(next.ports), case .selected(let more)=row.tcp ?? .selected([]), !Set(more).isSubset(of:have) {
+                        let all=Array(Set(have+more)).sorted()
+                        guard all.count<=32 else{throw ProxyFailure("В правиле "+row.domain+" получилось больше 32 TCP-портов.")}
+                        merged.tcp = .selected(all);next.version=2
+                    }
+                    if let alias=row.alias,merged.alias==nil {
+                        guard !next.sites.contains(where:{$0.alias==alias}) else{throw ProxyFailure("Алиас уже занят.")}
+                        merged.alias=alias;next.version=2
+                    }
+                    next.sites[index]=merged
+                    if !added.contains(row.domain) { extended.insert(row.domain) }
+                    continue
+                }
+                if let parent=next.matching(row.domain) {
                     // A more specific row must retain inherited ports.
                     switch parent.tcp ?? .selected(next.ports) {
                     case .any:row.tcp = .any
@@ -686,8 +705,11 @@ extension BetaMenu {
         } catch {settingsNote.stringValue=error.localizedDescription;return}
         if next != old {p.draft=next;changedDraft()}
         p.address.string="";clearPreview()
-        settingsNote.stringValue=added.isEmpty ? "Новых правил нет." : "Добавлено: "+String(added.count)
-        if let last=added.last,let i=p.draft.sites.firstIndex(where:{$0.domain==last}) {p.table.scrollRowToVisible(i)}
+        var summary=[String]()
+        if !added.isEmpty { summary.append("Добавлено: "+String(added.count)) }
+        if !extended.isEmpty { summary.append("дополнены порты: "+String(extended.count)) }
+        settingsNote.stringValue=summary.isEmpty ? "Новых правил нет." : summary.joined(separator:" · ")
+        if let last=added.last ?? extended.sorted().last,let i=p.draft.sites.firstIndex(where:{$0.domain==last}) {p.table.scrollRowToVisible(i)}
         settingsWindow?.makeFirstResponder(p.address)
     }
     @objc func routeStatus(){
