@@ -110,15 +110,25 @@ func run() throws {
         return view.subviews.compactMap{button(title,$0)}.first
     }
     var initial=old
-    initial.sites.append(WorkSite(domain:"test.example",scope:"tree",tcp:.selected([443])))
+    initial.sites.append(WorkSite(domain:"test.example",scope:"tree",tcp:.any))
     initial.sites.append(WorkSite(domain:"any.example",scope:"exact",tcp:.any,alias:"any"))
     try JSONFile.write(initial,to:menu.workURL)
+    try Data().write(to:menu.allPortsMarker) // the one-time widening is checked below
     menu.settings()
     let panel=menu.sitesPanel,window=menu.settingsWindow!
     let press:(String)->Void={title in
         guard let b=button(title,window.contentView!) else {fatalError("Missing button "+title)}
         b.performClick(nil)
     }
+    try fm.removeItem(at:menu.allPortsMarker)
+    menu.widenSavedRules()
+    require(panel.draft.sites.allSatisfy{$0.tcp == .any} && menu.storedWork()==initial,"saved rules widened in the draft only")
+    require(menu.settingsNote.stringValue.contains("все порты"),"widening is announced")
+    press("Отменить")
+    require(panel.draft==initial,"widening can be discarded")
+    try Data().write(to:menu.allPortsMarker)
+    menu.widenSavedRules()
+    require(panel.draft==initial,"never widened again after a save")
     // One path to add: paste, parse into the in-window preview, add the checked lines.
     func paste(_ text:String) {
         panel.address.string=text
@@ -152,17 +162,27 @@ func run() throws {
     require(panel.draft.sites[4].domain=="renamed.example","explicit rename")
     press("Отменить")
     require(panel.draft==initial && panel.stateLabel.stringValue=="Все изменения сохранены","Cancel rolls the draft back to the saved rules")
+    func onlyDetectedPorts() {
+        for item in panel.items {
+            item.purpose.selectItem(at:item.purpose.itemArray.firstIndex{($0.representedObject as? Int)==item.port}!)
+        }
+    }
     // Several ports of one server, and a new port for a saved rule.
-    paste("node.example:9094\nnode.example:9092");panel.addButton.performClick(nil)
+    paste("node.example:9094\nnode.example:9092");onlyDetectedPorts();panel.addButton.performClick(nil)
     require(panel.draft.sites.count==initial.sites.count+1 && panel.draft.sites.last?.tcp == .selected([9092,9094]),"two lines of one host make one rule: \(menu.settingsNote.stringValue)")
     paste("node.example:6445")
     require(panel.items[0].covered==nil && panel.addButton.isEnabled,"a new port of a saved host can be added")
-    panel.addButton.performClick(nil)
+    onlyDetectedPorts();panel.addButton.performClick(nil)
     require(panel.draft.sites.count==initial.sites.count+1 && panel.draft.sites.last?.tcp == .selected([6445,9092,9094]),"port appended to the rule")
     require(menu.settingsNote.stringValue.contains("дополнены порты: 1"),"extension is reported")
     paste("*.node.example");panel.addButton.performClick(nil)
     require(panel.draft.sites.last?.scope=="exact" && menu.settingsNote.stringValue.contains("другим охватом"),"coverage never widens silently")
-    press("Очистить");press("Отменить")
+    press("Очистить")
+    paste("node.example")
+    require(panel.items[0].purpose.titleOfSelectedItem=="Все порты (*)","all ports preselected")
+    panel.addButton.performClick(nil)
+    require(panel.draft.sites.count==initial.sites.count+1 && panel.draft.sites.last?.tcp == .any,"a saved rule widens to all ports")
+    press("Отменить")
     require(panel.draft==initial,"rolled back")
     paste("first.example\nsecond.example");panel.addButton.performClick(nil)
     require(panel.draft.sites.count==initial.sites.count+2,"both lines added at once")
@@ -175,10 +195,10 @@ func run() throws {
     require(panel.domain.stringValue=="unfinished.example" && !panel.editBox.isHidden,"close preserves the unfinished edit")
     press("Отмена")
     paste("any.example:22\nhttps://third.example:8443/secret?a=private")
-    require(panel.items[0].covered != nil && panel.items[1].purpose.titleOfSelectedItem=="Веб · 8443","covered line inactive, port detected")
+    require(panel.items[0].covered != nil && panel.items[1].purpose.itemTitles.contains("Веб · 8443"),"covered line inactive, port detected")
     panel.addButton.performClick(nil)
     require(panel.draft.sites[3]==initial.sites[3],"paste preserves any TCP and alias")
-    require(panel.draft.sites.last?.tcp == .selected([8443]),"explicit nonstandard port")
+    require(panel.draft.sites.last?.tcp == .any,"all ports by default, even with a port in the line")
     paste("service.example")
     panel.items[0].purpose.selectItem(withTitle:"Kubernetes · 6443");panel.addButton.performClick(nil)
     require(panel.draft.sites.last?.tcp == .selected([6443]),"purpose can be changed without retyping")
