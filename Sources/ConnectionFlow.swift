@@ -49,6 +49,12 @@ extension BetaMenu {
         guard connectionPhase == .checkingHelper, !applyingBundledRule else { return }
         if selective.helperAvailability == .checking { return }
         #if CVR_UPDATES
+        if applyAllTCPMigrationIfNeeded(connectAfterward:true) { return }
+        if FileManager.default.fileExists(atPath:pendingURL.path) {
+            connectionPhase = .idle
+            applyPending(connectAfter:true)
+            return
+        }
         if applyBundledRuleIfNeeded(connectAfterward:true) { return }
         #endif
         if !selective.helperAvailability.canConnect {
@@ -64,6 +70,12 @@ extension BetaMenu {
     func selectiveChanged() {
         journal("routes", selective.state, code: selective.failureCode)
         if applyingBundledRule { presentConnection(); return }
+        #if CVR_UPDATES
+        if checkTCPMigrationOnLaunch && selective.helperAvailability != .checking {
+            checkTCPMigrationOnLaunch = false
+            if connectionPhase == .idle && applyAllTCPMigrationIfNeeded(connectAfterward:false) { return }
+        }
+        #endif
         if connectionPhase == .checkingHelper { continueConnection() }
         else if connectionPhase == .installingHelper && selective.state != "installing" {
             if selective.state == "error" || !selective.helperAvailability.canConnect {

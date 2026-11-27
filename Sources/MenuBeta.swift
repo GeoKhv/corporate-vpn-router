@@ -60,6 +60,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         return command("/usr/bin/osascript", ["-e", script], timeout: 120).code == 0
     }
     var applyingBundledRule = false
+    var checkTCPMigrationOnLaunch = false
     var connectionPhase = ConnectionPhase.idle
     var connectionFailure: String?, connectionFailureCode: String?, connectionNotice: String?
     var connectionAttempt = 0
@@ -172,6 +173,9 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
             self.chooseGatewaySite(sites, completion: completion)
         }
         selective.managementFinished = { [weak self] in self?.show() }
+        #if CVR_UPDATES
+        checkTCPMigrationOnLaunch = true
+        #endif
         selective.checkHelper(resources: resources)
         dnsPathMonitor.pathUpdateHandler = { [weak self] _ in
             guard let self, self.connectionPhase == .connected else { return }
@@ -310,6 +314,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         #endif
         guard engine == nil, !selective.busy else { return }; show()
         #if CVR_UPDATES
+        if !edit && applyAllTCPMigrationIfNeeded(connectAfterward:false) { return }
         if !edit && applyBundledRuleIfNeeded(connectAfterward:false) { return }
         if Bundle.main.object(forInfoDictionaryKey:"CVRRouteHelperBuild") as? String == "0.3.20",
            selective.helperAvailability.needsInstallation || selective.helperAvailability.canConnect {
@@ -769,10 +774,7 @@ final class BetaMenu: NSObject, NSApplicationDelegate, NSWindowDelegate, NSTextF
         guard verifyRuntime() else {
             failConnection("Файлы запущенного Router изменились. Завершите приложение и откройте установленную копию заново.", code: "APP_CHANGED_ON_DISK"); return
         }
-        #if CVR_UPDATES
-        if !selective.holdingRoutes && FileManager.default.fileExists(atPath:pendingURL.path) {applyPending(connectAfter:true);return}
-        #endif
-        guard storedWork() != nil else { note = "Добавьте доступ: кнопка «Доступы…»."; refresh(); return }
+        guard storedWork() != nil || FileManager.default.fileExists(atPath:pendingURL.path) else { note = "Добавьте доступ: кнопка «Доступы…»."; refresh(); return }
         connectionAttempt += 1; connectionFailure = nil; connectionFailureCode = nil; connectionNotice = nil
         if selective.holdingRoutes {
             connectionPhase = .preparingRoutes

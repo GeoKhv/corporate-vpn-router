@@ -31,7 +31,11 @@ def main(red, white, approved_red):
     desktop = read(approved_red, 'DefaultDesktop.json')['desktop']
     assert read(red, 'DefaultDesktop.json')['desktop'] == desktop
     profile = validate(read(red, 'DefaultWorkSites.json'))
+    reference_profile = read(approved_red, 'DefaultWorkSites.json')
+    assert profile == {**reference_profile, 'version': 2,
+                       'sites': [{**row, 'tcp': '*'} for row in reference_profile['sites']]}
     assert allowed_tcp(profile, desktop, 3389, desktop)
+    assert allowed_tcp(profile, desktop, 65535)
     aliases = read(red, 'StarterHTTPSAliases.json')
     reference = read(approved_red, 'StarterHTTPSAliases.json')
     for key, short_name in [('httpEntryHost', 'superset'), ('additionalHTTPEntryHost', 'ametrica')]:

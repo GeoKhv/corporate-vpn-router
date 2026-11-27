@@ -96,8 +96,14 @@ def run(host,port,case):
         child.terminate();child.wait(timeout=3);raw.close()
 
 for item in [('node.corp.invalid',22,'ok'),('node.corp.invalid',6443,'ok'),('db.corp.invalid',5432,'ok'),
+             ('db.corp.invalid',1,'ok'),('db.corp.invalid',65535,'ok'),
              ('db.corp.invalid',0,'dns'),('absent.corp.invalid',0,'absent'),
              ('x.locked.corp.invalid',22,'denied'),('x.db.corp.invalid',5432,'denied'),
              ('other.invalid',22,'denied'),('auth.corp.invalid',0,'denied')]:
     run(*item)
-print('PASS packet-socket DNS, NXDOMAIN, TCP echo 22/6443/5432, nested restrictions, exclusions, analyzer parsing')
+policy['sites'][0]['tcp'] = '*'
+for item in [('node.corp.invalid',65535,'ok'),('x.locked.corp.invalid',443,'ok'),
+             ('x.locked.corp.invalid',65535,'denied'),('auth.corp.invalid',65535,'denied'),
+             ('other.invalid',65535,'denied')]:
+    run(*item)
+print('PASS packet-socket DNS, NXDOMAIN, selected ports, wildcard TCP boundaries, nested restrictions, exclusions, analyzer parsing')

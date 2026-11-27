@@ -44,7 +44,7 @@ func run() throws {
     exec '\(payload.appendingPathComponent("Runtime/bin/python3.13").path)' "$@"
     """+"\n")
     let suffix="fixture.example"
-    let original=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree"),WorkSite(domain:"mail.example",scope:"exact",tcp:.selected([8443]))], beforeLogin:["vpn.example"],ports:[443])
+    let original=WorkProfile(sites:[WorkSite(domain:suffix,scope:"tree"),WorkSite(domain:"mail.example",scope:"exact",tcp:.selected([8443]),alias:"mail")], beforeLogin:["vpn.example"],searchDomains:[suffix],ports:[443])
     var old=original; old.version=2
     if !firstProfile {
         try JSONFile.write(old,to:menu.workURL)
@@ -81,6 +81,7 @@ func run() throws {
     }
     if firstProfile {
         menu.selective.helperAvailability = .missing
+        require(!menu.applyAllTCPMigrationIfNeeded(connectAfterward:false) && fm.fileExists(atPath:menu.allPortsMarker.path),"fresh install records the new default without an approval")
         menu.settings()
         require(menu.storedWork()==nil && menu.sitesPanel.draft.sites.isEmpty,"fresh profile is empty")
         menu.sitesPanel.address.string="https://first.example"
@@ -88,6 +89,7 @@ func run() throws {
         waitFor("first address parsed"){!menu.sitesPanel.previewBox.isHidden}
         menu.addPreview()
         let draft=menu.sitesPanel.draft
+        require(draft.sites.first?.tcp == .any,"first profile defaults to all TCP")
         menu.savePolicy()
         waitFor("approval cancelled"){!menu.sitesPanel.applying}
         require(menu.storedWork()==nil && menu.queuedProfile(for:WorkProfile())==draft,"first profile is retryable after cancellation")
@@ -113,22 +115,38 @@ func run() throws {
     initial.sites.append(WorkSite(domain:"test.example",scope:"tree",tcp:.any))
     initial.sites.append(WorkSite(domain:"any.example",scope:"exact",tcp:.any,alias:"any"))
     try JSONFile.write(initial,to:menu.workURL)
-    try Data().write(to:menu.allPortsMarker) // the one-time widening is checked below
+    var queuedMigration = initial
+    queuedMigration.sites[1].tcp = .selected([6445])
+    var draftMigration = queuedMigration
+    draftMigration.sites.append(WorkSite(domain:"draft.example",scope:"exact",tcp:.any))
+    try JSONFile.write(PendingWork(base:initial,profile:queuedMigration),to:menu.pendingURL)
+    try JSONFile.write(PendingWork(base:initial,profile:draftMigration),to:menu.draftURL)
+    menu.checkTCPMigrationOnLaunch = true
+    menu.selective.checkHelper(resources:resources)
+    waitFor("automatic migration requested at launch"){!menu.checkTCPMigrationOnLaunch && !menu.applyingBundledRule && prompts==1}
+    require(menu.settingsWindow==nil && menu.storedWork()==initial && !fm.fileExists(atPath:menu.allPortsMarker.path),"cancel before opening the editor preserves the saved profile and allows a retry")
+    cancel=false
+    require(menu.applyAllTCPMigrationIfNeeded(connectAfterward:false),"retry starts migration")
+    waitFor("migration authorized and written"){!menu.applyingBundledRule && fm.fileExists(atPath:menu.allPortsMarker.path)}
+    var migrated = initial
+    migrated.defaultToAnyTCP()
+    require(menu.storedWork()==migrated && prompts==2,"migration changes TCP only, retaining scopes, aliases, exclusions and search domains")
+    let grants = try JSONSerialization.jsonObject(with:migrated.enrollment(desktop:desktop)) as! [String:Any]
+    require(Provisioning.matchesEnrollment(SelectiveRouter.helperReply(resources:resources),grants),"helper confirms wildcard rules and the existing desktop")
+    require(menu.queuedProfile(for:migrated)?.sites[0].tcp == .any && menu.queuedProfile(for:migrated)?.sites[1].tcp == .selected([6445]),"pending rule changes retain explicitly selected ports")
     menu.settings()
     let panel=menu.sitesPanel,window=menu.settingsWindow!
+    require(panel.draft.sites.last?.domain=="draft.example" && panel.draft.sites[1].tcp == .selected([6445]),"unsaved edits survive migration on disk")
+    try fm.removeItem(at:menu.pendingURL)
+    try fm.removeItem(at:menu.draftURL)
+    initial=migrated
+    panel.draft=initial; menu.loadDraft()
     let press:(String)->Void={title in
         guard let b=button(title,window.contentView!) else {fatalError("Missing button "+title)}
         b.performClick(nil)
     }
-    try fm.removeItem(at:menu.allPortsMarker)
-    menu.widenSavedRules()
-    require(panel.draft.sites.allSatisfy{$0.tcp == .any} && menu.storedWork()==initial,"saved rules widened in the draft only")
-    require(menu.settingsNote.stringValue.contains("все порты"),"widening is announced")
-    press("Отменить")
-    require(panel.draft==initial,"widening can be discarded")
-    try Data().write(to:menu.allPortsMarker)
-    menu.widenSavedRules()
-    require(panel.draft==initial,"never widened again after a save")
+    require(!menu.applyAllTCPMigrationIfNeeded(connectAfterward:false),"completed migration does not repeat")
+    cancel=true
     // One path to add: paste, parse into the in-window preview, add the checked lines.
     func paste(_ text:String) {
         panel.address.string=text
@@ -140,6 +158,12 @@ func run() throws {
     require(panel.items[0].covered?.domain=="test.example" && !panel.items[0].check.isEnabled,"covered child is inactive and names its rule")
     require(panel.previewTitle.stringValue.contains("уже разрешено") && !panel.addButton.isEnabled,"nothing to add")
     require(panel.draft==initial && panel.table.selectedRow==2,"covered child leaves selected parent intact")
+    panel.items[0].purpose.selectItem(withTitle:"SSH · 22")
+    menu.previewPurposeChanged(panel.items[0].purpose)
+    panel.addButton.performClick(nil)
+    require(panel.draft.sites.last?.tcp == .selected([22]),"a covered child can explicitly restrict its ports")
+    press("Отменить")
+    panel.table.selectRowIndexes(IndexSet(integer:2),byExtendingSelection:false)
     press("Очистить")
     require(panel.previewBox.isHidden && panel.items.isEmpty,"preview cleared")
     paste("stale.example")
@@ -217,6 +241,9 @@ func run() throws {
     waitFor("successful apply"){menu.storedWork()==panel.draft}
     waitFor("saved state shown"){panel.stateLabel.stringValue=="Все изменения сохранены"}
     require(!fm.fileExists(atPath:menu.pendingURL.path),"clear pending on success")
+    let restarted=BetaMenu(paths:paths)
+    restarted.selective.helperAvailability = .ready
+    require(!restarted.applyAllTCPMigrationIfNeeded(connectAfterward:false) && restarted.storedWork()?.sites.last?.tcp == .selected([6443]),"later launch keeps the manual restriction")
     window.performClose(nil)
     menu.menuConnect=NSMenuItem(title:"Подключить",action:#selector(BetaMenu.menuToggle),keyEquivalent:"")
     menu.menuConnect.target=menu;let bar=NSMenu();bar.addItem(menu.menuConnect)

@@ -123,7 +123,13 @@ if a.private:
   (res/'ApprovedSitePin.json').write_text(json.dumps(pin,sort_keys=True)+'\n')
  module_path.insert(0,str(ROOT/'Backend/Selective'))
  from policy import validate_selective
- policy=validate_selective(json.loads((res/'DefaultWorkSites.json').read_bytes()))
+ default=res/'DefaultWorkSites.json'
+ policy=validate_selective(json.loads(default.read_bytes()))
+ policy['version']=2
+ for rule in policy['sites']:
+  rule['tcp']='*'
+ validate_selective(policy)
+ default.write_text(json.dumps(policy,ensure_ascii=False,indent=2)+'\n')
  from sites import rdp_host_for_profile
  if a.rdp_host and (3389 in policy['ports'] or not rdp_host_for_profile(policy,a.rdp_host)):
   p.error('The RDP host must be in the work profile, outside login exclusions, without a global 3389 rule')

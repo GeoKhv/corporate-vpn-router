@@ -48,7 +48,7 @@ enum BetaInstall {
            let source = Bundle.main.url(forResource: "DefaultWorkSites", withExtension: "json") {
             var data = try Data(contentsOf: source)
             var profile = try JSONDecoder().decode(WorkProfile.self, from: data)
-            guard profile.version == 1, !profile.sites.isEmpty, profile.sites.count <= 256,
+            guard [1, 2].contains(profile.version), !profile.sites.isEmpty, profile.sites.count <= 256,
                   profile.sites.allSatisfy({ Configuration.validHost($0.domain) && ["tree", "exact"].contains($0.scope) }),
                   profile.beforeLogin.allSatisfy({ Configuration.validHost($0) }),
                   !profile.ports.isEmpty, profile.ports.allSatisfy({ (1...65535).contains($0) }) else { throw RouterError.invalidConfiguration }
@@ -57,8 +57,9 @@ enum BetaInstall {
                 let defaults = try StarterHTTPSAliases.load(aliases)
                 guard defaults.add(to: &profile).isEmpty else { throw RouterError.invalidConfiguration }
                 for entry in defaults.httpEntries { try defaults.addHTTPEntry(entry.host, to: &profile) }
-                data = try JSONEncoder().encode(profile)
             }
+            profile.defaultToAnyTCP()
+            data = try JSONEncoder().encode(profile)
 #endif
             try data.write(to: target, options: .withoutOverwriting)
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)

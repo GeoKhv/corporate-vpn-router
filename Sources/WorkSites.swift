@@ -28,6 +28,19 @@ struct WorkProfile: Codable, Equatable {
     var beforeLogin: [String] = []
     var searchDomains: [String]?
     var ports = [443]
+    mutating func defaultToAnyTCP() {
+        guard !sites.isEmpty else { return }
+        version = 2
+        for i in sites.indices { sites[i].tcp = .any }
+    }
+
+    mutating func rebaseTCPMigration(from base: WorkProfile) {
+        let previous = Dictionary(base.sites.map { ($0.domain, $0) }, uniquingKeysWith: { first, _ in first })
+        for i in sites.indices {
+            if let old = previous[sites[i].domain], old.tcp == sites[i].tcp { sites[i].tcp = .any }
+        }
+        if !sites.isEmpty { version = 2 }
+    }
     mutating func mergeExactRule(_ rule: SharedTCPRule) throws {
         guard rule.kind == "exact-tcp-rule", Configuration.validHost(rule.domain), rule.domain.contains("."),
               !rule.ports.isEmpty, rule.ports.count <= 32, rule.ports.allSatisfy({ (1...65535).contains($0) }),
@@ -150,6 +163,7 @@ final class PreviewItem {
     let check=NSButton(checkboxWithTitle:"",target:nil,action:nil)
     let hostPopup=NSPopUpButton(), purpose=NSPopUpButton(), aliasCheck=NSButton(checkboxWithTitle:"",target:nil,action:nil)
     var covered:WorkSite?
+    var canNarrowInheritedRule: Bool { covered.map { $0.domain != host } ?? false }
     init(host:String,choices:[String],tree:Bool,alias:String?,scheme:String,port:Int) {
         self.host=host;self.choices=choices;self.tree=tree;self.alias=alias;self.scheme=scheme;self.port=port
     }
@@ -255,8 +269,8 @@ extension BetaMenu {
     func queuedProfile(for base: WorkProfile) -> WorkProfile? {
         guard let data = try? Data(contentsOf: pendingURL),
               let pending = try? JSONDecoder().decode(PendingWork.self, from: data),
-              pending.base == base else { return nil }
-        return pending.profile
+              let profile = pending.draft(for: base) else { return nil }
+        return profile
     }
     func updateSearchSource() {
         let p=sitesPanel
@@ -358,7 +372,6 @@ extension BetaMenu {
             if let queued=queuedProfile(for:p.base) { p.draft=queued }
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), let latest=saved.draft(for:p.base) {p.draft=latest}
             loadDraft();updateSearchSource()
-            widenSavedRules()
         } else if !matchesStoredBase(p.base), p.draft == p.base, p.editing == nil {
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base; loadDraft()
         }
@@ -366,17 +379,6 @@ extension BetaMenu {
         NSApp.activate(ignoringOtherApps:true);settingsWindow?.makeKeyAndOrderFront(nil)
     }
     var allPortsMarker: URL { paths.data.appendingPathComponent("all-ports-applied") }
-    // Rules saved before all ports became the default are widened once, as a draft:
-    // they take effect only after «Сохранить» and the administrator approval.
-    func widenSavedRules() {
-        let p=sitesPanel
-        guard !FileManager.default.fileExists(atPath:allPortsMarker.path),p.base==storedWork() else { return }
-        var next=p.draft
-        for i in next.sites.indices where next.sites[i].tcp != .any { next.sites[i].tcp = .any }
-        guard next != p.draft else { return }
-        next.version=2;p.draft=next;changedDraft()
-        settingsNote.stringValue="Во всех правилах выбраны все порты (*). Нажмите «Сохранить»."
-    }
     func loadDraft(_ selected:Int = -1) {
         let p=sitesPanel
         p.table.reloadData()
@@ -445,7 +447,7 @@ extension BetaMenu {
         settingsWindow?.makeFirstResponder(p.domain)
     }
     @objc func newSite(){
-        let p=sitesPanel;p.editing=nil;p.domain.stringValue="";p.ports.stringValue=TCPPorts.selected(p.draft.ports).label;p.tree.state = .off;p.short.state = .off
+        let p=sitesPanel;p.editing=nil;p.domain.stringValue="";p.ports.stringValue="*";p.tree.state = .off;p.short.state = .off
         p.editBox.isHidden=true;p.table.isEnabled=true;p.editButton.isEnabled=true;p.deleteButton.isEnabled=true
         fitSettingsWindow();if p.stateLabel.superview != nil {refreshState()}
     }
@@ -604,6 +606,7 @@ extension BetaMenu {
         item.purpose.addItem(withTitle:"Все порты (*)")
         for (title,port) in options { item.purpose.addItem(withTitle:title);item.purpose.lastItem?.representedObject=port }
         item.purpose.selectItem(at:0)
+        item.purpose.target=self;item.purpose.action=#selector(previewPurposeChanged(_:))
         let main=NSStackView(views:[item.check,hostView,item.purpose])
         if item.covered==nil && (!item.tree && item.host.contains(".") || item.alias != nil) {
             item.aliasCheck.title="Короткое имя: "+(item.alias ?? firstLabel(item.host))
@@ -629,6 +632,13 @@ extension BetaMenu {
         updatePreviewCount()
     }
     @objc func previewToggled(){updatePreviewCount()}
+    @objc func previewPurposeChanged(_ sender:NSPopUpButton) {
+        if let item=sitesPanel.items.first(where:{$0.purpose===sender}), item.canNarrowInheritedRule {
+            item.check.isEnabled = sender.indexOfSelectedItem > 0
+            item.check.state = item.check.isEnabled ? .on : .off
+        }
+        updatePreviewCount()
+    }
     func updatePreviewCount() {
         let p=sitesPanel,count=p.items.filter{$0.check.state == .on && $0.check.isEnabled}.count
         p.addButton.title="Добавить \(count)";p.addButton.isEnabled=count>0
@@ -649,10 +659,10 @@ extension BetaMenu {
             item.check.state=item.covered==nil && item.choices.count==1 ? .on:.off
             var note:String?
             if let cover=item.covered {
-                item.check.isEnabled=false;item.purpose.isEnabled=false;item.aliasCheck.isEnabled=false;covered+=1
+                item.check.isEnabled=false;item.purpose.isEnabled=item.canNarrowInheritedRule;item.aliasCheck.isEnabled=false;covered+=1
                 note="уже есть: "+(cover.scope=="tree" ? "*.":"")+cover.domain
             } else if item.choices.count==1, let existing=p.draft.sites.first(where:{$0.domain==host && $0.scope==rule.scope}) {
-                note="правило есть ("+AccessPurpose.label(existing.tcp,defaultPorts:p.draft.ports)+") — откроются все порты"
+                note="Будут дополнены порты правила ("+AccessPurpose.label(existing.tcp,defaultPorts:p.draft.ports)+")"
             }
             p.items.append(item);p.previewList.addArrangedSubview(previewRow(item,note:note))
         }
@@ -682,8 +692,8 @@ extension BetaMenu {
                 }
                 let tcp=(item.purpose.selectedItem?.representedObject as? Int).map{TCPPorts.selected([$0])} ?? .any
                 let alias=item.aliasCheck.superview != nil && item.aliasCheck.state == .on ? (item.alias ?? firstLabel(host)):nil
-                var row=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:tcp,alias:alias)
-                if next.covers(row) != nil { continue }
+                let row=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:tcp,alias:alias)
+                if let cover=next.covers(row), cover.domain==host || tcp == .any { continue }
                 guard !next.beforeLogin.contains(row.domain) else{throw ProxyFailure("Имя исключено для доступа до входа.")}
                 if let index=next.sites.firstIndex(where:{$0.domain==row.domain}) {
                     // Same name and coverage: add the port to that rule. Changing
@@ -707,13 +717,6 @@ extension BetaMenu {
                     next.sites[index]=merged
                     if !added.contains(row.domain) { extended.insert(row.domain) }
                     continue
-                }
-                if let parent=next.matching(row.domain) {
-                    // A more specific row must retain inherited ports.
-                    switch parent.tcp ?? .selected(next.ports) {
-                    case .any:row.tcp = .any
-                    case .selected(let ports):if case .selected(let more)=row.tcp {row.tcp = .selected(Array(Set(ports+more)).sorted())}
-                    }
                 }
                 guard row.alias==nil || !next.sites.contains(where:{$0.alias==row.alias}) else{throw ProxyFailure("Алиас уже занят.")}
                 next.sites.append(row);next.version=2;added.append(row.domain)
@@ -744,7 +747,7 @@ extension BetaMenu {
     func confirmAction(_ title:String,_ msg:String,_ yes:String)->Bool{let a=NSAlert();a.messageText=title;a.informativeText=msg;a.addButton(withTitle:yes);a.addButton(withTitle:"Отмена");return a.runModal() == .alertFirstButtonReturn}
     @objc func savePolicy(){
 #if CVR_SELECTIVE_TUN
-
+        guard !applyingBundledRule else { settingsNote.stringValue="Дождитесь завершения обновления правил.";return }
 #else
         if BrowserRouter.effective() && !activated {settingsNote.stringValue="Сначала нажмите «Настроить Chrome…» для проверки маршрута в браузере.";return}
 #endif
@@ -770,6 +773,7 @@ extension BetaMenu {
         do {try JSONFile.write(PendingWork(base:sitesPanel.base,profile:profile),to:pendingURL)} catch {settingsNote.stringValue="Не сохранено: не удалось записать черновик.";return}
         if let first=profile.sites.firstIndex(where:{!sitesPanel.base.sites.contains($0)}) { sitesPanel.table.scrollRowToVisible(first) }
         guard engine==nil && !selective.busy else {settingsNote.stringValue="Сохранено. Правила применятся при следующем подключении, текущий сеанс продолжается.";refreshState();return}
+        if applyAllTCPMigrationIfNeeded(connectAfterward:false) { return }
         applyPending(connectAfter:false)
         #else
         settingsNote.stringValue=Self.routeCommand("save",[temp.path]).output
@@ -785,7 +789,7 @@ extension BetaMenu {
         Self.routeCommand(firstSiteEnrollment ? "check-enrollment" : "check-draft", [file.path], resources: resources)
     }
 
-    func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool) throws {
+    func saveAppliedProfile(_ file:URL, from old:WorkProfile, to new:WorkProfile, bundled:Bool, tcpMigration:Bool = false) throws {
         guard matchesStoredBase(old) else {throw ProxyFailure("Профиль изменился. Проверьте текущие правила.")}
         let p=sitesPanel
         let open=settingsWindow != nil && p.base==old
@@ -798,7 +802,10 @@ extension BetaMenu {
             edited=disk.draft(for:old)
         }
         var rebased=edited
-        if var draft=edited, bundled {
+        if var draft=edited, tcpMigration {
+            draft.rebaseTCPMigration(from:old)
+            rebased=draft
+        } else if var draft=edited, bundled {
             // Add migration changes only to rows the user has not independently edited.
             for row in old.sites where !new.sites.contains(where: { $0.domain == row.domain }) {
                 draft.sites.removeAll { $0 == row }
@@ -816,10 +823,17 @@ extension BetaMenu {
         if let edited, let rebased {
             try JSONFile.write(PendingWork(base:old,profile:edited,nextBase:new,nextDraft:rebased),to:draftURL)
         }
+        if tcpMigration, FileManager.default.fileExists(atPath:pendingURL.path) {
+            let pending = try JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL))
+            // The previous save may have finished just before the app exited.
+            if let queued = pending.draft(for:old) ?? (pending.profile == old ? old : nil) {
+                var next = queued
+                next.rebaseTCPMigration(from:old)
+                try JSONFile.write(PendingWork(base:old,profile:queued,nextBase:new,nextDraft:next),to:pendingURL)
+            }
+        }
         let result=Self.routeCommand(firstSiteEnrollment ? "save-enrollment" : "save",[file.path],resources:resources)
         guard result.code==0 else {throw ProxyFailure(result.output)}
-        // Once saved, a rule narrowed by hand later is never widened again.
-        try? Data().write(to:allPortsMarker)
         if open {
             p.base=new;p.draft=rebased ?? new;p.table.reloadData();refreshState()
         }
@@ -838,20 +852,21 @@ extension BetaMenu {
             }
         }
         guard let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:pendingURL)) else {report("Не удалось прочитать отложенный профиль.");return}
+        let active = storedWork() ?? WorkProfile()
+        let candidate = saved.draft(for:active)
         func completePending() {
             do { try FileManager.default.removeItem(at:pendingURL) }
             catch {report("Правила записаны. Не удалось убрать отметку отложенного применения.");return}
-            report(settingsWindow != nil && p.draft != saved.profile
+            report(settingsWindow != nil && p.draft != active && p.draft != candidate
                 ? "Отложенные правила применены. В черновике остались неприменённые изменения."
                 : "Правила применены и сверены с помощником.")
             if connectAfter {connect()}
         }
-        if storedWork()==saved.profile && saved.profile != saved.base {
+        if candidate == active || (candidate == nil && active == saved.profile) {
             // A previous save succeeded but the process exited before clearing pending.
             completePending();return
         }
-        guard matchesStoredBase(saved.base) else {report("Отложенный профиль расходится с сохранённым. Проверьте рабочие правила.");return}
-        let profile=saved.profile
+        guard let profile=candidate, matchesStoredBase(active) else {report("Отложенный профиль расходится с сохранённым. Проверьте рабочие правила.");return}
         let temp=paths.data.appendingPathComponent("apply-"+UUID().uuidString)
         do {try JSONFile.write(profile,to:temp)} catch {report("Ошибка чтения черновика.");return}
         let validation=validateDraft(temp)
@@ -868,7 +883,7 @@ extension BetaMenu {
                 report("Помощник ещё не подтвердил рабочие правила и адрес ПК. Черновик сохранён.")
                 return
             }
-            do {try saveAppliedProfile(temp,from:saved.base,to:profile,bundled:false)}
+            do {try saveAppliedProfile(temp,from:active,to:profile,bundled:false)}
             catch {report(error.localizedDescription);return}
             completePending()
         }
@@ -1066,6 +1081,76 @@ struct StarterHTTPSAliases: Decodable {
 }
 
 extension BetaMenu {
+    func applyAllTCPMigrationIfNeeded(connectAfterward: Bool) -> Bool {
+        let fm = FileManager.default
+        guard !fm.fileExists(atPath:allPortsMarker.path), !applyingBundledRule,
+              !sitesPanel.applying, engine == nil, !selective.busy else { return false }
+
+        func markApplied() throws {
+            try Data("applied\n".utf8).write(to:allPortsMarker,options:.atomic)
+        }
+        func report(_ message: String) {
+            if connectAfterward { failConnection(message,code:"TCP_PORT_MIGRATION_PENDING") }
+            else { connectionNotice = message; settingsNote.stringValue = message; presentConnection() }
+        }
+
+        do {
+            guard let profile = storedWork() else {
+                if fm.fileExists(atPath:workURL.path) { throw RouterError.invalidConfiguration }
+                try markApplied()
+                return false
+            }
+            var widened = profile
+            widened.defaultToAnyTCP()
+            // After an interruption between saving the profile and the receipt,
+            // the widened profile is already on disk and can be marked directly.
+            guard widened != profile else { try markApplied(); return false }
+            guard selective.helperAvailability.canConnect || selective.helperAvailability.needsInstallation else {
+                throw ProxyFailure(selective.helperAvailability.explanation)
+            }
+            let file = paths.data.appendingPathComponent("tcp-migration-" + UUID().uuidString)
+            try JSONFile.write(widened,to:file)
+            let validation = validateDraft(file)
+            guard validation.code == 0 else {
+                try? fm.removeItem(at:file)
+                let reason = validation.output.trimmingCharacters(in:.whitespacesAndNewlines)
+                throw ProxyFailure(gatewaySetupMessage(reason) ?? reason)
+            }
+            let status = SelectiveRouter.helperReply(resources:resources)
+            let desktop = Provisioning.enrollmentDesktop(status:status,resources:resources,paths:paths,profile:widened)
+            let enrollment = try widened.enrollment(desktop:desktop)
+            let expected = try JSONSerialization.jsonObject(with:enrollment) as? [String:Any]
+            applyingBundledRule = true
+            if connectAfterward { connectionPhase = .installingHelper; presentConnection() }
+
+            func finish(_ success: Bool) {
+                defer { try? fm.removeItem(at:file) }
+                applyingBundledRule = false
+                do {
+                    guard success else { throw ProxyFailure(selective.message) }
+                    guard Provisioning.matchesEnrollment(SelectiveRouter.helperReply(resources:resources),expected) else {
+                        throw ProxyFailure("Помощник ещё не подтвердил новые правила TCP. Повторите подключение.")
+                    }
+                    try saveAppliedProfile(file,from:profile,to:widened,bundled:false,tcpMigration:true)
+                    try markApplied()
+                    if connectAfterward && connectionPhase == .installingHelper {
+                        connectionPhase = .checkingHelper
+                        continueConnection()
+                    } else {
+                        settingsNote.stringValue = "Рабочие правила обновлены. По умолчанию разрешены все порты TCP."
+                    }
+                } catch { report(error.localizedDescription) }
+                presentConnection()
+            }
+            if selective.helperAvailability.canConnect && Provisioning.matchesEnrollment(status,expected) { finish(true) }
+            else { selective.manageHelper(resources:resources,enrollment:enrollment,reconfigure:true,completion:finish) }
+            return true
+        } catch {
+            report(error.localizedDescription)
+            return true
+        }
+    }
+
     // Keep the receipt independent of app version so later updates respect manual edits.
     func applyBundledRuleIfNeeded(connectAfterward: Bool) -> Bool {
         let resource = resources.appendingPathComponent("BundledTCPRule.json")
