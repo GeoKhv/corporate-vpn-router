@@ -358,11 +358,24 @@ extension BetaMenu {
             if let queued=queuedProfile(for:p.base) { p.draft=queued }
             if let saved=try? JSONDecoder().decode(PendingWork.self,from:Data(contentsOf:draftURL)), let latest=saved.draft(for:p.base) {p.draft=latest}
             loadDraft();updateSearchSource()
+            widenSavedRules()
         } else if !matchesStoredBase(p.base), p.draft == p.base, p.editing == nil {
             p.base=storedWork() ?? WorkProfile(); p.draft=p.base; loadDraft()
         }
         routeStatus()
         NSApp.activate(ignoringOtherApps:true);settingsWindow?.makeKeyAndOrderFront(nil)
+    }
+    var allPortsMarker: URL { paths.data.appendingPathComponent("all-ports-applied") }
+    // Rules saved before all ports became the default are widened once, as a draft:
+    // they take effect only after «Сохранить» and the administrator approval.
+    func widenSavedRules() {
+        let p=sitesPanel
+        guard !FileManager.default.fileExists(atPath:allPortsMarker.path),p.base==storedWork() else { return }
+        var next=p.draft
+        for i in next.sites.indices where next.sites[i].tcp != .any { next.sites[i].tcp = .any }
+        guard next != p.draft else { return }
+        next.version=2;p.draft=next;changedDraft()
+        settingsNote.stringValue="Во всех правилах выбраны все порты (*). Нажмите «Сохранить»."
     }
     func loadDraft(_ selected:Int = -1) {
         let p=sitesPanel
@@ -587,8 +600,10 @@ extension BetaMenu {
         let detected=(AccessPurpose.label(port:item.port,scheme:item.scheme),item.port)
         if let index=options.firstIndex(where:{$0.1==item.port}) { options[index]=detected }
         else { options.insert(detected,at:0) }
+        // All ports is the default; one port is an explicit narrower choice.
+        item.purpose.addItem(withTitle:"Все порты (*)")
         for (title,port) in options { item.purpose.addItem(withTitle:title);item.purpose.lastItem?.representedObject=port }
-        item.purpose.selectItem(at:options.firstIndex{$0.1==item.port} ?? 0)
+        item.purpose.selectItem(at:0)
         let main=NSStackView(views:[item.check,hostView,item.purpose])
         if item.covered==nil && (!item.tree && item.host.contains(".") || item.alias != nil) {
             item.aliasCheck.title="Короткое имя: "+(item.alias ?? firstLabel(item.host))
@@ -629,13 +644,15 @@ extension BetaMenu {
             }
             let item=PreviewItem(host:host,choices:row["choices"] as? [String] ?? [host],tree:row["tree"] as? Bool==true,alias:row["alias"] as? String,
                                  scheme:row["scheme"] as? String ?? "tcp",port:port)
-            let rule=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:.selected([port]),alias:item.alias)
+            let rule=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:.any,alias:item.alias)
             item.covered=item.choices.count==1 ? p.draft.covers(rule):nil
             item.check.state=item.covered==nil && item.choices.count==1 ? .on:.off
             var note:String?
             if let cover=item.covered {
                 item.check.isEnabled=false;item.purpose.isEnabled=false;item.aliasCheck.isEnabled=false;covered+=1
                 note="уже есть: "+(cover.scope=="tree" ? "*.":"")+cover.domain
+            } else if item.choices.count==1, let existing=p.draft.sites.first(where:{$0.domain==host && $0.scope==rule.scope}) {
+                note="правило есть ("+AccessPurpose.label(existing.tcp,defaultPorts:p.draft.ports)+") — откроются все порты"
             }
             p.items.append(item);p.previewList.addArrangedSubview(previewRow(item,note:note))
         }
@@ -655,7 +672,7 @@ extension BetaMenu {
         let p=sitesPanel,old=p.draft
         guard p.parsedText==p.address.string else {clearPreview();return}
         guard p.editing==nil else {settingsNote.stringValue="Сначала завершите правку: «Готово» или «Отмена».";return}
-        var next=old,added=[String]()
+        var next=old,added=[String](),extended=Set<String>()
         do {
             for item in p.items where item.check.state == .on && item.check.isEnabled {
                 var host=item.host
@@ -663,17 +680,35 @@ extension BetaMenu {
                     guard item.hostPopup.indexOfSelectedItem>0 else{throw ProxyFailure("Выберите полное имя из найденных.")}
                     host=item.choices[item.hostPopup.indexOfSelectedItem-1]
                 }
-                let port=item.purpose.selectedItem?.representedObject as? Int ?? item.port
+                let tcp=(item.purpose.selectedItem?.representedObject as? Int).map{TCPPorts.selected([$0])} ?? .any
                 let alias=item.aliasCheck.superview != nil && item.aliasCheck.state == .on ? (item.alias ?? firstLabel(host)):nil
-                var row=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:.selected([port]),alias:alias)
+                var row=WorkSite(domain:host,scope:item.tree ? "tree":"exact",tcp:tcp,alias:alias)
                 if next.covers(row) != nil { continue }
                 guard !next.beforeLogin.contains(row.domain) else{throw ProxyFailure("Имя исключено для доступа до входа.")}
-                if let existing=next.sites.first(where:{$0.domain==row.domain}) {
-                    // An alias selected in the preview can be attached without changing grants.
-                    guard row.alias != nil,existing.alias==nil, next.covers(WorkSite(domain:row.domain,scope:row.scope,tcp:row.tcp)) != nil else {throw ProxyFailure("Для "+row.domain+" уже есть правило. Измените его явно.")}
-                    row=existing;row.alias=alias
-                    next.sites.removeAll{$0.domain==row.domain}
-                } else if let parent=next.matching(row.domain) {
+                if let index=next.sites.firstIndex(where:{$0.domain==row.domain}) {
+                    // Same name and coverage: add the port to that rule. Changing
+                    // the coverage (with or without subdomains) stays explicit.
+                    let existing=next.sites[index]
+                    if existing.scope != row.scope {
+                        // An alias selected in the preview can be attached without changing grants.
+                        guard row.alias != nil,existing.alias==nil, next.covers(WorkSite(domain:row.domain,scope:row.scope,tcp:row.tcp)) != nil else {throw ProxyFailure("Для "+row.domain+" уже есть правило с другим охватом. Измените его явно.")}
+                    }
+                    var merged=existing
+                    if row.tcp == .any, (existing.tcp ?? .selected(next.ports)) != .any { merged.tcp = .any;next.version=2 }
+                    if case .selected(let have)=existing.tcp ?? .selected(next.ports), case .selected(let more)=row.tcp ?? .selected([]), !Set(more).isSubset(of:have) {
+                        let all=Array(Set(have+more)).sorted()
+                        guard all.count<=32 else{throw ProxyFailure("В правиле "+row.domain+" получилось больше 32 TCP-портов.")}
+                        merged.tcp = .selected(all);next.version=2
+                    }
+                    if let alias=row.alias,merged.alias==nil {
+                        guard !next.sites.contains(where:{$0.alias==alias}) else{throw ProxyFailure("Алиас уже занят.")}
+                        merged.alias=alias;next.version=2
+                    }
+                    next.sites[index]=merged
+                    if !added.contains(row.domain) { extended.insert(row.domain) }
+                    continue
+                }
+                if let parent=next.matching(row.domain) {
                     // A more specific row must retain inherited ports.
                     switch parent.tcp ?? .selected(next.ports) {
                     case .any:row.tcp = .any
@@ -686,8 +721,11 @@ extension BetaMenu {
         } catch {settingsNote.stringValue=error.localizedDescription;return}
         if next != old {p.draft=next;changedDraft()}
         p.address.string="";clearPreview()
-        settingsNote.stringValue=added.isEmpty ? "Новых правил нет." : "Добавлено: "+String(added.count)
-        if let last=added.last,let i=p.draft.sites.firstIndex(where:{$0.domain==last}) {p.table.scrollRowToVisible(i)}
+        var summary=[String]()
+        if !added.isEmpty { summary.append("Добавлено: "+String(added.count)) }
+        if !extended.isEmpty { summary.append("дополнены порты: "+String(extended.count)) }
+        settingsNote.stringValue=summary.isEmpty ? "Новых правил нет." : summary.joined(separator:" · ")
+        if let last=added.last ?? extended.sorted().last,let i=p.draft.sites.firstIndex(where:{$0.domain==last}) {p.table.scrollRowToVisible(i)}
         settingsWindow?.makeFirstResponder(p.address)
     }
     @objc func routeStatus(){
@@ -780,6 +818,8 @@ extension BetaMenu {
         }
         let result=Self.routeCommand(firstSiteEnrollment ? "save-enrollment" : "save",[file.path],resources:resources)
         guard result.code==0 else {throw ProxyFailure(result.output)}
+        // Once saved, a rule narrowed by hand later is never widened again.
+        try? Data().write(to:allPortsMarker)
         if open {
             p.base=new;p.draft=rebased ?? new;p.table.reloadData();refreshState()
         }
